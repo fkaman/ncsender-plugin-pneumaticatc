@@ -69,6 +69,17 @@
     color: var(--color-text-primary);
     letter-spacing: -0.01em;
   }
+  .pa-beta-badge {
+    display: inline;
+    margin-left: 4px;
+    font-size: 0.55em;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #e67e22;
+    vertical-align: super;
+    line-height: 1;
+  }
   .pa-sidebar-nav {
     display: flex;
     flex-direction: column;
@@ -747,7 +758,7 @@
     <aside class="pa-sidebar">
       <div class="pa-sidebar-header">
         <span class="pa-sidebar-eyebrow">ncSender</span>
-        <span class="pa-sidebar-title">Pneumatic ATC</span>
+        <span class="pa-sidebar-title">Pneumatic ATC <span class="pa-beta-badge">Beta</span></span>
       </div>
       <nav class="pa-sidebar-nav">
         <button type="button" class="pa-nav-btn active" data-nav="rack">
@@ -1009,7 +1020,7 @@
             <label for="pa-tls-mode">TLS Strategy</label>
             <select class="pa-select" id="pa-tls-mode">
               <option value="always" selected>Probe after every tool change</option>
-              <option value="library">Use tool library offset (probe when missing)</option>
+              <option value="library" disabled>Use tool library offset (probe when missing) — coming soon</option>
             </select>
           </div>
         </div>
@@ -1153,6 +1164,19 @@
       <div class="pa-modal-actions">
         <button type="button" class="pa-btn pa-btn-ghost" id="pa-modal-no">No, keep existing</button>
         <button type="button" class="pa-btn" id="pa-modal-yes">Yes, auto-populate</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm modal used when the user tries to close with unsaved changes. -->
+  <div class="pa-modal-backdrop" id="pa-close-modal">
+    <div class="pa-modal-card">
+      <h3 class="pa-modal-title">Unsaved changes</h3>
+      <p class="pa-modal-body">You have changes that haven't been saved yet. Save them before closing, or discard and lose the edits?</p>
+      <div class="pa-modal-actions">
+        <button type="button" class="pa-btn pa-btn-ghost" id="pa-close-cancel">Cancel</button>
+        <button type="button" class="pa-btn pa-btn-danger" id="pa-close-discard">Discard</button>
+        <button type="button" class="pa-btn" id="pa-close-save">Save &amp; close</button>
       </div>
     </div>
   </div>
@@ -1510,6 +1534,10 @@
     if ($('pa-pre-editor'))   preEditor   = monaco.editor.create($('pa-pre-editor'),   Object.assign({}, opts, { value: initialConfig.preToolChangeGcode || '' }));
     if ($('pa-post-editor'))  postEditor  = monaco.editor.create($('pa-post-editor'),  Object.assign({}, opts, { value: initialConfig.postToolChangeGcode || '' }));
     if ($('pa-abort-editor')) abortEditor = monaco.editor.create($('pa-abort-editor'), Object.assign({}, opts, { value: initialConfig.abortEventGcode    || '' }));
+    // Mark dirty on any editor content change — feeds the close confirm.
+    [preEditor, postEditor, abortEditor].forEach(function(e) {
+      if (e && typeof markDirty === 'function') e.onDidChangeModelContent(markDirty);
+    });
 
     new MutationObserver(function() {
       monaco.editor.setTheme(isLight() ? 'ncsender-light' : 'ncsender-dark');
@@ -1658,29 +1686,97 @@
     };
   }
 
-  $('pa-close-btn').addEventListener('click', function() {
+  // ---------- Dirty tracking ----------
+  //
+  // Any user-initiated change to a form control flips `isDirty` so we can
+  // warn on close. Programmatic writes during applyInitial happen before
+  // event listeners are wired below, so they don't false-positive.
+  var isDirty = false;
+  function markDirty() { isDirty = true; }
+  document.addEventListener('input', markDirty);
+  document.addEventListener('change', markDirty);
+  // Segment / grab clicks mutate state without firing input/change — hook
+  // them via delegated click.
+  document.addEventListener('click', function(evt) {
+    var el = evt.target;
+    if (!el || !el.closest) return;
+    if (el.closest('.pa-segment-btn')) markDirty();
+    if (el.matches && (
+      el.matches('[data-slot-grab]') ||
+      el.id === 'pa-slot1-grab' ||
+      el.id === 'pa-toolsetter-grab' ||
+      el.id === 'pa-manualtool-grab'
+    )) markDirty();
+  });
+
+  async function doSave() {
+    var payload = gatherFormData();
+    var res = await fetch(BASE_URL + '/api/plugins/com.ncsender.pneumaticatc/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error('save failed: ' + res.status);
+    await fetch(BASE_URL + '/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool: { count: payload.slots, source: 'com.ncsender.pneumaticatc', manual: true, tls: true, probe: false }
+      })
+    });
+    isDirty = false;
+  }
+
+  // Close-with-unsaved modal — resolves to 'save', 'discard', or 'cancel'.
+  function showCloseConfirm() {
+    return new Promise(function(resolve) {
+      var modal = $('pa-close-modal');
+      var save = $('pa-close-save');
+      var discard = $('pa-close-discard');
+      var cancel = $('pa-close-cancel');
+      if (!modal || !save || !discard || !cancel) { resolve('cancel'); return; }
+      modal.classList.add('pa-open');
+      function cleanup(v) {
+        modal.classList.remove('pa-open');
+        save.removeEventListener('click', onSave);
+        discard.removeEventListener('click', onDiscard);
+        cancel.removeEventListener('click', onCancel);
+        resolve(v);
+      }
+      function onSave()    { cleanup('save'); }
+      function onDiscard() { cleanup('discard'); }
+      function onCancel()  { cleanup('cancel'); }
+      save.addEventListener('click', onSave);
+      discard.addEventListener('click', onDiscard);
+      cancel.addEventListener('click', onCancel);
+    });
+  }
+
+  function closeDialog() {
     window.postMessage({ type: 'close-plugin-dialog' }, '*');
+  }
+
+  $('pa-close-btn').addEventListener('click', async function() {
+    if (!isDirty) { closeDialog(); return; }
+    var choice = await showCloseConfirm();
+    if (choice === 'cancel') return;
+    if (choice === 'discard') { closeDialog(); return; }
+    // choice === 'save'
+    try {
+      await doSave();
+      closeDialog();
+    } catch (e) {
+      console.error('[PneumaticATC] save-then-close failed', e);
+      window.alert('Save failed: ' + e.message);
+    }
   });
 
   qsa('[data-save]').forEach(function(saveBtn) {
     saveBtn.addEventListener('click', async function() {
       if (saveBtn.disabled) return;
       saveBtn.disabled = true;
-      var payload = gatherFormData();
       try {
-        var res = await fetch(BASE_URL + '/api/plugins/com.ncsender.pneumaticatc/settings', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error('save failed: ' + res.status);
-        await fetch(BASE_URL + '/api/settings', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tool: { count: payload.slots, source: 'com.ncsender.pneumaticatc', manual: true, tls: true, probe: false }
-          })
-        });
+        await doSave();
         saveBtn.textContent = 'Saved';
         saveBtn.classList.add('pa-saved');
         setTimeout(function() {
@@ -1704,6 +1800,10 @@
     .finally(function() {
       applyInitial();
       updateLabelUnits();
+      // Reset dirty after seeding the form — segLayout.set() etc. above
+      // fire synthetic clicks that our delegated listener would count as
+      // user activity.
+      setTimeout(function() { isDirty = false; }, 0);
       fetch(BASE_URL + '/api/server-state')
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(s) { if (s) updateAxisReadout(extractCoords(s)); })

@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.39",
+  "version": "0.1.43",
   "minAppVersion": "2.0.0",
   "commands": "commands.js",
   "configUi": "config.html",
