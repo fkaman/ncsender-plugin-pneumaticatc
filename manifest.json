@@ -1,0 +1,53 @@
+{
+  "id": "com.ncsender.pneumaticatc",
+  "name": "Pneumatic ATC",
+  "version": "0.1.39",
+  "minAppVersion": "2.0.0",
+  "commands": "commands.js",
+  "configUi": "config.html",
+  "author": "ncSender",
+  "description": "Pneumatic automatic tool changer workflow helper. Uses a single aux output to clamp/unclamp the collet.",
+  "category": "tool-changer",
+  "repository": "https://github.com/siganberg/ncsender-plugin-pneumaticatc",
+  "priority": 50,
+  "icon": "logo.png",
+  "platforms": {
+    "pro-v2": "2.0.0"
+  },
+  "events": [
+    "onBeforeCommand"
+  ],
+  "permissions": [
+    "gcode.modify"
+  ],
+  "toolMenu": [
+    {
+      "id": "open-config",
+      "label": "PneumaticATC",
+      "icon": "logo.png",
+      "clientOnly": true
+    }
+  ],
+  "messages": {
+    "FAILED_UNLOAD_TOOL": {
+      "title": "Unload Failed",
+      "message": "Failed to unload {toolNumber}. Please manually remove the bit, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
+      "continueLabel": "Continue"
+    },
+    "FAILED_LOAD_TOOL": {
+      "title": "Load Failed",
+      "message": "Failed to load {toolNumber}. Please manually install the bit, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
+      "continueLabel": "Continue"
+    },
+    "MANUAL_UNLOAD_TOOL": {
+      "title": "Manual Unload",
+      "message": "Please remove {toolNumber}, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
+      "continueLabel": "Continue"
+    },
+    "MANUAL_LOAD_TOOL": {
+      "title": "Manual Load",
+      "message": "Please install {toolNumber} securely, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
+      "continueLabel": "Continue"
+    }
+  }
+}

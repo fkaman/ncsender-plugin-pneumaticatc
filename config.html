@@ -1,0 +1,1715 @@
+<style>
+  /* Hide the outer PluginDialog header/X — this plugin owns the whole chrome
+     via its own sidebar + Close button. The style is inside the plugin content
+     so it only applies while this dialog is mounted. */
+  .plugin-dialog-header { display: none !important; }
+  .plugin-dialog-content { padding: 0 !important; }
+
+  /* Full-height 2-column layout that mirrors the app Settings dialog. */
+  .pa-wrapper {
+    /* Width = sidebar (220) + header content (coords 260 + gap 12 + jog 420)
+       + content padding (2×20) + border (1) — snug fit around the header
+       cards so there's no dead space to the right of the jog cluster.
+       Height fixed to 85vh so switching between sidebar entries doesn't
+       resize the dialog — smaller tabs get empty space at the bottom
+       instead of shrinking. */
+    width: 953px;
+    max-width: 95vw;
+    height: 85vh;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-surface);
+    border-radius: var(--radius-medium);
+    overflow: hidden;
+    position: relative;
+  }
+  .pa-container {
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+    min-height: 0;
+    border-radius: var(--radius-medium);
+    overflow: hidden;
+  }
+
+  /* ============ Sidebar (left navigation rail) ============ */
+  .pa-sidebar {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    width: 220px;
+    border-right: 1px solid var(--color-border);
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--color-surface-muted) 96%, transparent) 0%,
+      var(--color-surface-muted) 100%);
+    border-radius: var(--radius-medium) 0 0 var(--radius-medium);
+    padding: 22px 14px 14px;
+    overflow-y: auto;
+  }
+  .pa-sidebar-header {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 12px 18px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .pa-sidebar-eyebrow {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--color-accent);
+    opacity: 0.85;
+  }
+  .pa-sidebar-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--color-text-primary);
+    letter-spacing: -0.01em;
+  }
+  .pa-sidebar-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .pa-nav-btn {
+    -webkit-appearance: none;
+    appearance: none;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 14px;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 8px !important;
+    color: var(--color-text-secondary) !important;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+    font-size: 0.95rem;
+    font-weight: 500;
+    font-family: inherit;
+    width: 100%;
+    text-align: left;
+    position: relative;
+    outline: none;
+    box-shadow: none;
+    line-height: 1.2;
+    margin: 0;
+  }
+  .pa-nav-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    color: var(--color-text-secondary);
+    opacity: 0.75;
+    transition: color 0.15s ease, opacity 0.15s ease;
+    flex-shrink: 0;
+  }
+  .pa-nav-icon svg { display: block; width: 18px; height: 18px; }
+  .pa-nav-label {
+    flex: 1;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pa-nav-btn:hover {
+    background: color-mix(in srgb, var(--color-text-primary, #fff) 5%, transparent) !important;
+    color: var(--color-text-primary) !important;
+  }
+  .pa-nav-btn:hover .pa-nav-icon {
+    color: var(--color-accent);
+    opacity: 1;
+  }
+  .pa-nav-btn.active {
+    background: linear-gradient(90deg,
+      color-mix(in srgb, var(--color-accent) 16%, transparent) 0%,
+      color-mix(in srgb, var(--color-accent) 8%, transparent) 100%) !important;
+    color: var(--color-text-primary) !important;
+    font-weight: 600;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent) !important;
+  }
+  .pa-nav-btn.active .pa-nav-icon {
+    color: var(--color-accent);
+    opacity: 1;
+  }
+  .pa-nav-btn.active .pa-nav-label { font-weight: 600; }
+  .pa-tab-caret {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--color-accent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--color-accent) 70%, transparent);
+    flex-shrink: 0;
+    display: none;
+  }
+  .pa-nav-btn.active .pa-tab-caret { display: block; }
+
+  .pa-sidebar-footer {
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px solid var(--color-border);
+    display: flex;
+    justify-content: center;
+  }
+  .pa-close-btn {
+    -webkit-appearance: none;
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 130px;
+    min-height: 44px;
+    padding: 12px 32px;
+    background: var(--gradient-accent, var(--color-accent)) !important;
+    color: #fff !important;
+    cursor: pointer;
+    transition: filter 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
+    font-size: 0.95rem;
+    font-weight: 600;
+    font-family: inherit;
+    letter-spacing: 0.01em;
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--color-accent) 25%, transparent) !important;
+    border-radius: 8px !important;
+    border: none !important;
+    outline: none;
+    line-height: 1.2;
+    margin: 0;
+  }
+  .pa-close-btn:hover {
+    filter: brightness(1.08);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--color-accent) 35%, transparent);
+  }
+  .pa-close-btn:active { transform: translateY(1px); }
+
+  /* ============ Content area ============ */
+  /* Content is a flex column: header (fixed) + scrollable panel + footer
+     (fixed). The scroll happens on the middle panel so the Save footer
+     stays pinned at the bottom no matter how many cards exist. */
+  .pa-content {
+    flex: 1;
+    display: none;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--color-surface);
+    border-radius: 0 var(--radius-medium) var(--radius-medium) 0;
+    overflow: hidden;
+  }
+  .pa-content.active { display: flex; }
+
+  .pa-panel-header {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 15px 20px;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .pa-panel-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--color-text-primary);
+    margin: 0;
+  }
+  .pa-panel-footer {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 20px;
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .pa-save-btn {
+    -webkit-appearance: none;
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 20px;
+    background: var(--color-accent) !important;
+    color: #fff !important;
+    border-radius: 10px !important;
+    border: none !important;
+    outline: none;
+    font-size: 0.95rem;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: filter 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
+    line-height: 1.2;
+    margin: 0;
+  }
+  .pa-save-btn:hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--color-accent) 30%, transparent);
+  }
+  .pa-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .pa-save-btn.pa-saved {
+    box-shadow: 0 0 20px var(--color-accent);
+    animation: paGlow 0.5s ease-in-out infinite;
+  }
+  @keyframes paGlow {
+    0%, 100% { box-shadow: 0 0 16px var(--color-accent); }
+    50%      { box-shadow: 0 0 28px var(--color-accent), 0 0 44px var(--color-accent); }
+  }
+
+  .pa-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-lg);
+    padding: 15px 20px 20px;
+  }
+
+  /* Cards mirror Settings' .settings-section */
+  .pa-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-medium);
+    padding: var(--gap-md);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+  /* Universal box-sizing so form controls + Monaco don't overshoot their
+     card padding. */
+  .pa-wrapper *, .pa-wrapper *::before, .pa-wrapper *::after {
+    box-sizing: border-box;
+  }
+  .pa-card-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-text-primary);
+    margin: 0;
+  }
+  .pa-card-help {
+    margin: 0;
+    font-size: 0.95rem;
+    color: var(--color-text-secondary);
+    line-height: 1.45;
+  }
+
+  /* Rows / fields */
+  .pa-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .pa-row-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+  }
+  /* 4-column row (used for Engage Motion). */
+  .pa-row-4 {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  /* Coord row where the last column is a fixed-width Grab button. */
+  .pa-coord-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+    gap: 14px;
+    align-items: center;
+  }
+  .pa-coord-row-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+    gap: 14px;
+    align-items: center;
+  }
+  /* Standalone group label above a row (one line, no wrap). */
+  .pa-group-label {
+    display: block;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--color-text-primary);
+    margin: 4px 0 8px;
+    white-space: nowrap;
+  }
+  .pa-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .pa-field label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    letter-spacing: 0.02em;
+  }
+  .pa-field-inline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  /* Text labels inside field-inline stretch to push the control to the
+     right, but the toggle IS a <label> too — exclude it so it keeps its
+     42×24 pill size. */
+  .pa-field-inline > label:not(.pa-toggle) {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--color-text-primary);
+    flex: 1;
+  }
+  /* Keep number inputs compact on field-inline rows so the row stays
+     label-left / control-right instead of a full-width input. */
+  .pa-field-inline > .pa-input {
+    width: 160px;
+    flex: 0 0 160px;
+  }
+  .pa-input,
+  .pa-select {
+    padding: 9px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: 0.9rem;
+    font-family: inherit;
+    box-sizing: border-box;
+  }
+  .pa-input {
+    text-align: right;
+    font-family: 'JetBrains Mono', monospace;
+    width: 100%;
+  }
+  .pa-select { width: 100%; }
+  .pa-input:focus,
+  .pa-select:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 15%, transparent); }
+
+  /* Coord group (X: [input], plus optional inline label) */
+  .pa-coord {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pa-coord-label {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--color-text-secondary);
+    min-width: 14px;
+  }
+  .pa-coord .pa-input { flex: 1; }
+
+  /* Grab / row action buttons */
+  .pa-btn {
+    -webkit-appearance: none;
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 18px;
+    border-radius: 999px !important;
+    background: var(--color-accent) !important;
+    color: #fff !important;
+    border: none !important;
+    outline: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: filter 0.15s ease, transform 0.05s ease;
+    white-space: nowrap;
+    text-align: center;
+    line-height: 1.2;
+    margin: 0;
+  }
+  .pa-btn:hover:not(:disabled) { filter: brightness(1.08); }
+  .pa-btn:active:not(:disabled) { transform: translateY(1px); }
+  .pa-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .pa-btn-sm { padding: 6px 12px; font-size: 0.8rem; }
+  .pa-btn-ghost {
+    background: var(--color-surface-muted) !important;
+    color: var(--color-text-primary) !important;
+    border: 1px solid var(--color-border) !important;
+  }
+  .pa-btn-ghost:hover:not(:disabled) {
+    background: var(--color-surface) !important;
+    border-color: var(--color-accent) !important;
+    color: var(--color-accent) !important;
+    filter: none;
+  }
+  .pa-btn-danger {
+    background: transparent !important;
+    color: var(--color-danger, #e74c3c) !important;
+    border: 1px solid color-mix(in srgb, var(--color-danger, #e74c3c) 30%, transparent) !important;
+  }
+  .pa-btn-danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-danger, #e74c3c) 12%, transparent) !important;
+    filter: none;
+  }
+
+  /* Segmented pill (Linear / Custom, Orientation, Direction) */
+  .pa-segment {
+    display: inline-flex;
+    background: var(--color-surface-muted);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    padding: 2px;
+    position: relative;
+    user-select: none;
+    width: fit-content;
+  }
+  .pa-segment-btn {
+    -webkit-appearance: none;
+    appearance: none;
+    padding: 4px 12px;
+    border-radius: 999px !important;
+    background: transparent !important;
+    border: none !important;
+    outline: none;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: inherit;
+    color: var(--color-text-secondary) !important;
+    cursor: pointer;
+    transition: color 0.15s ease;
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    line-height: 1.2;
+    margin: 0;
+    min-width: 32px;
+  }
+  .pa-segment-btn.active { color: #fff !important; }
+  .pa-segment-indicator {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    background: var(--color-accent);
+    border-radius: 999px;
+    transition: left 0.2s ease, width 0.2s ease;
+    z-index: 0;
+  }
+
+  /* Toggle switch */
+  .pa-toggle {
+    position: relative;
+    width: 42px;
+    height: 24px;
+    flex-shrink: 0;
+  }
+  .pa-toggle input { opacity: 0; width: 0; height: 0; }
+  .pa-toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: var(--color-border);
+    border-radius: 24px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+  }
+  .pa-toggle-slider::before {
+    content: "";
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    top: 3px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s ease;
+  }
+  .pa-toggle input:checked + .pa-toggle-slider { background: var(--color-accent); }
+  .pa-toggle input:checked + .pa-toggle-slider::before { transform: translateX(18px); }
+
+  /* Custom slot table */
+  .pa-slot-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.9rem;
+  }
+  .pa-slot-table th {
+    text-align: left;
+    padding: 8px 6px;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .pa-slot-table th:first-child { text-align: center; width: 56px; padding-left: 4px; }
+  .pa-slot-table th.pa-slot-actions-col { text-align: right; padding-right: 4px; width: 90px; }
+  .pa-slot-table td {
+    padding: 6px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+    vertical-align: middle;
+  }
+  .pa-slot-table td:first-child {
+    text-align: center;
+    font-weight: 700;
+    color: var(--color-accent);
+    font-family: 'JetBrains Mono', monospace;
+    width: 56px;
+    padding-left: 4px;
+  }
+  .pa-slot-table td.pa-slot-actions {
+    text-align: right;
+    padding-right: 4px;
+    white-space: nowrap;
+    width: 90px;
+  }
+  .pa-slot-table td .pa-input { padding: 6px 10px; font-size: 0.85rem; }
+
+  /* Show/hide collapse for mode-specific sections */
+  .pa-collapse { display: none; }
+  .pa-collapse.active { display: flex; flex-direction: column; gap: 12px; }
+
+  /* Two side-by-side cards in the header: Machine DRO on the left, Step +
+     Jog cluster on the right. Both cards share the same inner-card look so
+     they don't compete with the section cards below. */
+  .pa-header-cards {
+    /* Coords narrow, jog wide enough for the Step row + jog cluster. */
+    display: grid;
+    grid-template-columns: minmax(0, 260px) minmax(0, 420px);
+    gap: 12px;
+    justify-content: start;
+  }
+  .pa-header-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 16px;
+    background: var(--color-surface-muted);
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    min-height: 160px;
+  }
+  .pa-header-card .pa-mcoord {
+    background: transparent;
+    border: none;
+    padding: 0;
+    width: 100%;
+  }
+  .pa-mcoord {
+    background: var(--color-surface-muted);
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .pa-mcoord-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 12px;
+    text-align: center;
+  }
+  /* Stack DRO rows vertically — one pill per axis. */
+  .pa-mcoord-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  /* Two-tone pill: darker left segment holds the axis label, lighter right
+     segment holds the value. Overflow-hidden clips segment backgrounds to
+     the outer rounded shape so the divider looks integrated. */
+  .pa-mcoord-cell {
+    display: grid;
+    grid-template-columns: 44px 1fr;
+    align-items: stretch;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--color-surface);
+  }
+  .pa-mcoord-axis {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 0;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--color-text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: color-mix(in srgb, var(--color-text-primary) 10%, var(--color-surface));
+    border-right: 1px solid var(--color-border);
+  }
+  .pa-mcoord-value {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 8px 14px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+    font-size: 1.2rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-accent);
+    line-height: 1;
+    text-align: right;
+  }
+  .pa-jog-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-width: 0;
+    width: 100%;
+  }
+  .pa-jog-controls nc-step-control,
+  .pa-jog-controls nc-jog-control {
+    display: flex;
+    justify-content: center;
+    transform: scale(1.1);
+    transform-origin: center;
+    margin: 6px 0;
+  }
+  /* A axis (4th axis) isn't relevant for ATC rack setup — hide it if the
+     firmware happens to expose one. The nc-jog-control element is
+     shadowRoot:false so light-DOM selectors reach the inner `.jog-a`. */
+  .pa-jog-controls nc-jog-control .jog-a { display: none !important; }
+
+  /* Monaco editor container in Events tab — fixed height so Monaco's
+     internal layout has a stable box to render into. `flex: 1` inside a
+     scrolling flex-column parent left Monaco with an ambiguous height
+     and it would render narrower than its container, spilling visually
+     past the card edge. */
+  .pa-monaco {
+    width: 100%;
+    height: 280px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .pa-events-card {
+    overflow: hidden;
+    gap: 2px;
+    padding: 12px 14px;
+  }
+  .pa-events-card .pa-card-title { margin-bottom: 2px; }
+  .pa-events-card .pa-card-help { margin-bottom: 6px; }
+
+  /* Confirm modal (used when switching to Custom layout to offer
+     auto-populating slots from the Linear-array values). */
+  .pa-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .pa-modal-backdrop.pa-open { display: flex; }
+  .pa-modal-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-medium);
+    padding: 20px 22px;
+    max-width: 460px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.35);
+  }
+  .pa-modal-title {
+    margin: 0 0 10px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--color-text-primary);
+  }
+  .pa-modal-body {
+    margin: 0 0 18px;
+    font-size: 0.95rem;
+    color: var(--color-text-secondary);
+    line-height: 1.5;
+  }
+  .pa-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+</style>
+
+<div class="pa-wrapper">
+  <div class="pa-container">
+    <!-- Sidebar -->
+    <aside class="pa-sidebar">
+      <div class="pa-sidebar-header">
+        <span class="pa-sidebar-eyebrow">ncSender</span>
+        <span class="pa-sidebar-title">Pneumatic ATC</span>
+      </div>
+      <nav class="pa-sidebar-nav">
+        <button type="button" class="pa-nav-btn active" data-nav="rack">
+          <span class="pa-nav-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="6" width="18" height="12" rx="2"/>
+              <path d="M7 10v4M11 10v4M15 10v4M19 10v4"/>
+            </svg>
+          </span>
+          <span class="pa-nav-label">Rack Setup</span>
+          <span class="pa-tab-caret" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="pa-nav-btn" data-nav="tls">
+          <span class="pa-nav-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2v6M8 4h8M6 8h12v12H6z"/>
+              <path d="M9 12h6M9 16h6"/>
+            </svg>
+          </span>
+          <span class="pa-nav-label">TLS</span>
+          <span class="pa-tab-caret" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="pa-nav-btn" data-nav="manual">
+          <span class="pa-nav-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 11V6a2 2 0 0 1 4 0v5"/>
+              <path d="M13 8V4a2 2 0 0 1 4 0v9"/>
+              <path d="M17 9a2 2 0 0 1 4 0v6a7 7 0 0 1-7 7h-2a7 7 0 0 1-6.24-3.79L3 15a2 2 0 0 1 2.83-2.83l1.87 1.88"/>
+              <path d="M9 11V4a2 2 0 0 0-4 0v11"/>
+            </svg>
+          </span>
+          <span class="pa-nav-label">Manual</span>
+          <span class="pa-tab-caret" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="pa-nav-btn" data-nav="events">
+          <span class="pa-nav-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 6h16M4 12h16M4 18h10"/>
+            </svg>
+          </span>
+          <span class="pa-nav-label">Events</span>
+          <span class="pa-tab-caret" aria-hidden="true"></span>
+        </button>
+      </nav>
+      <div class="pa-sidebar-footer">
+        <button type="button" class="pa-close-btn" id="pa-close-btn">Close</button>
+      </div>
+    </aside>
+
+    <!-- ===================== RACK SETUP ===================== -->
+    <section class="pa-content active" data-view="rack">
+      <header class="pa-panel-header">
+        <h2 class="pa-panel-title">Rack Setup</h2>
+        <!-- Header widgets — Machine DRO (left) + Step & Jog (right). Both
+             stay pinned above the scrolling panel; hidden on tabs that
+             don't need it (Events). -->
+        <div class="pa-header-cards">
+          <div class="pa-header-card">
+            <div class="pa-mcoord">
+              <div class="pa-mcoord-title">Machine Coordinates</div>
+              <div class="pa-mcoord-row">
+                <div class="pa-mcoord-cell"><span class="pa-mcoord-axis">X</span><span class="pa-mcoord-value pa-axis-x">0.000</span></div>
+                <div class="pa-mcoord-cell"><span class="pa-mcoord-axis">Y</span><span class="pa-mcoord-value pa-axis-y">0.000</span></div>
+                <div class="pa-mcoord-cell"><span class="pa-mcoord-axis">Z</span><span class="pa-mcoord-value pa-axis-z">0.000</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="pa-header-card">
+            <div class="pa-jog-controls">
+              <nc-step-control></nc-step-control>
+              <nc-jog-control></nc-jog-control>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="pa-panel">
+
+        <!-- Size and Holding -->
+        <div class="pa-card">
+          <h3 class="pa-card-title">Size and Holding</h3>
+          <div class="pa-row-3">
+            <div class="pa-field">
+              <label for="pa-slots">Number of Slots</label>
+              <select class="pa-select" id="pa-slots">
+                <option value="1">1</option><option value="2">2</option>
+                <option value="3">3</option><option value="4">4</option>
+                <option value="5">5</option><option value="6" selected>6</option>
+                <option value="7">7</option><option value="8">8</option>
+              </select>
+            </div>
+            <div class="pa-field">
+              <label for="pa-clamp-aux">Clamp Aux Output</label>
+              <select class="pa-select" id="pa-clamp-aux"></select>
+            </div>
+            <div class="pa-field">
+              <label for="pa-rack-holding">Rack Holding</label>
+              <select class="pa-select" id="pa-rack-holding">
+                <option value="Fork" selected>Fork</option>
+                <option value="Cup" disabled>Cup (coming soon)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Layout -->
+        <div class="pa-card">
+          <div class="pa-field-inline">
+            <h3 class="pa-card-title">Layout</h3>
+            <div class="pa-segment" id="pa-layout-mode">
+              <button type="button" class="pa-segment-btn active" data-value="linear">Linear array</button>
+              <button type="button" class="pa-segment-btn" data-value="custom">Custom</button>
+              <div class="pa-segment-indicator"></div>
+            </div>
+          </div>
+
+          <!-- LINEAR MODE -->
+          <div class="pa-collapse active" data-mode="linear">
+            <div class="pa-field-inline">
+              <label>Orientation</label>
+              <div class="pa-segment" id="pa-orientation">
+                <button type="button" class="pa-segment-btn active" data-value="Y">Y</button>
+                <button type="button" class="pa-segment-btn" data-value="X">X</button>
+                <div class="pa-segment-indicator"></div>
+              </div>
+            </div>
+            <div class="pa-field-inline">
+              <label>Direction</label>
+              <div class="pa-segment" id="pa-direction">
+                <button type="button" class="pa-segment-btn active" data-value="Negative">−</button>
+                <button type="button" class="pa-segment-btn" data-value="Positive">+</button>
+                <div class="pa-segment-indicator"></div>
+              </div>
+            </div>
+            <div class="pa-field-inline">
+              <label id="pa-label-slot-distance">Slot Distance (mm)</label>
+              <input class="pa-input" type="number" id="pa-slot-distance" value="45" min="1" step="0.1">
+            </div>
+
+            <div>
+              <label class="pa-group-label">Slot 1 Position</label>
+              <div class="pa-coord-row">
+                <div class="pa-coord">
+                  <span class="pa-coord-label">X</span>
+                  <input class="pa-input" type="number" id="pa-slot1-x" value="0" step="0.001">
+                </div>
+                <div class="pa-coord">
+                  <span class="pa-coord-label">Y</span>
+                  <input class="pa-input" type="number" id="pa-slot1-y" value="0" step="0.001">
+                </div>
+                <div class="pa-coord">
+                  <span class="pa-coord-label">Z</span>
+                  <input class="pa-input" type="number" id="pa-slot1-z" value="-100" step="0.001">
+                </div>
+                <button type="button" class="pa-btn pa-btn-sm" id="pa-slot1-grab">Grab current</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- CUSTOM MODE -->
+          <div class="pa-collapse" data-mode="custom">
+            <table class="pa-slot-table" id="pa-slot-table">
+              <thead>
+                <tr>
+                  <th>Slot</th>
+                  <th>X</th>
+                  <th>Y</th>
+                  <th class="pa-slot-actions-col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="pa-slot-table-body"></tbody>
+            </table>
+            <div class="pa-row">
+              <div class="pa-coord">
+                <span class="pa-coord-label" style="min-width: 96px;">Engagement Z</span>
+                <input class="pa-input" type="number" id="pa-slot1-z-custom" value="-100" step="0.001">
+              </div>
+            </div>
+            <p class="pa-card-help" style="margin: 0;">
+              Engagement Z is shared across all slots — the depth the spindle descends into the fork.
+            </p>
+          </div>
+        </div>
+
+        <!-- Engage Motion -->
+        <div class="pa-card">
+          <h3 class="pa-card-title">Engage Motion</h3>
+          <p class="pa-card-help">Spindle slide into / out of the fork holder.</p>
+          <div class="pa-field-inline">
+            <label>Slide Direction</label>
+            <div class="pa-segment" id="pa-slide-direction">
+              <button type="button" class="pa-segment-btn active" data-value="Negative">−</button>
+              <button type="button" class="pa-segment-btn" data-value="Positive">+</button>
+              <div class="pa-segment-indicator"></div>
+            </div>
+          </div>
+          <div class="pa-row-3">
+            <div class="pa-field">
+              <label id="pa-label-slide-distance">Slide Distance (mm)</label>
+              <input class="pa-input" type="number" id="pa-slide-distance" value="40" min="0" step="0.1">
+            </div>
+            <div class="pa-field">
+              <label id="pa-label-slide-speed">Slide Speed (mm/min)</label>
+              <input class="pa-input" type="number" id="pa-slide-speed" value="500" min="1" step="1">
+            </div>
+            <div class="pa-field">
+              <label id="pa-label-z-retract">Z-Retract (mm)</label>
+              <input class="pa-input" type="number" id="pa-z-retract" value="7" min="0" step="0.1">
+            </div>
+          </div>
+        </div>
+
+        <!-- Options -->
+        <div class="pa-card">
+          <h3 class="pa-card-title">Options</h3>
+          <div class="pa-field-inline">
+            <label>Show G-Code Commands on Terminal</label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-show-macro-command">
+              <span class="pa-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <footer class="pa-panel-footer">
+        <button type="button" class="pa-save-btn" data-save>Save</button>
+      </footer>
+    </section>
+
+    <!-- ===================== TOOL LENGTH SETTER ===================== -->
+    <section class="pa-content" data-view="tls">
+      <header class="pa-panel-header">
+        <h2 class="pa-panel-title">Tool Length Setter</h2>
+        <div class="pa-header-cards">
+          <div class="pa-header-card">
+            <div class="pa-mcoord">
+              <div class="pa-mcoord-title">Machine Coordinates</div>
+              <div class="pa-mcoord-row">
+                <div class="pa-mcoord-cell"><span class="pa-mcoord-axis">X</span><span class="pa-mcoord-value pa-axis-x">0.000</span></div>
+                <div class="pa-mcoord-cell"><span class="pa-mcoord-axis">Y</span><span class="pa-mcoord-value pa-axis-y">0.000</span></div>
+                <div class="pa-mcoord-cell"><span class="pa-mcoord-axis">Z</span><span class="pa-mcoord-value pa-axis-z">0.000</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="pa-header-card">
+            <div class="pa-jog-controls">
+              <nc-step-control></nc-step-control>
+              <nc-jog-control></nc-jog-control>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="pa-panel">
+        <div class="pa-card">
+          <h3 class="pa-card-title">Strategy</h3>
+          <div class="pa-field">
+            <label for="pa-tls-mode">TLS Strategy</label>
+            <select class="pa-select" id="pa-tls-mode">
+              <option value="always" selected>Probe after every tool change</option>
+              <option value="library">Use tool library offset (probe when missing)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="pa-card">
+          <h3 class="pa-card-title">Tool Setter Location</h3>
+          <p class="pa-card-help">Machine XY where the tool setter sits. Jog the tip of a known tool over it, then Grab.</p>
+          <div>
+            <label class="pa-group-label">Coordinates</label>
+            <div class="pa-coord-row-2">
+              <div class="pa-coord">
+                <span class="pa-coord-label">X</span>
+                <input class="pa-input" type="number" id="pa-toolsetter-x" value="0" step="0.001">
+              </div>
+              <div class="pa-coord">
+                <span class="pa-coord-label">Y</span>
+                <input class="pa-input" type="number" id="pa-toolsetter-y" value="0" step="0.001">
+              </div>
+              <button type="button" class="pa-btn pa-btn-sm" id="pa-toolsetter-grab">Grab current</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="pa-card" id="pa-tls-position">
+          <h3 class="pa-card-title">Probe Settings</h3>
+          <div class="pa-row-3">
+            <div class="pa-field">
+              <label id="pa-label-seek-distance">Seek Distance (mm)</label>
+              <input class="pa-input" type="number" id="pa-seek-distance" value="50" min="1" step="0.1">
+            </div>
+            <div class="pa-field">
+              <label id="pa-label-seek-feedrate">Seek Feedrate (mm/min)</label>
+              <input class="pa-input" type="number" id="pa-seek-feedrate" value="500" min="1" step="1">
+            </div>
+            <div class="pa-field">
+              <label>TLS Aux Output</label>
+              <select class="pa-select" id="pa-tls-aux"></select>
+            </div>
+          </div>
+
+          <div class="pa-field-inline" style="margin-top: 12px;">
+            <label>Perform TLS after first <code>$H</code></label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-perform-tls-after-home">
+              <span class="pa-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <footer class="pa-panel-footer">
+        <button type="button" class="pa-save-btn" data-save>Save</button>
+      </footer>
+    </section>
+
+    <!-- ===================== MANUAL TOOL ===================== -->
+    <section class="pa-content" data-view="manual">
+      <header class="pa-panel-header">
+        <h2 class="pa-panel-title">Manual Tool</h2>
+        <div class="pa-header-cards">
+          <div class="pa-header-card">
+            <div class="pa-mcoord">
+              <div class="pa-mcoord-title">Machine Coordinates</div>
+              <div class="pa-mcoord-row">
+                <div class="pa-mcoord-cell"><span class="pa-mcoord-axis">X</span><span class="pa-mcoord-value pa-axis-x">0.000</span></div>
+                <div class="pa-mcoord-cell"><span class="pa-mcoord-axis">Y</span><span class="pa-mcoord-value pa-axis-y">0.000</span></div>
+                <div class="pa-mcoord-cell"><span class="pa-mcoord-axis">Z</span><span class="pa-mcoord-value pa-axis-z">0.000</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="pa-header-card">
+            <div class="pa-jog-controls">
+              <nc-step-control></nc-step-control>
+              <nc-jog-control></nc-jog-control>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="pa-panel">
+        <div class="pa-card">
+          <h3 class="pa-card-title">Manual Tool Position</h3>
+          <p class="pa-card-help">Used when the requested tool number is greater than the rack capacity — the spindle parks here and prompts the operator to swap the bit by hand.</p>
+          <div>
+            <label class="pa-group-label">Coordinates</label>
+            <div class="pa-coord-row-2">
+              <div class="pa-coord">
+                <span class="pa-coord-label">X</span>
+                <input class="pa-input" type="number" id="pa-manualtool-x" value="0" step="0.001">
+              </div>
+              <div class="pa-coord">
+                <span class="pa-coord-label">Y</span>
+                <input class="pa-input" type="number" id="pa-manualtool-y" value="0" step="0.001">
+              </div>
+              <button type="button" class="pa-btn pa-btn-sm" id="pa-manualtool-grab">Grab current</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="pa-panel-footer">
+        <button type="button" class="pa-save-btn" data-save>Save</button>
+      </footer>
+    </section>
+
+    <!-- ===================== EVENTS ===================== -->
+    <section class="pa-content" data-view="events">
+      <header class="pa-panel-header">
+        <h2 class="pa-panel-title">Events</h2>
+      </header>
+
+      <div class="pa-panel">
+        <div class="pa-card pa-events-card">
+          <h3 class="pa-card-title">Pre Tool Change</h3>
+          <p class="pa-card-help">G-code commands executed before each tool change (M6). E.g. turn off coolant, open ATC cover.</p>
+          <div id="pa-pre-editor" class="pa-monaco"></div>
+        </div>
+        <div class="pa-card pa-events-card">
+          <h3 class="pa-card-title">Post Tool Change</h3>
+          <p class="pa-card-help">G-code commands executed after each tool change (M6) completes. E.g. close ATC cover, restore coolant.</p>
+          <div id="pa-post-editor" class="pa-monaco"></div>
+        </div>
+        <div class="pa-card pa-events-card">
+          <h3 class="pa-card-title">Abort Event</h3>
+          <p class="pa-card-help">G-code commands executed when a tool change is aborted (e.g. close ATC cover, stop spindle).</p>
+          <div id="pa-abort-editor" class="pa-monaco"></div>
+        </div>
+      </div>
+
+      <footer class="pa-panel-footer">
+        <button type="button" class="pa-save-btn" data-save>Save</button>
+      </footer>
+    </section>
+  </div>
+
+  <!-- Confirm modal used when switching to Custom layout mode. -->
+  <div class="pa-modal-backdrop" id="pa-modal">
+    <div class="pa-modal-card">
+      <h3 class="pa-modal-title">Auto-populate custom slots?</h3>
+      <p class="pa-modal-body">Fill each slot's X/Y from the Linear array values (Slot 1 + Distance × Direction)? You can fine-tune individual slots afterward. Choose <em>No</em> to keep the values already saved in the table.</p>
+      <div class="pa-modal-actions">
+        <button type="button" class="pa-btn pa-btn-ghost" id="pa-modal-no">No, keep existing</button>
+        <button type="button" class="pa-btn" id="pa-modal-yes">Yes, auto-populate</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  var FALLBACK_PORT = __SERVER_PORT__;
+  var initialConfig = __INITIAL_CONFIG__;
+  var BASE_URL = (window.ncSender && typeof window.ncSender.getApiBaseUrl === 'function')
+    ? window.ncSender.getApiBaseUrl(FALLBACK_PORT) : '';
+
+  var UNITS_PREFERENCE = 'metric';
+  var MM_PER_INCH = 25.4;
+  var lastMPos = { x: 0, y: 0, z: 0 };
+
+  var $ = function(id) { return document.getElementById(id); };
+  var qs = function(sel, root) { return (root || document).querySelector(sel); };
+  var qsa = function(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+
+  function fmtCoord(v) {
+    if (!Number.isFinite(v)) return '';
+    return (UNITS_PREFERENCE === 'imperial' ? (v / MM_PER_INCH).toFixed(4) : v.toFixed(3));
+  }
+  function toMetric(v) {
+    if (!Number.isFinite(v)) return v;
+    return UNITS_PREFERENCE === 'imperial' ? v * MM_PER_INCH : v;
+  }
+  function parseFloatOr(v, fallback) {
+    var n = Number.parseFloat(v);
+    return Number.isFinite(n) ? n : (fallback === undefined ? null : fallback);
+  }
+  function unitLabel() { return UNITS_PREFERENCE === 'imperial' ? 'in' : 'mm'; }
+  function feedLabel() { return UNITS_PREFERENCE === 'imperial' ? 'in/min' : 'mm/min'; }
+
+  // ---------- Sidebar nav ----------
+  qsa('.pa-nav-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var target = btn.getAttribute('data-nav');
+      qsa('.pa-nav-btn').forEach(function(b) { b.classList.toggle('active', b === btn); });
+      qsa('.pa-content').forEach(function(c) {
+        c.classList.toggle('active', c.getAttribute('data-view') === target);
+      });
+      if (target === 'events') setTimeout(layoutMonaco, 0);
+    });
+  });
+
+  // ---------- Segmented controls ----------
+  function initSegment(id, onChange) {
+    var seg = $(id);
+    if (!seg) return null;
+    var indicator = qs('.pa-segment-indicator', seg);
+    var buttons = qsa('.pa-segment-btn', seg);
+    function moveIndicator(btn) {
+      if (!btn || !indicator) return;
+      indicator.style.left = btn.offsetLeft + 'px';
+      indicator.style.width = btn.offsetWidth + 'px';
+    }
+    buttons.forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        buttons.forEach(function(b) { b.classList.toggle('active', b === btn); });
+        moveIndicator(btn);
+        if (onChange) onChange(btn.getAttribute('data-value'));
+      });
+    });
+    var active = qs('.pa-segment-btn.active', seg);
+    if (active) setTimeout(function() { moveIndicator(active); }, 0);
+    return {
+      set: function(v) {
+        var t = buttons.filter(function(b) { return b.getAttribute('data-value') === v; })[0];
+        if (t) t.click();
+      },
+      get: function() {
+        var b = qs('.pa-segment-btn.active', seg);
+        return b ? b.getAttribute('data-value') : null;
+      }
+    };
+  }
+
+  // Track the previous layout mode so we can distinguish a user-initiated
+  // linear→custom transition (offer auto-populate) from the initial load
+  // where segLayout.set(...) is called during applyInitial.
+  var lastLayoutMode = null;
+  var suppressLayoutModal = false;
+
+  var segLayout = initSegment('pa-layout-mode', function(v) {
+    var previousMode = lastLayoutMode;
+    lastLayoutMode = v;
+    qsa('.pa-collapse[data-mode]').forEach(function(el) {
+      el.classList.toggle('active', el.getAttribute('data-mode') === v);
+    });
+    if (v === 'linear') { syncLinearZFromCustom(); return; }
+    // v === 'custom'
+    syncCustomZFromLinear();
+    if (suppressLayoutModal || previousMode !== 'linear') {
+      rebuildSlotTable();
+      return;
+    }
+    showAutoPopulateConfirm().then(function(shouldPopulate) {
+      if (shouldPopulate) customCoords = computeLinearSlotMap();
+      rebuildSlotTable();
+    });
+  });
+  var segOrientation = initSegment('pa-orientation');
+  var segDirection = initSegment('pa-direction');
+  var segSlideDir = initSegment('pa-slide-direction');
+
+  // Promise-based confirm modal. Resolves true (populate) / false (keep).
+  function showAutoPopulateConfirm() {
+    return new Promise(function(resolve) {
+      var modal = $('pa-modal');
+      var yes = $('pa-modal-yes');
+      var no = $('pa-modal-no');
+      if (!modal || !yes || !no) { resolve(false); return; }
+      modal.classList.add('pa-open');
+      function cleanup(v) {
+        modal.classList.remove('pa-open');
+        yes.removeEventListener('click', onYes);
+        no.removeEventListener('click', onNo);
+        resolve(v);
+      }
+      function onYes() { cleanup(true); }
+      function onNo() { cleanup(false); }
+      yes.addEventListener('click', onYes);
+      no.addEventListener('click', onNo);
+    });
+  }
+
+  // Same math as commands.js `calculateSlotBase` — mirror it here so the
+  // client can preview the linear layout without a round trip.
+  function computeLinearSlotMap() {
+    var slots = parseInt($('pa-slots').value, 10) || 0;
+    var slot1X = toMetric(parseFloatOr($('pa-slot1-x').value, 0));
+    var slot1Y = toMetric(parseFloatOr($('pa-slot1-y').value, 0));
+    var distance = toMetric(parseFloatOr($('pa-slot-distance').value, 0));
+    var orientation = segOrientation ? segOrientation.get() : 'Y';
+    var direction = segDirection ? segDirection.get() : 'Negative';
+    var dirSign = direction === 'Negative' ? -1 : 1;
+    var out = {};
+    for (var i = 1; i <= slots; i += 1) {
+      var offset = (i - 1) * distance * dirSign;
+      out[i] = orientation === 'Y'
+        ? { x: slot1X, y: slot1Y + offset }
+        : { x: slot1X + offset, y: slot1Y };
+    }
+    return out;
+  }
+
+  // TLS mode select — probe settings are relevant in both modes (library
+  // mode still probes when a tool has no stored TLO), so no reveal logic.
+  var tlsModeSelect = $('pa-tls-mode');
+  function updateTlsMode() { /* no-op — kept so callers still work */ }
+
+  // ---------- Custom slot table ----------
+  //
+  // Rows are rebuilt whenever slot count or mode changes. Per-row user input
+  // is cached in `customCoords` so mode toggles don't wipe entries.
+  var customCoords = {};
+
+  function rebuildSlotTable() {
+    var body = $('pa-slot-table-body');
+    if (!body) return;
+    var count = parseInt($('pa-slots').value, 10) || 1;
+    body.innerHTML = '';
+    for (var i = 1; i <= count; i += 1) {
+      var row = document.createElement('tr');
+      var coord = customCoords[i] || { x: 0, y: 0 };
+      row.innerHTML = ''
+        + '<td>' + i + '</td>'
+        + '<td><input class="pa-input" type="number" data-slot="' + i + '" data-axis="x" value="' + fmtCoord(coord.x) + '" step="0.001"></td>'
+        + '<td><input class="pa-input" type="number" data-slot="' + i + '" data-axis="y" value="' + fmtCoord(coord.y) + '" step="0.001"></td>'
+        + '<td class="pa-slot-actions">'
+        + '<button type="button" class="pa-btn pa-btn-sm" data-slot-grab="' + i + '">Grab</button>'
+        + '</td>';
+      body.appendChild(row);
+    }
+  }
+
+  document.addEventListener('input', function(evt) {
+    var el = evt.target;
+    if (!el || !el.getAttribute) return;
+    var slot = parseInt(el.getAttribute('data-slot'), 10);
+    var axis = el.getAttribute('data-axis');
+    if (!slot || !axis) return;
+    if (!customCoords[slot]) customCoords[slot] = { x: 0, y: 0 };
+    customCoords[slot][axis] = toMetric(parseFloatOr(el.value, 0));
+  });
+  document.addEventListener('click', function(evt) {
+    var el = evt.target;
+    if (!el || !el.getAttribute) return;
+    var grabSlot = el.getAttribute('data-slot-grab');
+    var clearSlot = el.getAttribute('data-slot-clear');
+    if (grabSlot) {
+      var s = parseInt(grabSlot, 10);
+      customCoords[s] = { x: lastMPos.x, y: lastMPos.y };
+      var xIn = qs('input[data-slot="' + s + '"][data-axis="x"]');
+      var yIn = qs('input[data-slot="' + s + '"][data-axis="y"]');
+      if (xIn) xIn.value = fmtCoord(lastMPos.x);
+      if (yIn) yIn.value = fmtCoord(lastMPos.y);
+    } else if (clearSlot) {
+      var c = parseInt(clearSlot, 10);
+      customCoords[c] = { x: 0, y: 0 };
+      var xI = qs('input[data-slot="' + c + '"][data-axis="x"]');
+      var yI = qs('input[data-slot="' + c + '"][data-axis="y"]');
+      if (xI) xI.value = fmtCoord(0);
+      if (yI) yI.value = fmtCoord(0);
+    }
+  });
+
+  // Engagement Z is shared between the two modes; sync when switching.
+  function syncCustomZFromLinear() {
+    var z = parseFloatOr($('pa-slot1-z').value, -100);
+    $('pa-slot1-z-custom').value = fmtCoord(toMetric(z));
+  }
+  function syncLinearZFromCustom() {
+    var z = parseFloatOr($('pa-slot1-z-custom').value, -100);
+    $('pa-slot1-z').value = fmtCoord(toMetric(z));
+  }
+
+  $('pa-slots').addEventListener('change', function() {
+    if (segLayout && segLayout.get() === 'custom') rebuildSlotTable();
+  });
+
+  // ---------- Grab buttons (single-coord targets) ----------
+  function grabInto(prefix) {
+    var xIn = $('pa-' + prefix + '-x');
+    var yIn = $('pa-' + prefix + '-y');
+    var zIn = $('pa-' + prefix + '-z');
+    if (xIn) xIn.value = fmtCoord(lastMPos.x);
+    if (yIn) yIn.value = fmtCoord(lastMPos.y);
+    if (zIn) zIn.value = fmtCoord(lastMPos.z);
+  }
+  function bindGrab(btnId, prefix) {
+    var btn = $(btnId);
+    if (!btn) return;
+    btn.addEventListener('click', function() { grabInto(prefix); });
+  }
+  bindGrab('pa-slot1-grab', 'slot1');
+  bindGrab('pa-toolsetter-grab', 'toolsetter');
+  bindGrab('pa-manualtool-grab', 'manualtool');
+
+  // ---------- Machine coord subscription ----------
+  function extractCoords(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    var nested = ['machineState', 'lastStatus', 'statusReport'];
+    for (var i = 0; i < nested.length; i += 1) {
+      if (payload[nested[i]] && typeof payload[nested[i]] === 'object') {
+        var n = extractCoords(payload[nested[i]]);
+        if (n) return n;
+      }
+    }
+    var cands = [payload.machineCoords, payload.MPos, payload.MPOS, payload.mpos, payload.machinePosition];
+    for (var j = 0; j < cands.length; j += 1) {
+      var raw = cands[j];
+      if (typeof raw === 'string') {
+        var parts = raw.split(',').map(function(p) { return Number.parseFloat(p.trim()); });
+        if (parts.length >= 2 && parts.every(Number.isFinite)) return { x: parts[0], y: parts[1], z: parts[2] };
+      } else if (Array.isArray(raw) && raw.length >= 2) {
+        return { x: raw[0], y: raw[1], z: raw[2] };
+      } else if (raw && typeof raw === 'object' && Number.isFinite(raw.x) && Number.isFinite(raw.y)) {
+        return { x: raw.x, y: raw.y, z: raw.z };
+      }
+    }
+    return null;
+  }
+  // Axis readouts are duplicated in each view's header (Rack Setup, TLS,
+  // Manual Tool) — update all copies at once via class selector.
+  function setAxis(cls, value) {
+    var text = fmtCoord(value);
+    qsa('.' + cls).forEach(function(el) { el.textContent = text; });
+  }
+  function updateAxisReadout(c) {
+    if (!c) return;
+    if (c.x !== undefined) { lastMPos.x = c.x; setAxis('pa-axis-x', c.x); }
+    if (c.y !== undefined) { lastMPos.y = c.y; setAxis('pa-axis-y', c.y); }
+    if (c.z !== undefined) { lastMPos.z = c.z; setAxis('pa-axis-z', c.z); }
+  }
+  window.addEventListener('message', function(evt) {
+    if (!evt.data || evt.data.type !== 'server-state-update') return;
+    var c = extractCoords(evt.data.state);
+    if (c) updateAxisReadout(c);
+  });
+
+  // ---------- Aux output populate ----------
+  async function populateAuxOutputs() {
+    try {
+      var [stateRes, settingsRes] = await Promise.all([
+        fetch(BASE_URL + '/api/server-state'),
+        fetch(BASE_URL + '/api/settings')
+      ]);
+      if (!stateRes.ok) return;
+      var state = await stateRes.json();
+      var settings = settingsRes.ok ? await settingsRes.json() : {};
+      var outputPins = (state.machineState && state.machineState.outputPins) || state.outputPins || 0;
+      var auxConfig = settings.auxOutputs || [];
+      var nameMap = {};
+      auxConfig.forEach(function(o) { if (o.on && o.name) nameMap[o.on.toUpperCase()] = o.name; });
+
+      function fill(select, includeDisabled, selectedValue) {
+        if (!select) return;
+        while (select.firstChild) select.removeChild(select.firstChild);
+        if (includeDisabled) {
+          var opt = document.createElement('option');
+          opt.value = '-1'; opt.textContent = 'Disabled';
+          select.appendChild(opt);
+        }
+        ['M8', 'M7'].forEach(function(code) {
+          var opt = document.createElement('option');
+          opt.value = code;
+          opt.textContent = nameMap[code] || code;
+          select.appendChild(opt);
+        });
+        for (var i = 0; i < outputPins; i += 1) {
+          var opt = document.createElement('option');
+          var cmd = 'M64 P' + i;
+          opt.value = String(i);
+          opt.textContent = nameMap[cmd.toUpperCase()] || cmd;
+          select.appendChild(opt);
+        }
+        if (selectedValue !== undefined && selectedValue !== null) {
+          select.value = String(selectedValue);
+        }
+      }
+      fill($('pa-tls-aux'), true, initialConfig.tlsAuxOutput ?? -1);
+      fill($('pa-clamp-aux'), false, initialConfig.clampAuxOutput);
+    } catch (e) {
+      console.error('[PneumaticATC] populateAuxOutputs failed', e);
+    }
+  }
+
+  // ---------- Monaco editors ----------
+  var preEditor = null;
+  var postEditor = null;
+  var abortEditor = null;
+  function isLight() { return document.body.classList.contains('theme-light'); }
+  function initMonaco() {
+    if (!window.monaco) return;
+    var opts = {
+      language: 'gcode',
+      theme: isLight() ? 'ncsender-light' : 'ncsender-dark',
+      minimap: { enabled: false },
+      lineNumbers: 'on',
+      scrollBeyondLastLine: false,
+      wordWrap: 'on',
+      automaticLayout: true,
+      fontSize: 12,
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
+      renderLineHighlight: 'none',
+      folding: false,
+      glyphMargin: false,
+      lineDecorationsWidth: 8,
+      lineNumbersMinChars: 2,
+      scrollbar: { vertical: 'auto', horizontal: 'hidden', useShadows: false, verticalScrollbarSize: 6 }
+    };
+    if ($('pa-pre-editor'))   preEditor   = monaco.editor.create($('pa-pre-editor'),   Object.assign({}, opts, { value: initialConfig.preToolChangeGcode || '' }));
+    if ($('pa-post-editor'))  postEditor  = monaco.editor.create($('pa-post-editor'),  Object.assign({}, opts, { value: initialConfig.postToolChangeGcode || '' }));
+    if ($('pa-abort-editor')) abortEditor = monaco.editor.create($('pa-abort-editor'), Object.assign({}, opts, { value: initialConfig.abortEventGcode    || '' }));
+
+    new MutationObserver(function() {
+      monaco.editor.setTheme(isLight() ? 'ncsender-light' : 'ncsender-dark');
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  }
+  function layoutMonaco() {
+    [preEditor, postEditor, abortEditor].forEach(function(e) { if (e) e.layout(); });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initMonaco);
+  else setTimeout(initMonaco, 50);
+
+  // ---------- Apply initial settings ----------
+  function applyInitial() {
+    $('pa-slots').value = String(initialConfig.slots ?? initialConfig.pockets ?? 6);
+    if (segOrientation)  segOrientation.set(initialConfig.orientation || 'Y');
+    if (segDirection)    segDirection.set(initialConfig.direction || 'Negative');
+    if (segSlideDir)     segSlideDir.set(initialConfig.slideDirection || 'Negative');
+    // Suppress the auto-populate modal during initial load — user didn't
+    // just switch modes, we're restoring a saved value.
+    suppressLayoutModal = true;
+    if (segLayout)       segLayout.set(initialConfig.layoutMode || 'linear');
+    suppressLayoutModal = false;
+    lastLayoutMode = segLayout ? segLayout.get() : 'linear';
+
+    var rackHolding = $('pa-rack-holding');
+    if (rackHolding && initialConfig.rackHolding) rackHolding.value = initialConfig.rackHolding;
+
+    $('pa-slide-distance').value = fmtCoord(initialConfig.slideDistance ?? 40);
+    $('pa-slide-speed').value    = String(initialConfig.slideSpeed ?? 500);
+    $('pa-slot-distance').value  = fmtCoord(initialConfig.slotDistance ?? initialConfig.pocketDistance ?? 45);
+    $('pa-z-retract').value      = fmtCoord(initialConfig.zRetract ?? 7);
+    $('pa-seek-distance').value  = fmtCoord(initialConfig.seekDistance ?? 50);
+    $('pa-seek-feedrate').value  = String(initialConfig.seekFeedrate ?? 500);
+
+    var slot1 = initialConfig.slot1 || initialConfig.pocket1 || { x: 0, y: 0, z: -100 };
+    $('pa-slot1-x').value = fmtCoord(slot1.x ?? 0);
+    $('pa-slot1-y').value = fmtCoord(slot1.y ?? 0);
+    $('pa-slot1-z').value = fmtCoord(slot1.z ?? initialConfig.slot1Z ?? -100);
+    $('pa-slot1-z-custom').value = fmtCoord(slot1.z ?? initialConfig.slot1Z ?? -100);
+
+    var toolsetter = initialConfig.toolsetter || { x: 0, y: 0 };
+    $('pa-toolsetter-x').value = fmtCoord(toolsetter.x ?? 0);
+    $('pa-toolsetter-y').value = fmtCoord(toolsetter.y ?? 0);
+
+    var manual = initialConfig.manualTool || { x: 0, y: 0 };
+    $('pa-manualtool-x').value = fmtCoord(manual.x ?? 0);
+    $('pa-manualtool-y').value = fmtCoord(manual.y ?? 0);
+
+    $('pa-show-macro-command').checked = !!initialConfig.showMacroCommand;
+    $('pa-perform-tls-after-home').checked = !!initialConfig.performTlsAfterHome;
+
+    // Migrate legacy 'first' (removed in v0.1.35) → 'library'; the new
+    // 'library' mode probes automatically when the tool has no TLO yet.
+    // Fresh installs (no saved value) default to 'always' — safest for
+    // first-time setup where library offsets aren't populated.
+    var savedMode = initialConfig.tlsMode === 'first' ? 'library'
+                  : (initialConfig.tlsMode || (initialConfig.performTlsOnToolChange === false ? 'library' : 'always'));
+    tlsModeSelect.value = savedMode;
+    updateTlsMode();
+
+    (initialConfig.slotCoords || []).forEach(function(sc) {
+      if (sc && sc.n) customCoords[sc.n] = { x: sc.x ?? 0, y: sc.y ?? 0 };
+    });
+
+    if (segLayout && segLayout.get() === 'custom') rebuildSlotTable();
+  }
+
+  function updateLabelUnits() {
+    var u = unitLabel(), f = feedLabel();
+    $('pa-label-slot-distance').textContent = 'Slot Distance (' + u + ')';
+    $('pa-label-slide-distance').textContent = 'Slide Distance (' + u + ')';
+    $('pa-label-slide-speed').textContent = 'Slide Speed (' + f + ')';
+    $('pa-label-z-retract').textContent = 'Z-Retract (' + u + ')';
+    $('pa-label-seek-distance').textContent = 'Seek Distance (' + u + ')';
+    $('pa-label-seek-feedrate').textContent = 'Seek Feedrate (' + f + ')';
+  }
+
+  // ---------- Save ----------
+  function parseAuxValue(sel) {
+    if (!sel) return -1;
+    var v = sel.value;
+    if (v === 'M7' || v === 'M8') return v;
+    var n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : -1;
+  }
+
+  function gatherFormData() {
+    var layout = segLayout ? segLayout.get() : 'linear';
+    var slot1Z = toMetric(parseFloatOr(
+      layout === 'custom' ? $('pa-slot1-z-custom').value : $('pa-slot1-z').value,
+      -100
+    ));
+
+    var slotCoords = [];
+    if (layout === 'custom') {
+      var count = parseInt($('pa-slots').value, 10) || 0;
+      for (var i = 1; i <= count; i += 1) {
+        var c = customCoords[i] || { x: 0, y: 0 };
+        slotCoords.push({ n: i, x: c.x, y: c.y });
+      }
+    }
+
+    var tlsMode = tlsModeSelect.value || 'library';
+    return {
+      slots: parseInt($('pa-slots').value, 10) || 1,
+      layoutMode: layout,
+      clampAuxOutput: parseAuxValue($('pa-clamp-aux')),
+      rackHolding: $('pa-rack-holding').value || 'Fork',
+
+      orientation: segOrientation ? segOrientation.get() : 'Y',
+      direction: segDirection ? segDirection.get() : 'Negative',
+      slotDistance: toMetric(parseFloatOr($('pa-slot-distance').value, 45)),
+      slot1: {
+        x: toMetric(parseFloatOr($('pa-slot1-x').value, 0)),
+        y: toMetric(parseFloatOr($('pa-slot1-y').value, 0)),
+        z: slot1Z
+      },
+      slot1Z: slot1Z,
+      slotCoords: slotCoords,
+
+      slideDirection: segSlideDir ? segSlideDir.get() : 'Negative',
+      slideDistance: toMetric(parseFloatOr($('pa-slide-distance').value, 40)),
+      slideSpeed: parseFloatOr($('pa-slide-speed').value, 500),
+      zRetract: toMetric(parseFloatOr($('pa-z-retract').value, 7)),
+
+      tlsMode: tlsMode,
+      performTlsOnToolChange: tlsMode === 'always',
+      performTlsAfterHome: $('pa-perform-tls-after-home').checked,
+      toolsetter: {
+        x: toMetric(parseFloatOr($('pa-toolsetter-x').value, 0)),
+        y: toMetric(parseFloatOr($('pa-toolsetter-y').value, 0))
+      },
+      seekDistance: toMetric(parseFloatOr($('pa-seek-distance').value, 50)),
+      seekFeedrate: parseFloatOr($('pa-seek-feedrate').value, 500),
+      tlsAuxOutput: parseAuxValue($('pa-tls-aux')),
+
+      manualTool: {
+        x: toMetric(parseFloatOr($('pa-manualtool-x').value, 0)),
+        y: toMetric(parseFloatOr($('pa-manualtool-y').value, 0))
+      },
+
+      showMacroCommand: $('pa-show-macro-command').checked,
+      preToolChangeGcode: preEditor ? preEditor.getValue() : (initialConfig.preToolChangeGcode || ''),
+      postToolChangeGcode: postEditor ? postEditor.getValue() : (initialConfig.postToolChangeGcode || ''),
+      abortEventGcode: abortEditor ? abortEditor.getValue() : (initialConfig.abortEventGcode || '')
+    };
+  }
+
+  $('pa-close-btn').addEventListener('click', function() {
+    window.postMessage({ type: 'close-plugin-dialog' }, '*');
+  });
+
+  qsa('[data-save]').forEach(function(saveBtn) {
+    saveBtn.addEventListener('click', async function() {
+      if (saveBtn.disabled) return;
+      saveBtn.disabled = true;
+      var payload = gatherFormData();
+      try {
+        var res = await fetch(BASE_URL + '/api/plugins/com.ncsender.pneumaticatc/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('save failed: ' + res.status);
+        await fetch(BASE_URL + '/api/settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tool: { count: payload.slots, source: 'com.ncsender.pneumaticatc', manual: true, tls: true, probe: false }
+          })
+        });
+        saveBtn.textContent = 'Saved';
+        saveBtn.classList.add('pa-saved');
+        setTimeout(function() {
+          saveBtn.textContent = 'Save';
+          saveBtn.classList.remove('pa-saved');
+          saveBtn.disabled = false;
+        }, 1500);
+      } catch (e) {
+        console.error('[PneumaticATC] save failed', e);
+        window.alert('Save failed: ' + e.message);
+        saveBtn.disabled = false;
+      }
+    });
+  });
+
+  // ---------- Bootstrap ----------
+  fetch(BASE_URL + '/api/settings')
+    .then(function(r) { return r.ok ? r.json() : {}; })
+    .then(function(s) { UNITS_PREFERENCE = s.unitsPreference || 'metric'; })
+    .catch(function() {})
+    .finally(function() {
+      applyInitial();
+      updateLabelUnits();
+      fetch(BASE_URL + '/api/server-state')
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(s) { if (s) updateAxisReadout(extractCoords(s)); })
+        .catch(function() {});
+    });
+
+  populateAuxOutputs();
+})();
+</script>
