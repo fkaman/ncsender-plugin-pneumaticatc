@@ -1118,6 +1118,22 @@
             </div>
           </div>
         </div>
+
+        <div class="pa-card">
+          <h3 class="pa-card-title">Automatic Release/Clamp</h3>
+          <p class="pa-card-help">Tap Release or Clamp to fire it right away. Hold for 1 second to arm a countdown, so you have time to walk to the spindle first.</p>
+          <div class="pa-field-inline">
+            <label for="pa-dialog-countdown-sec">Countdown (seconds)</label>
+            <input class="pa-input" type="number" id="pa-dialog-countdown-sec" value="5" step="1" min="1" max="30" style="width: 88px; text-align: right;">
+          </div>
+          <div class="pa-field-inline" style="margin-top: 12px;">
+            <label for="pa-dialog-chain-steps">Chain Release → Clamp on one arm</label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-dialog-chain-steps">
+              <span class="pa-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
       </div>
 
       <footer class="pa-panel-footer">
@@ -1501,9 +1517,13 @@
         });
         for (var i = 0; i < outputPins; i += 1) {
           var opt = document.createElement('option');
-          var cmd = 'M64 P' + i;
+          // Value stays numeric (0, 1, ...) — the plugin still generates
+          // M64/M65 P<n> at runtime. The nameMap key lookup keeps the
+          // "M64 P<n>" form so a user-defined alias in Settings still
+          // takes precedence (e.g. "Clamp", "Dust Collector").
+          var lookupKey = 'M64 P' + i;
           opt.value = String(i);
-          opt.textContent = nameMap[cmd.toUpperCase()] || cmd;
+          opt.textContent = nameMap[lookupKey.toUpperCase()] || ('Aux Out P' + i);
           select.appendChild(opt);
         }
         if (selectedValue !== undefined && selectedValue !== null) {
@@ -1597,6 +1617,10 @@
     $('pa-manualtool-x').value = fmtCoord(manual.x ?? 0);
     $('pa-manualtool-y').value = fmtCoord(manual.y ?? 0);
 
+    var db = initialConfig.dialogBehavior || {};
+    $('pa-dialog-countdown-sec').value = String(typeof db.countdownSec === 'number' ? db.countdownSec : 5);
+    $('pa-dialog-chain-steps').checked = !!db.chainSteps;
+
     $('pa-show-macro-command').checked = !!initialConfig.showMacroCommand;
     $('pa-perform-tls-after-home').checked = !!initialConfig.performTlsAfterHome;
 
@@ -1688,6 +1712,11 @@
       manualTool: {
         x: toMetric(parseFloatOr($('pa-manualtool-x').value, 0)),
         y: toMetric(parseFloatOr($('pa-manualtool-y').value, 0))
+      },
+
+      dialogBehavior: {
+        countdownSec: Math.max(1, parseInt($('pa-dialog-countdown-sec').value, 10) || 5),
+        chainSteps: $('pa-dialog-chain-steps').checked
       },
 
       showMacroCommand: $('pa-show-macro-command').checked,

@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.1",
+  "version": "0.1.11",
   "minAppVersion": "2.0.0",
   "commands": "commands.js",
   "configUi": "config.html",
@@ -41,13 +41,67 @@
     },
     "MANUAL_UNLOAD_TOOL": {
       "title": "Manual Unload",
-      "message": "Please remove {toolNumber}, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
-      "continueLabel": "Continue"
+      "message": "Click <em>Release</em> to open the drawbar. Remove tool {toolNumber}, then click <em>Continue</em>. Or click <em>Abort</em> to cancel.",
+      "continueLabel": "Continue",
+      "buttons": [
+        {
+          "label": "Release",
+          "gcode": [
+            "~"
+          ]
+        }
+      ]
     },
     "MANUAL_LOAD_TOOL": {
       "title": "Manual Load",
-      "message": "Please install {toolNumber} securely, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
-      "continueLabel": "Continue"
+      "message": "Click <em>Release</em> to open the drawbar. Insert tool {toolNumber}, click <em>Clamp</em> to close it, then click <em>Continue</em>.",
+      "continueLabel": "Continue",
+      "buttons": [
+        {
+          "label": "Release",
+          "gcode": [
+            "~"
+          ]
+        },
+        {
+          "label": "Clamp",
+          "gcode": [
+            "~"
+          ]
+        }
+      ]
+    },
+    "MANUAL_CLAMP_TOOL": {
+      "title": "Manual Load",
+      "message": "Insert tool {toolNumber}, click <em>Clamp</em> to close the drawbar, then click <em>Continue</em>.",
+      "continueLabel": "Continue",
+      "buttons": [
+        {
+          "label": "Clamp",
+          "gcode": [
+            "~"
+          ]
+        }
+      ]
+    },
+    "MANUAL_SWAP_TOOL": {
+      "title": "Manual Swap",
+      "message": "Click <em>Release</em> to open the drawbar. Remove the current tool, insert tool {toolNumber}, click <em>Clamp</em> to close the drawbar, then click <em>Continue</em>.",
+      "continueLabel": "Continue",
+      "buttons": [
+        {
+          "label": "Release",
+          "gcode": [
+            "~"
+          ]
+        },
+        {
+          "label": "Clamp",
+          "gcode": [
+            "~"
+          ]
+        }
+      ]
     }
   }
 }

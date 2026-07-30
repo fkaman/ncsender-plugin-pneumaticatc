@@ -148,7 +148,12 @@ const buildInitialConfig = (raw = {}) => {
     abortEventGcode: raw.abortEventGcode ?? '',
 
     tlsAuxOutput: sanitizeAuxOutput(raw.tlsAuxOutput),
-    clampAuxOutput: sanitizeAuxOutput(raw.clampAuxOutput)
+    clampAuxOutput: sanitizeAuxOutput(raw.clampAuxOutput),
+
+    dialogBehavior: {
+      countdownSec: toFiniteNumber(raw.dialogBehavior?.countdownSec, 5),
+      chainSteps: !!raw.dialogBehavior?.chainSteps
+    }
   };
 };
 
@@ -322,7 +327,10 @@ function calculateSlotPosition(settings, slotNum) {
 
 function auxLineFor(settings, action) {
   const { on, off } = auxOnOff(settings.clampAuxOutput);
-  const cmd = action === 'clamp' ? on : off;
+  // Fail-safe polarity: aux OFF (no power) holds the clamp; aux ON
+  // releases it. So M6 uses M65 (or M9) to clamp and M64 (or M7/M8) to
+  // release. If air / solenoid power is lost, the tool stays gripped.
+  const cmd = action === 'clamp' ? off : on;
   return cmd || '(no clamp aux output configured)';
 }
 
@@ -334,11 +342,17 @@ function buildUnloadTool(settings, currentTool, slotPos) {
   if (currentTool === 0) return '';
 
   if (currentTool > settings.slots) {
+    // Manual unload: park at manual position → dialog with [Release]
+    // [Continue] → each button click sends `~`, advancing one step.
+    // Release advances to open the drawbar (aux OFF); Continue advances
+    // past the second M0 to run M61 Q0.
     return `
       G53 G0 Z${settings.zSafe}
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
       G4 P0
       (MSG, PLUGIN_PNEUMATICATC:MANUAL_UNLOAD_TOOL_${currentTool})
+      M0
+      ${auxLineFor(settings, 'unclamp')}
       M0
       M61 Q0
     `.trim();
@@ -375,15 +389,38 @@ function buildUnloadTool(settings, currentTool, slotPos) {
   `.trim();
 }
 
-function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine) {
+function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlreadyReleased = false) {
   if (toolNumber === 0) return '';
 
   if (toolNumber > settings.slots) {
+    // Manual load. Dialog buttons depend on the drawbar state:
+    //   - Just unloaded a rack tool or manual tool → drawbar is already
+    //     released. Skip the Release step and use the CLAMP_TOOL dialog
+    //     (single Clamp button, then Continue).
+    //   - Coming from T0 (empty spindle at rest) → drawbar is clamped.
+    //     Use the LOAD_TOOL dialog with Release + Clamp + Continue.
+    if (drawbarAlreadyReleased) {
+      return `
+        G53 G0 Z${settings.zSafe}
+        G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
+        G4 P0
+        (MSG, PLUGIN_PNEUMATICATC:MANUAL_CLAMP_TOOL_${toolNumber})
+        M0
+        ${auxLineFor(settings, 'clamp')}
+        M0
+        M61 Q${toolNumber}
+        ${tlsRoutine}
+      `.trim();
+    }
     return `
       G53 G0 Z${settings.zSafe}
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
       G4 P0
       (MSG, PLUGIN_PNEUMATICATC:MANUAL_LOAD_TOOL_${toolNumber})
+      M0
+      ${auxLineFor(settings, 'unclamp')}
+      M0
+      ${auxLineFor(settings, 'clamp')}
       M0
       M61 Q${toolNumber}
       ${tlsRoutine}
@@ -424,6 +461,25 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine) {
   `.trim();
 }
 
+function buildManualSwap(settings, toolNumber, tlsRoutine) {
+  // Manual → Manual: one physical park, one dialog. Buttons Release
+  // (aux OFF, opens drawbar) → user swaps bits → Clamp (aux ON, closes
+  // drawbar) → Continue advances past the final M0 to M61 + TLS.
+  return `
+    G53 G0 Z${settings.zSafe}
+    G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
+    G4 P0
+    (MSG, PLUGIN_PNEUMATICATC:MANUAL_SWAP_TOOL_${toolNumber})
+    M0
+    ${auxLineFor(settings, 'unclamp')}
+    M0
+    ${auxLineFor(settings, 'clamp')}
+    M0
+    M61 Q${toolNumber}
+    ${tlsRoutine}
+  `.trim();
+}
+
 function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets = { x: 0, y: 0 }, storedTlo = 0) {
   const sourceSlot = calculateSlotPosition(settings, currentTool);
   const targetSlot = calculateSlotPosition(settings, toolNumber);
@@ -454,8 +510,18 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     try { pluginContext.armTlsWriteback(toolNumber); } catch (_) { /* older host */ }
   }
 
-  const unloadSection = buildUnloadTool(settings, currentTool, sourceSlot);
-  const loadSection = buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine);
+  // Manual → Manual: unload + load happen at the same physical spot,
+  // so collapse them into a single dialog+move via buildManualSwap.
+  // Otherwise: any unload path — rack or manual — leaves the drawbar
+  // released, and a manual load that follows uses the CLAMP dialog.
+  const isManualToManual = currentTool > settings.slots && toolNumber > settings.slots;
+  const drawbarAlreadyReleased = currentTool > 0;
+  const unloadSection = isManualToManual
+    ? ''
+    : buildUnloadTool(settings, currentTool, sourceSlot);
+  const loadSection = isManualToManual
+    ? buildManualSwap(settings, toolNumber, tlsRoutine)
+    : buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased);
 
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
