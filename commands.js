@@ -153,8 +153,16 @@ const buildInitialConfig = (raw = {}) => {
 };
 
 // === Tool offset lookup ===
+//
+// Two fields to keep straight (mapped from ncSender's ToolOffsets):
+//   * `tool.offsets.z`     — the stored Tool Length Offset (Tlo) from the
+//                             library. Used by the 'library' TLS strategy
+//                             to decide whether we already have a value.
+//   * `tool.offsets.tlsZ`  — per-tool custom Z bias applied *during* the
+//                             TLS probe motion (e.g. for oddball fixtures).
+//                             Separate from TLO.
 
-function getToolOffsets(toolNumber, tools) {
+function getToolProbeOffsets(toolNumber, tools) {
   if (!toolNumber || toolNumber <= 0 || !Array.isArray(tools)) {
     return { x: 0, y: 0, z: 0 };
   }
@@ -164,6 +172,16 @@ function getToolOffsets(toolNumber, tools) {
   }
   return { x: 0, y: 0, z: 0 };
 }
+
+function getStoredTlo(toolNumber, tools) {
+  if (!toolNumber || toolNumber <= 0 || !Array.isArray(tools)) return 0;
+  const tool = tools.find((t) => t.toolNumber === toolNumber);
+  if (!tool || !tool.offsets) return 0;
+  return tool.offsets.z || 0;
+}
+
+// Back-compat alias for older call sites within this file.
+const getToolOffsets = getToolProbeOffsets;
 
 // === G-code helpers ===
 
@@ -235,6 +253,8 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     G43.1 Z[#<_nc_last_tlo>]
     (Notify ncSender that toolLengthSet is now set)
     $#=_tool_offset
+    (Trigger a full [#] dump so ncSender receives [TLO:xxx] for writeback)
+    $#
   `.trim();
   return gcode.split('\n');
 }
@@ -324,8 +344,23 @@ function buildUnloadTool(settings, currentTool, slotPos) {
     `.trim();
   }
 
-  // Approach → drop to engagement Z → slide into engaged position → release
-  // → retract Z. Tool stays in the fork.
+  // Cup: top-down drop. Center over the slot XY, descend to engagement Z,
+  // release the clamp, retract. No horizontal slide.
+  if (settings.rackHolding === 'Cup') {
+    return `
+      G53 G0 Z${settings.zSafe}
+      G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}
+      G53 G0 Z${settings.slot1.z}
+      G4 P0.5
+      ${auxLineFor(settings, 'unclamp')}
+      G4 P0.5
+      G53 G0 Z${settings.zSafe}
+      M61 Q0
+    `.trim();
+  }
+
+  // Fork: approach → drop to engagement Z → slide into engaged → release
+  // → retract Z. Tool stays in the fork fingers.
   const feed = slideFeedrate(settings);
   return `
     G53 G0 Z${settings.zSafe}
@@ -355,9 +390,25 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine) {
     `.trim();
   }
 
-  // Top-down pick: descend onto the shank sitting in the fork, clamp, then
-  // slide laterally out of the fork. Cannot slide into the fork with an
-  // empty collet — must descend on the tool first.
+  // Cup: top-down pickup. Center over the tool sitting in the cup, descend
+  // onto the shank, clamp, retract. No horizontal slide.
+  if (settings.rackHolding === 'Cup') {
+    return `
+      G53 G0 Z${settings.zSafe}
+      G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}
+      G53 G0 Z${settings.slot1.z}
+      G4 P0.5
+      ${auxLineFor(settings, 'clamp')}
+      G4 P0.5
+      G53 G0 Z${settings.zSafe}
+      M61 Q${toolNumber}
+      ${tlsRoutine}
+    `.trim();
+  }
+
+  // Fork: descend onto the shank sitting in the fork, clamp, then slide
+  // laterally out of the fork. Cannot slide into the fork with an empty
+  // collet — must descend on the tool first.
   const feed = slideFeedrate(settings);
   return `
     G53 G0 Z${settings.zSafe}
@@ -373,21 +424,35 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine) {
   `.trim();
 }
 
-function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets = { x: 0, y: 0 }) {
+function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets = { x: 0, y: 0 }, storedTlo = 0) {
   const sourceSlot = calculateSlotPosition(settings, currentTool);
   const targetSlot = calculateSlotPosition(settings, toolNumber);
   // Probing decision:
-  //   'always' — probe on every M6.
-  //   'library' — probe only when the tool has no TLO in the library yet
-  //               (heuristic: |tlsZ| < 0.0001). Once probed, ncSender's
-  //               `$#=_tool_offset` writes the value back into the tool
-  //               table, so subsequent swaps of the same tool skip probing.
-  const hasStoredTlo = Math.abs(toolOffsets.z || 0) > 0.0001;
+  //   'always'  — probe on every M6.
+  //   'library' — probe only when the tool has no TLO stored yet
+  //               (|storedTlo| < 0.0001). If a stored value exists we
+  //               inject `G43.1 Z<value>` instead of the probe routine
+  //               so the controller still gets the offset loaded.
+  //   (No tool assigned to slot / unknown toolNumber → storedTlo is 0 → probe.)
+  const hasStoredTlo = Math.abs(storedTlo || 0) > 0.0001;
   const shouldProbe = settings.tlsMode === 'always'
     || (settings.tlsMode === 'library' && !hasStoredTlo);
   const tlsRoutine = shouldProbe
     ? createToolLengthSetRoutine(settings, toolOffsets).join('\n')
-    : '';
+    : (settings.tlsMode === 'library' && hasStoredTlo
+        ? `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`
+        : '');
+
+  // Every time we probe (both modes), arm the writeback so the next
+  // [TLO:xxx] response from the controller gets saved into the tool's
+  // library entry. 'always' mode still probes on every M6 — the writeback
+  // just keeps the library value fresh so it's accurate as a reference.
+  if (shouldProbe && toolNumber > 0
+      && typeof pluginContext !== 'undefined'
+      && pluginContext
+      && typeof pluginContext.armTlsWriteback === 'function') {
+    try { pluginContext.armTlsWriteback(toolNumber); } catch (_) { /* older host */ }
+  }
 
   const unloadSection = buildUnloadTool(settings, currentTool, sourceSlot);
   const loadSection = buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine);
@@ -440,7 +505,15 @@ function handleTLSCommand(commands, context, settings) {
   const idx = commands.findIndex((c) => c.isOriginal && c.command.trim().toUpperCase() === '$TLS');
   if (idx === -1) return;
   const currentTool = context.machineState?.tool ?? 0;
-  const toolOffsets = getToolOffsets(currentTool, context.tools);
+  const toolOffsets = getToolProbeOffsets(currentTool, context.tools);
+  // Standalone $TLS probes the currently-loaded tool — save the result
+  // back to library regardless of strategy so the value stays accurate.
+  if (currentTool > 0
+      && typeof pluginContext !== 'undefined'
+      && pluginContext
+      && typeof pluginContext.armTlsWriteback === 'function') {
+    try { pluginContext.armTlsWriteback(currentTool); } catch (_) { /* older host */ }
+  }
   const program = createToolLengthSetProgram(settings, toolOffsets);
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
@@ -508,8 +581,9 @@ function handleM6Command(commands, context, settings) {
   if (!parsed?.matched || parsed.toolNumber === null) return;
   const toolNumber = parsed.toolNumber;
   const currentTool = context.machineState?.tool ?? 0;
-  const toolOffsets = getToolOffsets(toolNumber, context.tools);
-  const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets);
+  const toolOffsets = getToolProbeOffsets(toolNumber, context.tools);
+  const storedTlo = getStoredTlo(toolNumber, context.tools);
+  const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo);
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
 

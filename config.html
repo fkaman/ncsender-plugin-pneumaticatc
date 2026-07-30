@@ -837,9 +837,10 @@
 
       <div class="pa-panel">
 
-        <!-- Size and Holding -->
+        <!-- Rack Settings — combined magazine + engage motion. Slide fields
+             show only when Rack Holding is Fork (Cup drops top-down). -->
         <div class="pa-card">
-          <h3 class="pa-card-title">Size and Holding</h3>
+          <h3 class="pa-card-title">Rack Settings</h3>
           <div class="pa-row-3">
             <div class="pa-field">
               <label for="pa-slots">Number of Slots</label>
@@ -858,8 +859,33 @@
               <label for="pa-rack-holding">Rack Holding</label>
               <select class="pa-select" id="pa-rack-holding">
                 <option value="Fork" selected>Fork</option>
-                <option value="Cup" disabled>Cup (coming soon)</option>
+                <option value="Cup">Cup</option>
               </select>
+            </div>
+          </div>
+
+          <div class="pa-field-inline">
+            <label id="pa-label-z-retract">Z-Retract (mm)</label>
+            <input class="pa-input" type="number" id="pa-z-retract" value="7" min="0" step="0.1">
+          </div>
+
+          <!-- Fork-only motion params (shown when Rack Holding = Fork) -->
+          <div id="pa-fork-settings">
+            <div class="pa-field-inline">
+              <label>Slide Direction</label>
+              <div class="pa-segment" id="pa-slide-direction">
+                <button type="button" class="pa-segment-btn active" data-value="Negative">−</button>
+                <button type="button" class="pa-segment-btn" data-value="Positive">+</button>
+                <div class="pa-segment-indicator"></div>
+              </div>
+            </div>
+            <div class="pa-field-inline">
+              <label id="pa-label-slide-distance">Slide Distance (mm)</label>
+              <input class="pa-input" type="number" id="pa-slide-distance" value="40" min="0" step="0.1">
+            </div>
+            <div class="pa-field-inline">
+              <label id="pa-label-slide-speed">Slide Speed (mm/min)</label>
+              <input class="pa-input" type="number" id="pa-slide-speed" value="500" min="1" step="1">
             </div>
           </div>
         </div>
@@ -943,33 +969,6 @@
           </div>
         </div>
 
-        <!-- Engage Motion -->
-        <div class="pa-card">
-          <h3 class="pa-card-title">Engage Motion</h3>
-          <p class="pa-card-help">Spindle slide into / out of the fork holder.</p>
-          <div class="pa-field-inline">
-            <label>Slide Direction</label>
-            <div class="pa-segment" id="pa-slide-direction">
-              <button type="button" class="pa-segment-btn active" data-value="Negative">−</button>
-              <button type="button" class="pa-segment-btn" data-value="Positive">+</button>
-              <div class="pa-segment-indicator"></div>
-            </div>
-          </div>
-          <div class="pa-row-3">
-            <div class="pa-field">
-              <label id="pa-label-slide-distance">Slide Distance (mm)</label>
-              <input class="pa-input" type="number" id="pa-slide-distance" value="40" min="0" step="0.1">
-            </div>
-            <div class="pa-field">
-              <label id="pa-label-slide-speed">Slide Speed (mm/min)</label>
-              <input class="pa-input" type="number" id="pa-slide-speed" value="500" min="1" step="1">
-            </div>
-            <div class="pa-field">
-              <label id="pa-label-z-retract">Z-Retract (mm)</label>
-              <input class="pa-input" type="number" id="pa-z-retract" value="7" min="0" step="0.1">
-            </div>
-          </div>
-        </div>
 
         <!-- Options -->
         <div class="pa-card">
@@ -1020,7 +1019,7 @@
             <label for="pa-tls-mode">TLS Strategy</label>
             <select class="pa-select" id="pa-tls-mode">
               <option value="always" selected>Probe after every tool change</option>
-              <option value="library" disabled>Use tool library offset (probe when missing) — coming soon</option>
+              <option value="library">Use tool library offset (probe when missing)</option>
             </select>
           </div>
         </div>
@@ -1283,6 +1282,17 @@
   var segOrientation = initSegment('pa-orientation');
   var segDirection = initSegment('pa-direction');
   var segSlideDir = initSegment('pa-slide-direction');
+
+  // Rack Holding visibility — Cup drops top-down so the slide fields are
+  // irrelevant. Toggle the fork-only block based on the dropdown value.
+  function updateRackHoldingVisibility() {
+    var forkBlock = $('pa-fork-settings');
+    var holding = $('pa-rack-holding');
+    if (!forkBlock || !holding) return;
+    forkBlock.style.display = holding.value === 'Cup' ? 'none' : '';
+  }
+  var rackHoldingSelect = $('pa-rack-holding');
+  if (rackHoldingSelect) rackHoldingSelect.addEventListener('change', updateRackHoldingVisibility);
 
   // Promise-based confirm modal. Resolves true (populate) / false (keep).
   function showAutoPopulateConfirm() {
@@ -1564,6 +1574,7 @@
 
     var rackHolding = $('pa-rack-holding');
     if (rackHolding && initialConfig.rackHolding) rackHolding.value = initialConfig.rackHolding;
+    updateRackHoldingVisibility();
 
     $('pa-slide-distance').value = fmtCoord(initialConfig.slideDistance ?? 40);
     $('pa-slide-speed').value    = String(initialConfig.slideSpeed ?? 500);
