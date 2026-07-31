@@ -700,7 +700,7 @@
      past the card edge. */
   .pa-monaco {
     width: 100%;
-    height: 280px;
+    height: 210px;
     border: 1px solid var(--color-border);
     border-radius: 8px;
     overflow: hidden;
@@ -709,24 +709,18 @@
     overflow: hidden;
     gap: 2px;
     padding: 12px 14px;
+    /* Don't let the panel's flex layout squish these cards — with 5
+       cards stacked, each Monaco editor (280px) would otherwise be
+       clipped to a sliver. flex-shrink: 0 keeps each card at its
+       natural height; the panel scrolls vertically as needed. */
+    flex-shrink: 0;
   }
   .pa-events-card .pa-card-title { margin-bottom: 2px; }
   .pa-events-card .pa-card-help { margin-bottom: 6px; }
 
-  /* Events tab: single column in portrait (default), two columns in
-     landscape. Odd-count safeguard — the last card always spans the
-     full row so the layout stays balanced when a new event is added
-     or removed. */
-  @media (orientation: landscape) {
-    .pa-panel.pa-panel-events {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      align-items: start;
-    }
-    .pa-panel.pa-panel-events > .pa-events-card:last-child {
-      grid-column: 1 / -1;
-    }
-  }
+  /* Events tab: single column always. The base .pa-panel already
+     stacks children vertically with overflow-y: auto, so cards flow
+     top-to-bottom and the panel scrolls if they don't fit. */
 
   /* Confirm modal (used when switching to Custom layout to offer
      auto-populating slots from the Linear-array values). */
@@ -1186,7 +1180,7 @@
         </div>
         <div class="pa-card pa-events-card">
           <h3 class="pa-card-title">Abort Event</h3>
-          <p class="pa-card-help">G-code commands executed when a tool change is aborted (e.g. close ATC cover, stop spindle). The clamp aux command is prepended automatically for safety, so a released drawbar doesn't drop a bit when you cancel mid-swap.</p>
+          <p class="pa-card-help">Additional g-code fired on abort (e.g. close ATC cover, stop spindle) after the built-in clamp command. The clamp is always sent first as a safety no matter what you type here — leave this empty if you don't need anything extra.</p>
           <div id="pa-abort-editor" class="pa-monaco"></div>
         </div>
       </div>
@@ -1579,7 +1573,7 @@
       scrollBeyondLastLine: false,
       wordWrap: 'on',
       automaticLayout: true,
-      fontSize: 12,
+      fontSize: 14,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
       renderLineHighlight: 'none',
       folding: false,
@@ -1592,7 +1586,17 @@
     if ($('pa-post-editor'))     postEditor    = monaco.editor.create($('pa-post-editor'),     Object.assign({}, opts, { value: initialConfig.postToolChangeGcode || '' }));
     if ($('pa-pre-tls-editor'))  preTlsEditor  = monaco.editor.create($('pa-pre-tls-editor'),  Object.assign({}, opts, { value: initialConfig.preTlsGcode         || '' }));
     if ($('pa-post-tls-editor')) postTlsEditor = monaco.editor.create($('pa-post-tls-editor'), Object.assign({}, opts, { value: initialConfig.postTlsGcode        || '' }));
-    if ($('pa-abort-editor'))    abortEditor   = monaco.editor.create($('pa-abort-editor'),    Object.assign({}, opts, { value: initialConfig.abortEventGcode     || '' }));
+    // Editor shows only the user's addition. Prefer the explicit
+    // `abortEventGcodeUser` field; fall back to stripping the
+    // leading auto-injected clamp line from `abortEventGcode` for
+    // configs saved before the split was introduced.
+    if ($('pa-abort-editor')) {
+      var abortInitial = initialConfig.abortEventGcodeUser;
+      if (abortInitial === undefined) {
+        abortInitial = stripLeadingClamp(initialConfig.abortEventGcode || '');
+      }
+      abortEditor = monaco.editor.create($('pa-abort-editor'), Object.assign({}, opts, { value: abortInitial || '' }));
+    }
     // Mark dirty on any editor content change — feeds the close confirm.
     [preEditor, postEditor, preTlsEditor, postTlsEditor, abortEditor].forEach(function(e) {
       if (e && typeof markDirty === 'function') e.onDidChangeModelContent(markDirty);
@@ -1754,29 +1758,47 @@
       postToolChangeGcode: postEditor ? postEditor.getValue() : (initialConfig.postToolChangeGcode || ''),
       preTlsGcode: preTlsEditor ? preTlsEditor.getValue() : (initialConfig.preTlsGcode || ''),
       postTlsGcode: postTlsEditor ? postTlsEditor.getValue() : (initialConfig.postTlsGcode || ''),
-      abortEventGcode: buildAbortGcode(abortEditor ? abortEditor.getValue() : (initialConfig.abortEventGcode || ''))
+      // Safety: the clamp command always fires first on abort so a
+      // released drawbar closes even if the user cleared the editor.
+      // Editor content is the user's ADDITION, appended after the clamp.
+      // Storing the composed value keeps host-side rendering simple —
+      // no plugin-specific logic in PluginManager.
+      abortEventGcode: composeAbortGcode(abortEditor ? abortEditor.getValue() : (initialConfig.abortEventGcodeUser || '')),
+      abortEventGcodeUser: abortEditor ? abortEditor.getValue() : (initialConfig.abortEventGcodeUser || '')
     };
   }
 
-  // Compute the clamp aux command from current settings, mirroring
-  // commands.js auxOnOff — safety: aux OFF (M65 / M9) holds the clamp.
-  function computeClampCommand() {
+  // Aux OFF command derived from clampAuxOutput — same mapping as
+  // commands.js auxOnOff().off. Empty string when no aux configured.
+  function currentClampCommand() {
     var v = parseAuxValue($('pa-clamp-aux'));
     if (v === 'M7' || v === 'M8') return 'M9';
     if (typeof v === 'number' && v >= 0) return 'M65 P' + v;
     return '';
   }
 
-  // Abort must always fire the clamp command so a released drawbar
-  // doesn't drop a bit when the user cancels mid-swap. Prepend the
-  // command and strip any duplicates the user (or a prior save) added.
-  function buildAbortGcode(userRaw) {
-    var clampCmd = computeClampCommand();
-    if (!clampCmd) return userRaw;
-    var lines = String(userRaw || '').split('\n').filter(function(line) {
-      return line.trim() !== clampCmd;
-    });
-    return clampCmd + (lines.length ? '\n' + lines.join('\n') : '');
+  function composeAbortGcode(userRaw) {
+    var clampCmd = currentClampCommand();
+    var user = String(userRaw || '').trim();
+    if (!clampCmd) return user;
+    return user ? clampCmd + '\n' + user : clampCmd;
+  }
+
+  // Backward-compat: settings persisted before the abortEventGcodeUser
+  // field existed have the safety clamp baked into abortEventGcode. If
+  // the first line matches the currently-configured clamp command,
+  // strip it so the editor shows only the user's portion.
+  function stripLeadingClamp(rawStored) {
+    var savedAux = initialConfig.clampAuxOutput;
+    var clampCmd = '';
+    if (savedAux === 'M7' || savedAux === 'M8') clampCmd = 'M9';
+    else if (typeof savedAux === 'number' && savedAux >= 0) clampCmd = 'M65 P' + savedAux;
+    if (!clampCmd) return rawStored;
+    var lines = String(rawStored || '').split('\n');
+    if (lines.length && lines[0].trim() === clampCmd) {
+      return lines.slice(1).join('\n').replace(/^\n+/, '');
+    }
+    return rawStored;
   }
 
   // ---------- Dirty tracking ----------
