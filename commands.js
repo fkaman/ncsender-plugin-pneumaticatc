@@ -140,6 +140,7 @@ const buildInitialConfig = (raw = {}) => {
     zSafe: toFiniteNumber(raw.zSafe, 0),
     zRetract: toFiniteNumber(raw.zRetract ?? raw.zRetreat, 7),
 
+    tlsSeekStartZ: toFiniteNumber(raw.tlsSeekStartZ, toFiniteNumber(raw.zSafe, -5)),
     seekDistance: toFiniteNumber(raw.seekDistance, 50),
     seekFeedrate: toFiniteNumber(raw.seekFeedrate, 500),
 
@@ -232,9 +233,17 @@ function auxOnOff(auxOutput) {
 function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }) {
   const tlsX = settings.toolsetter.x + (toolOffsets.x || 0);
   const tlsY = settings.toolsetter.y + (toolOffsets.y || 0);
-  const tlsZ = toolOffsets.z || 0;
-
-  const extraZMove = tlsZ !== 0 ? `G91 G0 Z${tlsZ}\n    G90` : '';
+  // Per-tool TLS bias from the tool library — added on top of the
+  // configured start Z. Long tools store a positive bias so probing
+  // starts higher up (further from the toolsetter) to avoid crashing.
+  const tlsLibZ = toolOffsets.z || 0;
+  // Absolute machine Z where the seek begins. Defaults to safe Z so
+  // the seek starts from the current retract height (previous
+  // behavior). Setting a value closer to the toolsetter dramatically
+  // shortens the seek travel on tall Z gantries.
+  const seekStartZ = (typeof settings.tlsSeekStartZ === 'number'
+    ? settings.tlsSeekStartZ
+    : settings.zSafe) + tlsLibZ;
 
   const { on: tlsOn, off: tlsOff } = auxOnOff(settings.tlsAuxOutput);
   const auxOn = tlsOn ? `G4 P0\n    ${tlsOn}\n    G4 P0` : '';
@@ -243,7 +252,7 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
   const gcode = `
     G53 G0 Z${settings.zSafe}
     G53 G0 X${tlsX} Y${tlsY}
-    ${extraZMove}
+    G53 G0 Z${seekStartZ}
     ${auxOn}
     G43.1 Z0
     G38.2 G91 Z-${settings.seekDistance} F${settings.seekFeedrate}

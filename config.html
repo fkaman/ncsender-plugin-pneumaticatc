@@ -1045,7 +1045,11 @@
 
         <div class="pa-card" id="pa-tls-position">
           <h3 class="pa-card-title">Probe Settings</h3>
-          <div class="pa-row-3">
+          <div class="pa-row-4">
+            <div class="pa-field">
+              <label id="pa-label-seek-start-z">Seek Start Z (mm)</label>
+              <input class="pa-input" type="number" id="pa-seek-start-z" value="-5" step="0.1">
+            </div>
             <div class="pa-field">
               <label id="pa-label-seek-distance">Seek Distance (mm)</label>
               <input class="pa-input" type="number" id="pa-seek-distance" value="50" min="1" step="0.1">
@@ -1059,6 +1063,7 @@
               <select class="pa-select" id="pa-tls-aux"></select>
             </div>
           </div>
+          <p class="pa-card-help" style="margin-top: 8px;">Absolute machine Z where the seek begins after the XY move to the toolsetter. Values closer to the toolsetter shorten travel on tall gantries; keep it clear of the tallest tool. The tool library's TLS Z offset is added on top of this for the specific tool being probed.</p>
 
           <div class="pa-field-inline" style="margin-top: 12px;">
             <label>Perform TLS after first <code>$H</code></label>
@@ -1160,7 +1165,7 @@
         </div>
         <div class="pa-card pa-events-card">
           <h3 class="pa-card-title">Abort Event</h3>
-          <p class="pa-card-help">G-code commands executed when a tool change is aborted (e.g. close ATC cover, stop spindle).</p>
+          <p class="pa-card-help">G-code commands executed when a tool change is aborted (e.g. close ATC cover, stop spindle). The clamp aux command is prepended automatically for safety, so a released drawbar doesn't drop a bit when you cancel mid-swap.</p>
           <div id="pa-abort-editor" class="pa-monaco"></div>
         </div>
       </div>
@@ -1600,6 +1605,7 @@
     $('pa-slide-speed').value    = String(initialConfig.slideSpeed ?? 500);
     $('pa-slot-distance').value  = fmtCoord(initialConfig.slotDistance ?? initialConfig.pocketDistance ?? 45);
     $('pa-z-retract').value      = fmtCoord(initialConfig.zRetract ?? 7);
+    $('pa-seek-start-z').value   = fmtCoord(initialConfig.tlsSeekStartZ ?? initialConfig.zSafe ?? -5);
     $('pa-seek-distance').value  = fmtCoord(initialConfig.seekDistance ?? 50);
     $('pa-seek-feedrate').value  = String(initialConfig.seekFeedrate ?? 500);
 
@@ -1705,6 +1711,7 @@
         x: toMetric(parseFloatOr($('pa-toolsetter-x').value, 0)),
         y: toMetric(parseFloatOr($('pa-toolsetter-y').value, 0))
       },
+      tlsSeekStartZ: toMetric(parseFloatOr($('pa-seek-start-z').value, -5)),
       seekDistance: toMetric(parseFloatOr($('pa-seek-distance').value, 50)),
       seekFeedrate: parseFloatOr($('pa-seek-feedrate').value, 500),
       tlsAuxOutput: parseAuxValue($('pa-tls-aux')),
@@ -1722,8 +1729,29 @@
       showMacroCommand: $('pa-show-macro-command').checked,
       preToolChangeGcode: preEditor ? preEditor.getValue() : (initialConfig.preToolChangeGcode || ''),
       postToolChangeGcode: postEditor ? postEditor.getValue() : (initialConfig.postToolChangeGcode || ''),
-      abortEventGcode: abortEditor ? abortEditor.getValue() : (initialConfig.abortEventGcode || '')
+      abortEventGcode: buildAbortGcode(abortEditor ? abortEditor.getValue() : (initialConfig.abortEventGcode || ''))
     };
+  }
+
+  // Compute the clamp aux command from current settings, mirroring
+  // commands.js auxOnOff — safety: aux OFF (M65 / M9) holds the clamp.
+  function computeClampCommand() {
+    var v = parseAuxValue($('pa-clamp-aux'));
+    if (v === 'M7' || v === 'M8') return 'M9';
+    if (typeof v === 'number' && v >= 0) return 'M65 P' + v;
+    return '';
+  }
+
+  // Abort must always fire the clamp command so a released drawbar
+  // doesn't drop a bit when the user cancels mid-swap. Prepend the
+  // command and strip any duplicates the user (or a prior save) added.
+  function buildAbortGcode(userRaw) {
+    var clampCmd = computeClampCommand();
+    if (!clampCmd) return userRaw;
+    var lines = String(userRaw || '').split('\n').filter(function(line) {
+      return line.trim() !== clampCmd;
+    });
+    return clampCmd + (lines.length ? '\n' + lines.join('\n') : '');
   }
 
   // ---------- Dirty tracking ----------
