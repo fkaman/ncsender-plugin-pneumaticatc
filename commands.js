@@ -427,12 +427,22 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     `.trim();
   }
 
+  // Loading from an empty spindle (T0 → Tn) leaves the drawbar in its
+  // fail-safe clamped state, so we must release it before descending
+  // onto the shank — otherwise the collet is closed on contact and the
+  // tool never enters. Coming from a prior unload the drawbar is
+  // already open, so skip the extra release + dwell.
+  const releaseFirst = drawbarAlreadyReleased ? '' : `
+      G4 P0.5
+      ${auxLineFor(settings, 'unclamp')}
+      G4 P0.5`;
+
   // Cup: top-down pickup. Center over the tool sitting in the cup, descend
   // onto the shank, clamp, retract. No horizontal slide.
   if (settings.rackHolding === 'Cup') {
     return `
       G53 G0 Z${settings.zSafe}
-      G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}
+      G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}${releaseFirst}
       G53 G0 Z${settings.slot1.z}
       G4 P0.5
       ${auxLineFor(settings, 'clamp')}
@@ -449,7 +459,7 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
   const feed = slideFeedrate(settings);
   return `
     G53 G0 Z${settings.zSafe}
-    G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}
+    G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}${releaseFirst}
     G53 G0 Z${settings.slot1.z}
     G4 P0.5
     ${auxLineFor(settings, 'clamp')}
