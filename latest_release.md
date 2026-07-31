@@ -1,4 +1,7 @@
 ## What's Changed
 
+### ✨ New Features
+- TLS seek now starts at Z
+
 ### 🔧 Improvements
-- Tool changes are now faster, with unnecessary safe-Z lifts removed from sub-builder moves.
+- Automatic clamping is now applied when an operation is aborted
