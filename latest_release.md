@@ -1,7 +1,8 @@
 ## What's Changed
 
 ### ✨ New Features
-- TLS seek now starts at Z
+- Added pre and post TLS events, so you can trigger actions before and after a TLS sequence
+- Added a landscape events grid for viewing events in landscape orientation
 
-### 🔧 Improvements
-- Automatic clamping is now applied when an operation is aborted
+### 🐛 Bug Fixes
+- Fixed crashes that could occur during a TLS approach
