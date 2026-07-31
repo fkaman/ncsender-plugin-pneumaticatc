@@ -347,7 +347,6 @@ function buildUnloadTool(settings, currentTool, slotPos) {
     // Release advances to open the drawbar (aux OFF); Continue advances
     // past the second M0 to run M61 Q0.
     return `
-      G53 G0 Z${settings.zSafe}
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
       G4 P0
       (MSG, PLUGIN_PNEUMATICATC:MANUAL_UNLOAD_TOOL_${currentTool})
@@ -362,7 +361,6 @@ function buildUnloadTool(settings, currentTool, slotPos) {
   // release the clamp, retract. No horizontal slide.
   if (settings.rackHolding === 'Cup') {
     return `
-      G53 G0 Z${settings.zSafe}
       G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}
       G53 G0 Z${settings.slot1.z}
       G4 P0.5
@@ -377,7 +375,6 @@ function buildUnloadTool(settings, currentTool, slotPos) {
   // → retract Z. Tool stays in the fork fingers.
   const feed = slideFeedrate(settings);
   return `
-    G53 G0 Z${settings.zSafe}
     G53 G0 X${slotPos.approach.x} Y${slotPos.approach.y}
     G53 G0 Z${settings.slot1.z}
     G53 G1 X${slotPos.engaged.x} Y${slotPos.engaged.y} F${feed}
@@ -401,7 +398,6 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     //     Use the LOAD_TOOL dialog with Release + Clamp + Continue.
     if (drawbarAlreadyReleased) {
       return `
-        G53 G0 Z${settings.zSafe}
         G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
         G4 P0
         (MSG, PLUGIN_PNEUMATICATC:MANUAL_CLAMP_TOOL_${toolNumber})
@@ -413,7 +409,6 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       `.trim();
     }
     return `
-      G53 G0 Z${settings.zSafe}
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
       G4 P0
       (MSG, PLUGIN_PNEUMATICATC:MANUAL_LOAD_TOOL_${toolNumber})
@@ -441,7 +436,6 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
   // onto the shank, clamp, retract. No horizontal slide.
   if (settings.rackHolding === 'Cup') {
     return `
-      G53 G0 Z${settings.zSafe}
       G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}${releaseFirst}
       G53 G0 Z${settings.slot1.z}
       G4 P0.5
@@ -458,7 +452,6 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
   // collet — must descend on the tool first.
   const feed = slideFeedrate(settings);
   return `
-    G53 G0 Z${settings.zSafe}
     G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}${releaseFirst}
     G53 G0 Z${settings.slot1.z}
     G4 P0.5
@@ -476,7 +469,6 @@ function buildManualSwap(settings, toolNumber, tlsRoutine) {
   // (aux OFF, opens drawbar) → user swaps bits → Clamp (aux ON, closes
   // drawbar) → Continue advances past the final M0 to M61 + TLS.
   return `
-    G53 G0 Z${settings.zSafe}
     G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
     G4 P0
     (MSG, PLUGIN_PNEUMATICATC:MANUAL_SWAP_TOOL_${toolNumber})
