@@ -713,6 +713,21 @@
   .pa-events-card .pa-card-title { margin-bottom: 2px; }
   .pa-events-card .pa-card-help { margin-bottom: 6px; }
 
+  /* Events tab: single column in portrait (default), two columns in
+     landscape. Odd-count safeguard — the last card always spans the
+     full row so the layout stays balanced when a new event is added
+     or removed. */
+  @media (orientation: landscape) {
+    .pa-panel.pa-panel-events {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      align-items: start;
+    }
+    .pa-panel.pa-panel-events > .pa-events-card:last-child {
+      grid-column: 1 / -1;
+    }
+  }
+
   /* Confirm modal (used when switching to Custom layout to offer
      auto-populating slots from the Linear-array values). */
   .pa-modal-backdrop {
@@ -1045,7 +1060,7 @@
 
         <div class="pa-card" id="pa-tls-position">
           <h3 class="pa-card-title">Probe Settings</h3>
-          <div class="pa-row-4">
+          <div class="pa-row-3">
             <div class="pa-field">
               <label id="pa-label-seek-start-z">Seek Start Z (mm)</label>
               <input class="pa-input" type="number" id="pa-seek-start-z" value="-5" step="0.1">
@@ -1057,10 +1072,6 @@
             <div class="pa-field">
               <label id="pa-label-seek-feedrate">Seek Feedrate (mm/min)</label>
               <input class="pa-input" type="number" id="pa-seek-feedrate" value="500" min="1" step="1">
-            </div>
-            <div class="pa-field">
-              <label>TLS Aux Output</label>
-              <select class="pa-select" id="pa-tls-aux"></select>
             </div>
           </div>
           <p class="pa-card-help" style="margin-top: 8px;">Absolute machine Z where the seek begins after the XY move to the toolsetter. Values closer to the toolsetter shorten travel on tall gantries; keep it clear of the tallest tool. The tool library's TLS Z offset is added on top of this for the specific tool being probed.</p>
@@ -1152,7 +1163,7 @@
         <h2 class="pa-panel-title">Events</h2>
       </header>
 
-      <div class="pa-panel">
+      <div class="pa-panel pa-panel-events">
         <div class="pa-card pa-events-card">
           <h3 class="pa-card-title">Pre Tool Change</h3>
           <p class="pa-card-help">G-code commands executed before each tool change (M6). E.g. turn off coolant, open ATC cover.</p>
@@ -1162,6 +1173,16 @@
           <h3 class="pa-card-title">Post Tool Change</h3>
           <p class="pa-card-help">G-code commands executed after each tool change (M6) completes. E.g. close ATC cover, restore coolant.</p>
           <div id="pa-post-editor" class="pa-monaco"></div>
+        </div>
+        <div class="pa-card pa-events-card">
+          <h3 class="pa-card-title">Pre TLS</h3>
+          <p class="pa-card-help">G-code commands executed right before the tool-length probe starts, after the spindle is parked over the toolsetter at the seek start Z. Use it to activate a wired toolsetter (e.g. <code>M64 P1</code>), open a shroud, or dwell before probing.</p>
+          <div id="pa-pre-tls-editor" class="pa-monaco"></div>
+        </div>
+        <div class="pa-card pa-events-card">
+          <h3 class="pa-card-title">Post TLS</h3>
+          <p class="pa-card-help">G-code commands executed immediately after the tool-length probe completes but before the TLO is written back. Use it to deactivate the toolsetter (e.g. <code>M65 P1</code>), close a shroud, or turn off dust collection.</p>
+          <div id="pa-post-tls-editor" class="pa-monaco"></div>
         </div>
         <div class="pa-card pa-events-card">
           <h3 class="pa-card-title">Abort Event</h3>
@@ -1535,7 +1556,6 @@
           select.value = String(selectedValue);
         }
       }
-      fill($('pa-tls-aux'), true, initialConfig.tlsAuxOutput ?? -1);
       fill($('pa-clamp-aux'), false, initialConfig.clampAuxOutput);
     } catch (e) {
       console.error('[PneumaticATC] populateAuxOutputs failed', e);
@@ -1545,6 +1565,8 @@
   // ---------- Monaco editors ----------
   var preEditor = null;
   var postEditor = null;
+  var preTlsEditor = null;
+  var postTlsEditor = null;
   var abortEditor = null;
   function isLight() { return document.body.classList.contains('theme-light'); }
   function initMonaco() {
@@ -1566,11 +1588,13 @@
       lineNumbersMinChars: 2,
       scrollbar: { vertical: 'auto', horizontal: 'hidden', useShadows: false, verticalScrollbarSize: 6 }
     };
-    if ($('pa-pre-editor'))   preEditor   = monaco.editor.create($('pa-pre-editor'),   Object.assign({}, opts, { value: initialConfig.preToolChangeGcode || '' }));
-    if ($('pa-post-editor'))  postEditor  = monaco.editor.create($('pa-post-editor'),  Object.assign({}, opts, { value: initialConfig.postToolChangeGcode || '' }));
-    if ($('pa-abort-editor')) abortEditor = monaco.editor.create($('pa-abort-editor'), Object.assign({}, opts, { value: initialConfig.abortEventGcode    || '' }));
+    if ($('pa-pre-editor'))      preEditor     = monaco.editor.create($('pa-pre-editor'),      Object.assign({}, opts, { value: initialConfig.preToolChangeGcode  || '' }));
+    if ($('pa-post-editor'))     postEditor    = monaco.editor.create($('pa-post-editor'),     Object.assign({}, opts, { value: initialConfig.postToolChangeGcode || '' }));
+    if ($('pa-pre-tls-editor'))  preTlsEditor  = monaco.editor.create($('pa-pre-tls-editor'),  Object.assign({}, opts, { value: initialConfig.preTlsGcode         || '' }));
+    if ($('pa-post-tls-editor')) postTlsEditor = monaco.editor.create($('pa-post-tls-editor'), Object.assign({}, opts, { value: initialConfig.postTlsGcode        || '' }));
+    if ($('pa-abort-editor'))    abortEditor   = monaco.editor.create($('pa-abort-editor'),    Object.assign({}, opts, { value: initialConfig.abortEventGcode     || '' }));
     // Mark dirty on any editor content change — feeds the close confirm.
-    [preEditor, postEditor, abortEditor].forEach(function(e) {
+    [preEditor, postEditor, preTlsEditor, postTlsEditor, abortEditor].forEach(function(e) {
       if (e && typeof markDirty === 'function') e.onDidChangeModelContent(markDirty);
     });
 
@@ -1579,7 +1603,7 @@
     }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
   }
   function layoutMonaco() {
-    [preEditor, postEditor, abortEditor].forEach(function(e) { if (e) e.layout(); });
+    [preEditor, postEditor, preTlsEditor, postTlsEditor, abortEditor].forEach(function(e) { if (e) e.layout(); });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initMonaco);
   else setTimeout(initMonaco, 50);
@@ -1714,7 +1738,6 @@
       tlsSeekStartZ: toMetric(parseFloatOr($('pa-seek-start-z').value, -5)),
       seekDistance: toMetric(parseFloatOr($('pa-seek-distance').value, 50)),
       seekFeedrate: parseFloatOr($('pa-seek-feedrate').value, 500),
-      tlsAuxOutput: parseAuxValue($('pa-tls-aux')),
 
       manualTool: {
         x: toMetric(parseFloatOr($('pa-manualtool-x').value, 0)),
@@ -1729,6 +1752,8 @@
       showMacroCommand: $('pa-show-macro-command').checked,
       preToolChangeGcode: preEditor ? preEditor.getValue() : (initialConfig.preToolChangeGcode || ''),
       postToolChangeGcode: postEditor ? postEditor.getValue() : (initialConfig.postToolChangeGcode || ''),
+      preTlsGcode: preTlsEditor ? preTlsEditor.getValue() : (initialConfig.preTlsGcode || ''),
+      postTlsGcode: postTlsEditor ? postTlsEditor.getValue() : (initialConfig.postTlsGcode || ''),
       abortEventGcode: buildAbortGcode(abortEditor ? abortEditor.getValue() : (initialConfig.abortEventGcode || ''))
     };
   }

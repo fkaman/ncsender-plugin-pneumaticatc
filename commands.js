@@ -109,6 +109,17 @@ function sanitizeSlotCoords(raw, slots) {
   return map;
 }
 
+// Translate a legacy `tlsAuxOutput` value to the equivalent gcode line
+// that the removed built-in Pre/Post TLS aux toggling used to emit.
+// Returns '' when there's nothing to migrate so a truly-empty new
+// install ends up with empty Pre/Post TLS fields.
+function migrateLegacyTlsAux(auxOutput, action) {
+  if (auxOutput === undefined || auxOutput === null || auxOutput === -1) return '';
+  const { on, off } = auxOnOff(auxOutput);
+  const cmd = action === 'on' ? on : off;
+  return cmd ? `G4 P0\n${cmd}\nG4 P0` : '';
+}
+
 const buildInitialConfig = (raw = {}) => {
   const slots = clampSlots(raw.slots ?? raw.pockets);
   // Slot 1 coords — accept new (`slot1`) or legacy (`pocket1`) keys, and the
@@ -148,7 +159,13 @@ const buildInitialConfig = (raw = {}) => {
     postToolChangeGcode: raw.postToolChangeGcode ?? '',
     abortEventGcode: raw.abortEventGcode ?? '',
 
-    tlsAuxOutput: sanitizeAuxOutput(raw.tlsAuxOutput),
+    // Pre/Post TLS run right around the G38.2 probe. Backward-compat:
+    // if legacy `tlsAuxOutput` is set but the new gcode fields are
+    // empty, translate the old aux ON/OFF into equivalent gcode so an
+    // existing user's toolsetter keeps working after the setting is
+    // dropped.
+    preTlsGcode: raw.preTlsGcode ?? migrateLegacyTlsAux(raw.tlsAuxOutput, 'on'),
+    postTlsGcode: raw.postTlsGcode ?? migrateLegacyTlsAux(raw.tlsAuxOutput, 'off'),
     clampAuxOutput: sanitizeAuxOutput(raw.clampAuxOutput),
 
     dialogBehavior: {
@@ -220,6 +237,17 @@ function formatGCode(gcode) {
   return formatted;
 }
 
+// Reindent a multi-line user gcode block so it slots cleanly into the
+// TLS template literal. Empty / whitespace-only input yields '' so the
+// surrounding template doesn't leave a blank line in the composed
+// macro.
+function indentBlock(text) {
+  if (!text) return '';
+  const lines = String(text).split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return '';
+  return lines.join('\n    ');
+}
+
 function auxOnOff(auxOutput) {
   if (auxOutput === 'M7' || auxOutput === 'M8') return { on: auxOutput, off: 'M9' };
   if (typeof auxOutput === 'number' && auxOutput >= 0) {
@@ -245,22 +273,38 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     ? settings.tlsSeekStartZ
     : settings.zSafe) + tlsLibZ;
 
-  const { on: tlsOn, off: tlsOff } = auxOnOff(settings.tlsAuxOutput);
-  const auxOn = tlsOn ? `G4 P0\n    ${tlsOn}\n    G4 P0` : '';
-  const auxOff = tlsOff ? `G4 P0\n    ${tlsOff}\n    G4 P0` : '';
+  // User-provided gcode fired around the probe cycle. Trimmed +
+  // re-indented to keep the composed macro readable.
+  const preTls = indentBlock(settings.preTlsGcode);
+  const postTls = indentBlock(settings.postTlsGcode);
+
+  // Distance to descend from safe Z down to the seek start position.
+  // Positive when seekStartZ is above safeZ (skip the approach in that
+  // case — nothing to descend to).
+  const approachDelta = seekStartZ - settings.zSafe;
+  // Safety descent: instead of G0 rapiding blind to the seek start Z,
+  // use G38.3 as a "probe toward" — same fast motion (grblHAL clamps
+  // F99999 to the machine Z max rate $112), but if the tool contacts
+  // the toolsetter early (mis-configured Seek Start Z, tool longer
+  // than expected, etc.) the machine HALTS at contact instead of
+  // crashing. The follow-up G38.2 seek will then error with "probe
+  // already triggered", surfacing the problem to the operator.
+  const approach = approachDelta < 0
+    ? `G38.3 G91 Z${approachDelta.toFixed(3)} F99999\n    G90`
+    : '';
 
   const gcode = `
     G53 G0 Z${settings.zSafe}
     G53 G0 X${tlsX} Y${tlsY}
-    G53 G0 Z${seekStartZ}
-    ${auxOn}
+    ${approach}
+    ${preTls}
     G43.1 Z0
     G38.2 G91 Z-${settings.seekDistance} F${settings.seekFeedrate}
     G4 P0.2
     G38.4 G91 Z5 F75
     G91 G0 Z5
     G90
-    ${auxOff}
+    ${postTls}
     #<_ofs_idx> = [#5220 * 20 + 5203]
     #<_cur_wcs_z_ofs> = #[#<_ofs_idx>]
     #<_nc_last_tlo> = [#5063 + #<_cur_wcs_z_ofs>]
