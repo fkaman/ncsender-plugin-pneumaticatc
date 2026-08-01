@@ -1,4 +1,4 @@
 ## What's Changed
 
-### 🔧 Improvements
-- The Events tab now uses a single-column layout with a larger font for easier reading, and the Abort Event is editable
+### 🐛 Bug Fixes
+- Fixed the drawbar not re-clamping after an unload during the M6 tool change return to the home position
