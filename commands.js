@@ -22,7 +22,7 @@ const LAYOUT_MODES = ['linear', 'custom'];
 //   'always'  — probe on every M6 regardless of what's in the library.
 // Legacy 'first' → migrated to 'library' (same net behavior).
 const TLS_MODES = ['library', 'always'];
-const MAX_SLOTS = 8;
+const MAX_SLOTS = 32;
 
 const M6_PATTERN = /(?:^|[^A-Z])M0*6(?:\s*T0*(\d+)|(?=[^0-9T])|$)|(?:^|[^A-Z])T0*(\d+)\s*M0*6(?:[^0-9]|$)/i;
 const SLOT_PATTERN = /^\$SLOT0*(\d+)$/i;
