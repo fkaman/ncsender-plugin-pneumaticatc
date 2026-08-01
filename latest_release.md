@@ -1,4 +1,4 @@
 ## What's Changed
 
-### 🐛 Bug Fixes
-- Fixed the drawbar not re-clamping after an unload during the M6 tool change return to the home position
+### 🔧 Improvements
+- You can now use up to 32 slots, raised from the previous limit of 8
