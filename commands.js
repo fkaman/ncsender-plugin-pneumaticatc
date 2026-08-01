@@ -578,6 +578,13 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ? buildManualSwap(settings, toolNumber, tlsRoutine)
     : buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased);
 
+  // Tx → T0 leaves the drawbar released after the unload (there is no
+  // load section to re-clamp). Restore the fail-safe clamped state so
+  // the spindle isn't sitting with the collet open at rest.
+  const finalizeUnclamped = (toolNumber === 0 && unloadSection)
+    ? `G4 P0.5\n    ${auxLineFor(settings, 'clamp')}\n    G4 P0.5`
+    : '';
+
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
 
@@ -591,6 +598,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${unloadSection}
     ${loadSection}
     G53 G0 Z${settings.zSafe}
+    ${finalizeUnclamped}
     G4 P0
     G[#<return_units>]
     ${postCmd}
