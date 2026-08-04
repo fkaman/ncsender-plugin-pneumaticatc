@@ -376,6 +376,33 @@ function calculateSlotPosition(settings, slotNum) {
   return { engaged: base, approach };
 }
 
+// Rectangular safety envelope around the rack. Every side is padded by
+// `slideDistance` (fork mode) from the tool centerline out. The same value
+// serves the cup mode as a generic clearance since cup has no "slide"
+// concept — the UI just renames the label for that mode. Bounds are in
+// machine coordinates; axes are named ('X'/'Y') so callers don't have to
+// re-derive which axis is "along the rack" vs "into/out of a slot".
+function getRackKeepout(settings) {
+  const orientationY = settings.orientation === 'Y';
+  const perpAxis = orientationY ? 'X' : 'Y';
+  const parAxis  = orientationY ? 'Y' : 'X';
+  const margin = settings.slideDistance || 0;
+
+  const slot1Perp = orientationY ? settings.slot1.x : settings.slot1.y;
+  const slot1Par  = orientationY ? settings.slot1.y : settings.slot1.x;
+  const dirSign = settings.direction === 'Positive' ? 1 : -1;
+  const slotNPar = slot1Par + (settings.slots - 1) * settings.slotDistance * dirSign;
+
+  return {
+    perpAxis, parAxis, margin,
+    slot1Perp, slot1Par, slotNPar,
+    perpMin: slot1Perp - margin,
+    perpMax: slot1Perp + margin,
+    parMin: Math.min(slot1Par, slotNPar) - margin,
+    parMax: Math.max(slot1Par, slotNPar) + margin,
+  };
+}
+
 // === Clamp / unclamp sub-routines ===
 
 function auxLineFor(settings, action) {
