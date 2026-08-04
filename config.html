@@ -914,10 +914,6 @@
               <label id="pa-label-slide-speed">Slide Speed (mm/min)</label>
               <input class="pa-input" type="number" id="pa-slide-speed" value="500" min="1" step="1">
             </div>
-            <div class="pa-field-inline">
-              <label id="pa-label-rack-safe-distance">Rack Safe Distance (mm)</label>
-              <input class="pa-input" type="number" id="pa-rack-safe-distance" value="40" min="0" step="0.1">
-            </div>
           </div>
         </div>
 
@@ -1654,7 +1650,6 @@
 
     $('pa-slide-distance').value = fmtCoord(initialConfig.slideDistance ?? 40);
     $('pa-slide-speed').value    = String(initialConfig.slideSpeed ?? 500);
-    $('pa-rack-safe-distance').value = fmtCoord(initialConfig.rackSafeDistance ?? initialConfig.slideDistance ?? 40);
     $('pa-slot-distance').value  = fmtCoord(initialConfig.slotDistance ?? initialConfig.pocketDistance ?? 45);
     $('pa-z-retract').value      = fmtCoord(initialConfig.zRetract ?? 7);
     $('pa-seek-start-z').value   = fmtCoord(initialConfig.tlsSeekStartZ ?? initialConfig.zSafe ?? -5);
@@ -1703,7 +1698,6 @@
     $('pa-label-slot-distance').textContent = 'Slot Distance (' + u + ')';
     $('pa-label-slide-distance').textContent = 'Slide Distance (' + u + ')';
     $('pa-label-slide-speed').textContent = 'Slide Speed (' + f + ')';
-    $('pa-label-rack-safe-distance').textContent = 'Rack Safe Distance (' + u + ')';
     $('pa-label-z-retract').textContent = 'Z-Retract (' + u + ')';
     $('pa-label-seek-distance').textContent = 'Seek Distance (' + u + ')';
     $('pa-label-seek-feedrate').textContent = 'Seek Feedrate (' + f + ')';
@@ -1755,7 +1749,6 @@
       slideDirection: segSlideDir ? segSlideDir.get() : 'Negative',
       slideDistance: toMetric(parseFloatOr($('pa-slide-distance').value, 40)),
       slideSpeed: parseFloatOr($('pa-slide-speed').value, 500),
-      rackSafeDistance: toMetric(parseFloatOr($('pa-rack-safe-distance').value, 40)),
       zRetract: toMetric(parseFloatOr($('pa-z-retract').value, 7)),
 
       tlsMode: tlsMode,
@@ -1850,6 +1843,40 @@
     )) markDirty();
   });
 
+  // Compute the padded rack envelope from the plugin's own rack settings
+  // and expose it as ncSender's app-level Keepout Zone. Same math the
+  // rack routing uses inside commands.js — parallel axis extends from
+  // slot1 to slotN, perpendicular axis is a single slot line, slideDistance
+  // pads all four sides. Kept in config.html (not commands.js) because
+  // this is a UI-side sync — commands.js runs headless in Jint.
+  function computeKeepoutFromSettings(p) {
+    if (!p.slots || p.slots < 1) return null;
+    var slotsN = p.slots;
+    var slot1 = p.slot1;
+    var slotDist = p.slotDistance || 0;
+    var slideDist = p.slideDistance || 0;
+    var dirSign = p.direction === 'Positive' ? 1 : -1;
+    var orientationY = p.orientation === 'Y';
+    var slot1Par  = orientationY ? slot1.y : slot1.x;
+    var slot1Perp = orientationY ? slot1.x : slot1.y;
+    var slotNPar  = slot1Par + (slotsN - 1) * slotDist * dirSign;
+    var parMin  = Math.min(slot1Par, slotNPar) - slideDist;
+    var parMax  = Math.max(slot1Par, slotNPar) + slideDist;
+    var perpMin = slot1Perp - slideDist;
+    var perpMax = slot1Perp + slideDist;
+    return {
+      enabled: true,
+      min: {
+        x: orientationY ? perpMin : parMin,
+        y: orientationY ? parMin  : perpMin
+      },
+      max: {
+        x: orientationY ? perpMax : parMax,
+        y: orientationY ? parMax  : perpMax
+      }
+    };
+  }
+
   async function doSave() {
     var payload = gatherFormData();
     var res = await fetch(BASE_URL + '/api/plugins/com.ncsender.pneumaticatc/settings', {
@@ -1858,12 +1885,15 @@
       body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error('save failed: ' + res.status);
+    var appPatch = {
+      tool: { count: payload.slots, source: 'com.ncsender.pneumaticatc', manual: true, tls: true, probe: false }
+    };
+    var keepout = computeKeepoutFromSettings(payload);
+    if (keepout) appPatch.advanced = { keepoutZone: keepout };
     await fetch(BASE_URL + '/api/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tool: { count: payload.slots, source: 'com.ncsender.pneumaticatc', manual: true, tls: true, probe: false }
-      })
+      body: JSON.stringify(appPatch)
     });
     isDirty = false;
   }

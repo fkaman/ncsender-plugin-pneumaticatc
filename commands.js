@@ -403,6 +403,306 @@ function getRackKeepout(settings) {
   };
 }
 
+// === Rack routing =====================================================
+//
+// The rack forms a padded rectangle in machine coords. Four corners at
+// (parMin/parMax) × (loading/opposite side) let us route around the rack
+// without cutting across it. Loading side = the side the spindle
+// APPROACHES from (opposite of slideDirection — slideDirection is where
+// the spindle SLIDES to engage).
+//
+// All routing decisions are made at gcode-generation time from
+// `context.machineState.mpos.{x,y}` (the pre-M6 position). grblHAL
+// user-defined named parameters and o-word conditionals aren't reliably
+// evaluated on every controller, so we can't defer decisions to runtime
+// — emitted gcode is a single straight-line plan per macro.
+
+function getRackEnvelope(settings) {
+  const orientationY = settings.orientation === 'Y';
+  const perpAxis = orientationY ? 'X' : 'Y';
+  const parAxis  = orientationY ? 'Y' : 'X';
+  const slideSign = settings.slideDirection === 'Positive' ? 1 : -1;
+  const approachSign = -slideSign;                     // loading side lives opposite the slide direction
+  const margin = settings.slideDistance;
+
+  const slot1Perp = perpAxis === 'X' ? settings.slot1.x : settings.slot1.y;
+  const slot1Par  = parAxis  === 'X' ? settings.slot1.x : settings.slot1.y;
+  const dirSign = settings.direction === 'Positive' ? 1 : -1;
+  const slotNPar = slot1Par + (settings.slots - 1) * settings.slotDistance * dirSign;
+
+  return {
+    perpAxis, parAxis, margin, approachSign,
+    slot1Perp,
+    parMinPad: Math.min(slot1Par, slotNPar) - margin,
+    parMaxPad: Math.max(slot1Par, slotNPar) + margin,
+    loadingSidePerp:  slot1Perp + approachSign * margin,
+    oppositeSidePerp: slot1Perp - approachSign * margin,
+  };
+}
+
+// Pick the padded par-axis end closer to a par coord — minimizes the
+// diagonal from/to that coord.
+function nearestParEnd(par, e) {
+  return Math.abs(par - e.parMinPad) <= Math.abs(par - e.parMaxPad)
+    ? e.parMinPad
+    : e.parMaxPad;
+}
+
+// Origin is on the loading side of the rack, past the padded edge (safe
+// to diagonal to a slot approach without grazing rack tools). Uses the
+// PADDED loading edge as threshold — a coord sitting inside the padded
+// keepout band still counts as "not on loading side" so it falls to the
+// corner-routed branch.
+function isOriginOnLoadingSide(origin, settings) {
+  const e = getRackEnvelope(settings);
+  const perp = e.perpAxis === 'X' ? origin.x : origin.y;
+  return (perp - e.loadingSidePerp) * e.approachSign > 0;
+}
+
+// Origin is on the OPPOSITE side of the rack, past the padded edge.
+function isOriginOnOppositeSide(origin, settings) {
+  const e = getRackEnvelope(settings);
+  const perp = e.perpAxis === 'X' ? origin.x : origin.y;
+  return (perp - e.oppositeSidePerp) * e.approachSign < 0;
+}
+
+// SAFE ENTRY to a slot. Plugin-time decision from `origin`.
+// Same-side origin: one diagonal to (target.par, loading-side padded
+// perp). Opposite-side (or in-band) origin: diagonal to whichever end
+// corner is CLOSEST TO THE ORIGIN's par (shortest diagonal from where
+// the user was) → perp across at that corner (safe because par is
+// beyond rack extent) → par along the loading edge to the approach.
+function rackEntrance(targetSlotXY, origin, settings) {
+  const e = getRackEnvelope(settings);
+  const targetPar = e.parAxis === 'X' ? targetSlotXY.x : targetSlotXY.y;
+
+  if (isOriginOnLoadingSide(origin, settings)) {
+    return `
+      (rackEntrance: origin on loading side — direct to approach.)
+      G53 G0 ${e.parAxis}${targetPar} ${e.perpAxis}${e.loadingSidePerp}
+    `.trim();
+  }
+
+  const originPar = e.parAxis === 'X' ? origin.x : origin.y;
+  const cornerPar = nearestParEnd(originPar, e);
+  return `
+    (rackEntrance: origin opposite loading — route via corner nearest origin.)
+    G53 G0 ${e.parAxis}${cornerPar} ${e.perpAxis}${e.oppositeSidePerp}
+    G53 G0 ${e.perpAxis}${e.loadingSidePerp}
+    G53 G0 ${e.parAxis}${targetPar}
+  `.trim();
+}
+
+// SAFE EXIT from slot approach → toolsetter. Plugin-time branch on TLS
+// perp side vs loading side. Same side: 2 axis-aligned moves. Opposite
+// side: 3 moves (par to nearest end corner, perp across at safe par,
+// diagonal to TLS on the opposite side). Corner nearest FROM-SLOT par
+// so the par leg out of the rack is short.
+function rackExitToTLS(fromSlotXY, tlsX, tlsY, settings) {
+  const e = getRackEnvelope(settings);
+  const tlsPerp = e.perpAxis === 'X' ? tlsX : tlsY;
+  const tlsPar  = e.parAxis  === 'X' ? tlsX : tlsY;
+  const tlsOnLoadingSide = (tlsPerp - e.slot1Perp) * e.approachSign >= 0;
+  const fromPar = e.parAxis === 'X' ? fromSlotXY.x : fromSlotXY.y;
+
+  if (tlsOnLoadingSide) {
+    return `
+      (rackExitToTLS: TLS on loading side — par then perp.)
+      G53 G0 ${e.parAxis}${tlsPar}
+      G53 G0 X${tlsX} Y${tlsY}
+    `.trim();
+  }
+
+  const cornerPar = nearestParEnd(fromPar, e);
+  return `
+    (rackExitToTLS: TLS on opposite side — route via corner + diagonal.)
+    G53 G0 ${e.parAxis}${cornerPar}
+    G53 G0 ${e.perpAxis}${e.oppositeSidePerp}
+    G53 G0 X${tlsX} Y${tlsY}
+  `.trim();
+}
+
+// SAFE EXIT from slot approach → origin XY (skipping TLS). Empty spindle
+// takes the direct diagonal (safe over rack at zSafe). Loaded spindle
+// same-side: direct diagonal. Loaded spindle opposite-side: route via
+// the end corner CLOSEST TO ORIGIN then perp across, then diagonal home.
+function rackExitToOrigin(fromSlotXY, isEmpty, origin, settings) {
+  const originGcode = `G53 G0 X${origin.x} Y${origin.y}`;
+  if (isEmpty) {
+    return `
+      (rackExitToOrigin: empty spindle — direct diagonal home.)
+      ${originGcode}
+    `.trim();
+  }
+
+  if (isOriginOnLoadingSide(origin, settings)) {
+    return `
+      (rackExitToOrigin: origin on loading side — direct diagonal home.)
+      ${originGcode}
+    `.trim();
+  }
+
+  const e = getRackEnvelope(settings);
+  const originPar = e.parAxis === 'X' ? origin.x : origin.y;
+  const cornerPar = nearestParEnd(originPar, e);
+  return `
+    (rackExitToOrigin: origin opposite loading — route via corner nearest origin.)
+    G53 G0 ${e.parAxis}${cornerPar}
+    G53 G0 ${e.perpAxis}${e.oppositeSidePerp}
+    ${originGcode}
+  `.trim();
+}
+
+// True if a perp coord sits strictly past the padded loading edge
+// (i.e. safely outside the keepout on the loading side).
+function isPastLoadingEdge(perp, e) {
+  return (perp - e.loadingSidePerp) * e.approachSign > 0;
+}
+// True if a perp coord sits strictly past the padded opposite edge.
+function isPastOppositeEdge(perp, e) {
+  return (perp - e.oppositeSidePerp) * e.approachSign < 0;
+}
+
+// Does segment p1→p2 "wander through" the padded keepout? True if the
+// segment intersects the padded envelope AND the entry (or exit) point
+// STRICTLY INSIDE the segment sits at a par coord inside the slot par
+// range. That's the visual "the line cuts across the rack area"
+// pattern — a line grazing a corner (entry par outside slot extent) or
+// ending inside the envelope near a corner is considered safe. Endpoints
+// exactly on the boundary (t = 0 or t = 1) don't count as crossings.
+function segmentClipsKeepout(p1, p2, e) {
+  const isXAxisPar = e.parAxis === 'X';
+  const parMin  = e.parMinPad;
+  const parMax  = e.parMaxPad;
+  const perpMin = Math.min(e.loadingSidePerp, e.oppositeSidePerp);
+  const perpMax = Math.max(e.loadingSidePerp, e.oppositeSidePerp);
+  const xmin = isXAxisPar ? parMin : perpMin;
+  const xmax = isXAxisPar ? parMax : perpMax;
+  const ymin = isXAxisPar ? perpMin : parMin;
+  const ymax = isXAxisPar ? perpMax : parMax;
+
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  let tEnter = 0, tExit = 1;
+
+  if (dx === 0) {
+    if (p1.x <= xmin || p1.x >= xmax) return false;
+  } else {
+    let t1 = (xmin - p1.x) / dx, t2 = (xmax - p1.x) / dx;
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    tEnter = Math.max(tEnter, t1);
+    tExit  = Math.min(tExit,  t2);
+  }
+  if (dy === 0) {
+    if (p1.y <= ymin || p1.y >= ymax) return false;
+  } else {
+    let t1 = (ymin - p1.y) / dy, t2 = (ymax - p1.y) / dy;
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    tEnter = Math.max(tEnter, t1);
+    tExit  = Math.min(tExit,  t2);
+  }
+  if (tEnter >= tExit) return false;                        // no intersection
+
+  const EPS = 0.001;
+  const rackParMin = e.parMinPad + e.margin;
+  const rackParMax = e.parMaxPad - e.margin;
+  const parAt = (t) => isXAxisPar ? p1.x + t * dx : p1.y + t * dy;
+
+  // Entry strictly inside segment interior AND at a par sitting inside
+  // the slot extent = the line cuts across a slot area.
+  if (tEnter > EPS && tEnter < 1 - EPS) {
+    const p = parAt(tEnter);
+    if (p > rackParMin && p < rackParMax) return true;
+  }
+  // Same check for the exit — a line that starts inside and exits at a
+  // slot-par point is equally bad.
+  if (tExit > EPS && tExit < 1 - EPS) {
+    const p = parAt(tExit);
+    if (p > rackParMin && p < rackParMax) return true;
+  }
+  return false;
+}
+
+// All four padded-envelope corners as XY objects, ready for distance
+// sorting and geometry tests.
+function paddedKeepoutCorners(e) {
+  const perpVals = [e.loadingSidePerp, e.oppositeSidePerp];
+  const parVals  = [e.parMinPad, e.parMaxPad];
+  const corners = [];
+  for (const perp of perpVals) for (const par of parVals) {
+    corners.push({
+      x: e.perpAxis === 'X' ? perp : par,
+      y: e.perpAxis === 'X' ? par  : perp,
+    });
+  }
+  return corners;
+}
+
+// TLS → origin. Algorithm:
+//   1. If a direct TLS→origin diagonal doesn't clip the rack, use it.
+//   2. Otherwise, pick the padded-envelope corner CLOSEST TO ORIGIN
+//      where BOTH legs (TLS→corner and corner→origin) also miss the
+//      rack, and emit them as two diagonals.
+//   3. Fallback (rare — origin sitting on a slot, or truly boxed in):
+//      par-axis to corner nearest origin, perp-across to the far
+//      padded edge, then diagonal home.
+//
+// "Clips the rack" means the segment crosses the rack line (perp =
+// slot1.perp) inside the raw slot par extent — so a diagonal that
+// merely grazes the padded envelope but never reaches the rack line
+// counts as safe. That matches the user's intent: the padded envelope
+// is a safety buffer around the tools, not itself the obstacle.
+function tlsExit(tlsX, tlsY, origin, settings) {
+  const e = getRackEnvelope(settings);
+  const tls = { x: tlsX, y: tlsY };
+  const originGcode = `G53 G0 X${origin.x} Y${origin.y}`;
+
+  if (!segmentClipsKeepout(tls, origin, e)) {
+    return `
+      (tlsExit: direct TLS→origin doesn't clip rack — diagonal home.)
+      ${originGcode}
+    `.trim();
+  }
+
+  // Sort corners by proximity to origin — closest tried first.
+  const rankedCorners = paddedKeepoutCorners(e)
+    .map(c => ({ c, d: Math.hypot(c.x - origin.x, c.y - origin.y) }))
+    .sort((a, b) => a.d - b.d)
+    .map(pair => pair.c);
+
+  for (const corner of rankedCorners) {
+    const leg1Ok = !segmentClipsKeepout(tls, corner, e);
+    const leg2Ok = !segmentClipsKeepout(corner, origin, e);
+    if (leg1Ok && leg2Ok) {
+      return `
+        (tlsExit: two diagonals via padded corner nearest origin.)
+        G53 G0 X${corner.x} Y${corner.y}
+        ${originGcode}
+      `.trim();
+    }
+  }
+
+  // Fallback — no single corner gives both safe legs. Route par along
+  // TLS's side to the corner nearest origin par, then perp across to
+  // the far padded edge, then diagonal to origin. Should be rare.
+  const originPar  = e.parAxis === 'X' ? origin.x : origin.y;
+  const originPerp = e.perpAxis === 'X' ? origin.x : origin.y;
+  const tlsPerp    = e.perpAxis === 'X' ? tlsX : tlsY;
+  const cornerPar  = nearestParEnd(originPar, e);
+  const tlsPastLoading    = isPastLoadingEdge(tlsPerp, e);
+  const originPastLoading = isPastLoadingEdge(originPerp, e);
+  const originPastOpposite = isPastOppositeEdge(originPerp, e);
+  const crossPerp = originPastLoading  ? e.loadingSidePerp
+                  : originPastOpposite ? e.oppositeSidePerp
+                  : (tlsPastLoading ? e.oppositeSidePerp : e.loadingSidePerp);
+  return `
+    (tlsExit: no safe 2-diagonal — 3-move fallback.)
+    G53 G0 ${e.parAxis}${cornerPar}
+    G53 G0 ${e.perpAxis}${crossPerp}
+    ${originGcode}
+  `.trim();
+}
+
 // === Clamp / unclamp sub-routines ===
 
 function auxLineFor(settings, action) {
@@ -418,7 +718,7 @@ function slideFeedrate(settings) {
   return settings.slideSpeed > 0 ? settings.slideSpeed : 500;
 }
 
-function buildUnloadTool(settings, currentTool, slotPos) {
+function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }) {
   if (currentTool === 0) return '';
 
   if (currentTool > settings.slots) {
@@ -451,11 +751,12 @@ function buildUnloadTool(settings, currentTool, slotPos) {
     `.trim();
   }
 
-  // Fork: approach → drop to engagement Z → slide into engaged → release
-  // → retract Z. Tool stays in the fork fingers.
+  // Fork: safe rackEntrance (routes around the rack when the origin is
+  // on the opposite side) → drop to engagement Z → slide into engaged →
+  // release → retract Z. Tool stays in the fork fingers.
   const feed = slideFeedrate(settings);
   return `
-    G53 G0 X${slotPos.approach.x} Y${slotPos.approach.y}
+    ${rackEntrance(slotPos.engaged, origin, settings)}
     G53 G0 Z${settings.slot1.z}
     G53 G1 X${slotPos.engaged.x} Y${slotPos.engaged.y} F${feed}
     G4 P0.5
@@ -562,7 +863,7 @@ function buildManualSwap(settings, toolNumber, tlsRoutine) {
   `.trim();
 }
 
-function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets = { x: 0, y: 0 }, storedTlo = 0) {
+function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets = { x: 0, y: 0 }, storedTlo = 0, origin = { x: 0, y: 0 }) {
   const sourceSlot = calculateSlotPosition(settings, currentTool);
   const targetSlot = calculateSlotPosition(settings, toolNumber);
   // Probing decision:
@@ -575,11 +876,25 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   const hasStoredTlo = Math.abs(storedTlo || 0) > 0.0001;
   const shouldProbe = settings.tlsMode === 'always'
     || (settings.tlsMode === 'library' && !hasStoredTlo);
-  const tlsRoutine = shouldProbe
+
+  // Rack-fork gate: if we're loading a real rack tool via fork, wrap the
+  // TLS entry with a safe rack exit so the trip from slot approach to
+  // the toolsetter routes around the rack (par-first for same-side TLS;
+  // corner detour for opposite-side TLS). Manual and cup skip this —
+  // they don't share the rack routing model.
+  const isRackFork = toolNumber > 0
+    && toolNumber <= settings.slots
+    && settings.rackHolding !== 'Cup';
+  const rawTlsRoutine = shouldProbe
     ? createToolLengthSetRoutine(settings, toolOffsets).join('\n')
     : (settings.tlsMode === 'library' && hasStoredTlo
         ? `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`
         : '');
+  const tlsX = settings.toolsetter.x + (toolOffsets.x || 0);
+  const tlsY = settings.toolsetter.y + (toolOffsets.y || 0);
+  const tlsRoutine = (shouldProbe && isRackFork)
+    ? `${rackExitToTLS(targetSlot.engaged, tlsX, tlsY, settings)}\n${rawTlsRoutine}`
+    : rawTlsRoutine;
 
   // Every time we probe (both modes), arm the writeback so the next
   // [TLO:xxx] response from the controller gets saved into the tool's
@@ -600,7 +915,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   const drawbarAlreadyReleased = currentTool > 0;
   const unloadSection = isManualToManual
     ? ''
-    : buildUnloadTool(settings, currentTool, sourceSlot);
+    : buildUnloadTool(settings, currentTool, sourceSlot, origin);
   const loadSection = isManualToManual
     ? buildManualSwap(settings, toolNumber, tlsRoutine)
     : buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased);
@@ -611,6 +926,23 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   const finalizeUnclamped = (toolNumber === 0 && unloadSection)
     ? `G4 P0.5\n    ${auxLineFor(settings, 'clamp')}\n    G4 P0.5`
     : '';
+
+  // Exit routing — pick the right "get back to origin" path based on
+  // what actually happened during the macro. Manual and cup paths skip
+  // this since they aren't inside the rack routing model.
+  //   * Probed a rack-fork tool → spindle is at the toolsetter; tlsExit.
+  //   * Unloaded to T0 (rack fork) → spindle empty at source approach; direct diagonal.
+  //   * Loaded a rack-fork tool without probing → spindle loaded at target approach; runtime-branched exit.
+  //   * Otherwise (cup / manual / T0→T0) → leave as-is; existing sequence handles it.
+  let exitSection = '';
+  if (isRackFork && shouldProbe) {
+    exitSection = tlsExit(tlsX, tlsY, origin, settings);
+  } else if (toolNumber === 0 && currentTool > 0 && currentTool <= settings.slots
+             && settings.rackHolding !== 'Cup') {
+    exitSection = rackExitToOrigin(sourceSlot.engaged, /* isEmpty */ true, origin, settings);
+  } else if (isRackFork && !shouldProbe) {
+    exitSection = rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, origin, settings);
+  }
 
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
@@ -626,6 +958,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${loadSection}
     G53 G0 Z${settings.zSafe}
     ${finalizeUnclamped}
+    ${exitSection}
     G4 P0
     G[#<return_units>]
     ${postCmd}
@@ -739,7 +1072,15 @@ function handleM6Command(commands, context, settings) {
   const currentTool = context.machineState?.tool ?? 0;
   const toolOffsets = getToolProbeOffsets(toolNumber, context.tools);
   const storedTlo = getStoredTlo(toolNumber, context.tools);
-  const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo);
+  // Pre-M6 machine XY snapshot — rack routing branches on this at
+  // gcode-generation time. Requires the host to expose
+  // context.machineState.mpos.{x,y}; falls back to (0,0) on older
+  // hosts (path may be suboptimal but still lands at destination).
+  const origin = {
+    x: context.machineState?.mpos?.x ?? 0,
+    y: context.machineState?.mpos?.y ?? 0,
+  };
+  const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin);
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
 
