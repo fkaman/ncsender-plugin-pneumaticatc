@@ -466,60 +466,58 @@ function isOriginOnOppositeSide(origin, settings) {
   return (perp - e.oppositeSidePerp) * e.approachSign < 0;
 }
 
-// SAFE ENTRY to a slot. Always emits an axis-aligned "L" (or corner
-// detour), never a diagonal — even when a diagonal would be technically
-// safe. The user prefers the visual clarity of orthogonal moves that
-// don't overlay the keepout rectangle. Three cases, ordered by origin
-// position relative to the padded loading edge:
+// SAFE ENTRY to a slot. Same algorithm as tlsExit:
+//   1. Direct diagonal from origin to (target par, loading padded perp)
+//      if that line doesn't clip the rack.
+//   2. Two-diagonal via padded corner CLOSEST TO ORIGIN where both
+//      legs also miss the rack.
+//   3. 3-move fallback (opposite-side corner → perp across → par to
+//      target) — only fires when no corner gives both safe legs.
 //
-//   1. Origin STRICTLY PAST loading padded edge (outside envelope on
-//      loading side) — par to target par at the origin's current perp
-//      (line stays outside envelope), then perp DOWN to the approach.
-//
-//   2. Origin at rack line or inside envelope on loading side — perp
-//      UP to the loading padded edge, then par to target par at the
-//      padded edge.
-//
-//   3. Origin on the opposite side — diagonal to the opposite-side
-//      corner nearest origin par (line stays on origin's side, safe),
-//      perp across at that corner (par beyond rack extent, safe),
-//      then par along the loading edge to target.
-//
-// All branches end at (target par, loading padded perp), ready for the
-// caller's Z descent + G1 slide-in.
+// Ends at (target par, loading padded perp) regardless of branch, ready
+// for the caller's Z descent + G1 slide-in.
 function rackEntrance(targetSlotXY, origin, settings) {
   const e = getRackEnvelope(settings);
   const targetPar = e.parAxis === 'X' ? targetSlotXY.x : targetSlotXY.y;
-  const originPerp = e.perpAxis === 'X' ? origin.x : origin.y;
+  const targetApproach = {
+    x: e.perpAxis === 'X' ? e.loadingSidePerp : targetPar,
+    y: e.perpAxis === 'X' ? targetPar        : e.loadingSidePerp,
+  };
+  const approachGcode = `G53 G0 X${targetApproach.x} Y${targetApproach.y}`;
 
-  // Case 1: origin sits STRICTLY past the loading padded edge — safe
-  // to travel par at the origin's own perp coord (line stays outside
-  // envelope on loading side), then perp down to approach.
-  const originPastLoading = (originPerp - e.loadingSidePerp) * e.approachSign > 0;
-  if (originPastLoading) {
+  if (!segmentClipsKeepout(origin, targetApproach, e)) {
     return `
-      (rackEntrance: origin outside envelope on loading side — par at origin perp, then perp to approach.)
-      G53 G0 ${e.parAxis}${targetPar}
-      G53 G0 ${e.perpAxis}${e.loadingSidePerp}
+      (rackEntrance: direct diagonal to slot approach — clear of rack.)
+      ${approachGcode}
     `.trim();
   }
 
-  // Case 2: origin at or above rack line but inside envelope — perp UP
-  // to loading padded edge first, then par along the edge.
-  const originOnLoadingSide = (originPerp - e.slot1Perp) * e.approachSign >= 0;
-  if (originOnLoadingSide) {
-    return `
-      (rackEntrance: origin inside envelope on loading side — perp to loading edge, then par to target.)
-      G53 G0 ${e.perpAxis}${e.loadingSidePerp}
-      G53 G0 ${e.parAxis}${targetPar}
-    `.trim();
+  // Try each padded corner in order of distance to origin — first one
+  // where both legs (origin→corner and corner→approach) miss the rack
+  // wins. Two moves total, plus the caller's slide-in.
+  const rankedCorners = paddedKeepoutCorners(e)
+    .map(c => ({ c, d: Math.hypot(c.x - origin.x, c.y - origin.y) }))
+    .sort((a, b) => a.d - b.d)
+    .map(pair => pair.c);
+
+  for (const corner of rankedCorners) {
+    const leg1Ok = !segmentClipsKeepout(origin, corner, e);
+    const leg2Ok = !segmentClipsKeepout(corner, targetApproach, e);
+    if (leg1Ok && leg2Ok) {
+      return `
+        (rackEntrance: two diagonals via padded corner nearest origin.)
+        G53 G0 X${corner.x} Y${corner.y}
+        ${approachGcode}
+      `.trim();
+    }
   }
 
-  // Case 3: origin on opposite side — corner + perp across + par.
+  // Fallback: opposite-side corner nearest origin par → perp across →
+  // par to target. Rare — kept as safety net.
   const originPar = e.parAxis === 'X' ? origin.x : origin.y;
   const cornerPar = nearestParEnd(originPar, e);
   return `
-    (rackEntrance: origin opposite loading — corner + perp across + par to target.)
+    (rackEntrance: no safe 2-diagonal — 3-move fallback.)
     G53 G0 ${e.parAxis}${cornerPar} ${e.perpAxis}${e.oppositeSidePerp}
     G53 G0 ${e.perpAxis}${e.loadingSidePerp}
     G53 G0 ${e.parAxis}${targetPar}
