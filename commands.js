@@ -223,7 +223,21 @@ function formatGCode(gcode) {
       indentLevel = Math.max(0, indentLevel - 1);
     }
     const indent = '  '.repeat(indentLevel);
-    formatted.push(indent + line);
+    // Pro core only: prefix G53 machine-coord motion with `$keepout_off`
+    // so the ATC's rack routing (which is by design inside the keepout
+    // zone) isn't blocked by the core's keepout enforcement. Per-line
+    // prefix instead of a modal start/end pair means an aborted swap
+    // can't leave the check permanently disabled. G53 is used ONLY for
+    // trusted rack routing in this plugin, so scoping the bypass to
+    // G53-tagged lines is both sufficient and audit-friendly.
+    // Community core doesn't ship the keepout enforcement or the prefix
+    // parser, so the token would just get logged as an unknown command
+    // — we omit it there.
+    const isMachineMove = /(^|[^A-Z])G0*53(?:[^0-9]|$)/i.test(line);
+    const prefixed = (isMachineMove && _coreEdition === 'pro')
+      ? `$keepout_off ${line}`
+      : line;
+    formatted.push(indent + prefixed);
     if (isOCode && (
       upperLine.includes(' IF ') || upperLine.includes(' WHILE ') ||
       upperLine.includes(' DO ') || upperLine.includes('REPEAT') || upperLine.includes(' SUB')
@@ -1108,7 +1122,15 @@ function handleM6Command(commands, context, settings) {
 
 // === Main entry point ===
 
+// Module-scoped edition marker. Set at the top of every onBeforeCommand
+// call from the current context.edition so downstream helpers (formatGCode
+// in particular) can gate Pro-only behavior — currently the `$keepout_off`
+// prefix on G53 rack routing. Defaults to non-pro when the marker is
+// missing so an older core without this field falls back safely.
+let _coreEdition = 'unknown';
+
 function onBeforeCommand(commands, context, settings) {
+  _coreEdition = (context && typeof context.edition === 'string') ? context.edition : 'unknown';
   if (context && context.safeZHeight !== undefined) {
     settings.zSafe = context.safeZHeight;
   }

@@ -1903,11 +1903,12 @@
     }
 
     // Keepout-zone auto-publish is Pro-only (community edition doesn't
-    // render or enforce it). Send as a separate best-effort PATCH so a
-    // 4xx / network hiccup from the community host doesn't derail the
-    // rest of the save.
+    // render or enforce it). Ask the core which edition it is first —
+    // an older core without /api/app-info responds 404 and we treat
+    // that as "not pro" (safe fallback). Wrapped in try/catch so a
+    // network hiccup can't derail the save.
     var keepout = computeKeepoutFromSettings(payload);
-    if (keepout) {
+    if (keepout && await isProCore()) {
       try {
         await fetch(BASE_URL + '/api/settings', {
           method: 'PATCH',
@@ -1915,11 +1916,25 @@
           body: JSON.stringify({ advanced: { keepoutZone: keepout } })
         });
       } catch (err) {
-        console.warn('[PneumaticATC] keepout zone sync not supported by this host:', err);
+        console.warn('[PneumaticATC] keepout zone sync failed:', err);
       }
     }
 
     isDirty = false;
+  }
+
+  // Ask the core which edition it is. Returns true only when the
+  // response is a positive Pro identification — anything else (4xx,
+  // network error, unexpected shape) is treated as "not pro".
+  async function isProCore() {
+    try {
+      var res = await fetch(BASE_URL + '/api/app-info');
+      if (!res.ok) return false;
+      var info = await res.json();
+      return info && info.edition === 'pro';
+    } catch (err) {
+      return false;
+    }
   }
 
   // Close-with-unsaved modal — resolves to 'save', 'discard', or 'cancel'.
