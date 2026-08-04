@@ -1885,16 +1885,40 @@
       body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error('save failed: ' + res.status);
-    var appPatch = {
-      tool: { count: payload.slots, source: 'com.ncsender.pneumaticatc', manual: true, tls: true, probe: false }
-    };
+
+    // Tool-count sync is universal — both community and Pro editions
+    // expose /api/settings and the `tool` key. If this fails the plugin
+    // will re-populate the tool library on next reload from its own
+    // config, so we don't need to reraise.
+    try {
+      await fetch(BASE_URL + '/api/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tool: { count: payload.slots, source: 'com.ncsender.pneumaticatc', manual: true, tls: true, probe: false }
+        })
+      });
+    } catch (err) {
+      console.warn('[PneumaticATC] tool count sync failed:', err);
+    }
+
+    // Keepout-zone auto-publish is Pro-only (community edition doesn't
+    // render or enforce it). Send as a separate best-effort PATCH so a
+    // 4xx / network hiccup from the community host doesn't derail the
+    // rest of the save.
     var keepout = computeKeepoutFromSettings(payload);
-    if (keepout) appPatch.advanced = { keepoutZone: keepout };
-    await fetch(BASE_URL + '/api/settings', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(appPatch)
-    });
+    if (keepout) {
+      try {
+        await fetch(BASE_URL + '/api/settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ advanced: { keepoutZone: keepout } })
+        });
+      } catch (err) {
+        console.warn('[PneumaticATC] keepout zone sync not supported by this host:', err);
+      }
+    }
+
     isDirty = false;
   }
 
