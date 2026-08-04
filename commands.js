@@ -466,27 +466,60 @@ function isOriginOnOppositeSide(origin, settings) {
   return (perp - e.oppositeSidePerp) * e.approachSign < 0;
 }
 
-// SAFE ENTRY to a slot. Plugin-time decision from `origin`.
-// Same-side origin: one diagonal to (target.par, loading-side padded
-// perp). Opposite-side (or in-band) origin: diagonal to whichever end
-// corner is CLOSEST TO THE ORIGIN's par (shortest diagonal from where
-// the user was) → perp across at that corner (safe because par is
-// beyond rack extent) → par along the loading edge to the approach.
+// SAFE ENTRY to a slot. Always emits an axis-aligned "L" (or corner
+// detour), never a diagonal — even when a diagonal would be technically
+// safe. The user prefers the visual clarity of orthogonal moves that
+// don't overlay the keepout rectangle. Three cases, ordered by origin
+// position relative to the padded loading edge:
+//
+//   1. Origin STRICTLY PAST loading padded edge (outside envelope on
+//      loading side) — par to target par at the origin's current perp
+//      (line stays outside envelope), then perp DOWN to the approach.
+//
+//   2. Origin at rack line or inside envelope on loading side — perp
+//      UP to the loading padded edge, then par to target par at the
+//      padded edge.
+//
+//   3. Origin on the opposite side — diagonal to the opposite-side
+//      corner nearest origin par (line stays on origin's side, safe),
+//      perp across at that corner (par beyond rack extent, safe),
+//      then par along the loading edge to target.
+//
+// All branches end at (target par, loading padded perp), ready for the
+// caller's Z descent + G1 slide-in.
 function rackEntrance(targetSlotXY, origin, settings) {
   const e = getRackEnvelope(settings);
   const targetPar = e.parAxis === 'X' ? targetSlotXY.x : targetSlotXY.y;
+  const originPerp = e.perpAxis === 'X' ? origin.x : origin.y;
 
-  if (isOriginOnLoadingSide(origin, settings)) {
+  // Case 1: origin sits STRICTLY past the loading padded edge — safe
+  // to travel par at the origin's own perp coord (line stays outside
+  // envelope on loading side), then perp down to approach.
+  const originPastLoading = (originPerp - e.loadingSidePerp) * e.approachSign > 0;
+  if (originPastLoading) {
     return `
-      (rackEntrance: origin on loading side — direct to approach.)
-      G53 G0 ${e.parAxis}${targetPar} ${e.perpAxis}${e.loadingSidePerp}
+      (rackEntrance: origin outside envelope on loading side — par at origin perp, then perp to approach.)
+      G53 G0 ${e.parAxis}${targetPar}
+      G53 G0 ${e.perpAxis}${e.loadingSidePerp}
     `.trim();
   }
 
+  // Case 2: origin at or above rack line but inside envelope — perp UP
+  // to loading padded edge first, then par along the edge.
+  const originOnLoadingSide = (originPerp - e.slot1Perp) * e.approachSign >= 0;
+  if (originOnLoadingSide) {
+    return `
+      (rackEntrance: origin inside envelope on loading side — perp to loading edge, then par to target.)
+      G53 G0 ${e.perpAxis}${e.loadingSidePerp}
+      G53 G0 ${e.parAxis}${targetPar}
+    `.trim();
+  }
+
+  // Case 3: origin on opposite side — corner + perp across + par.
   const originPar = e.parAxis === 'X' ? origin.x : origin.y;
   const cornerPar = nearestParEnd(originPar, e);
   return `
-    (rackEntrance: origin opposite loading — route via corner nearest origin.)
+    (rackEntrance: origin opposite loading — corner + perp across + par to target.)
     G53 G0 ${e.parAxis}${cornerPar} ${e.perpAxis}${e.oppositeSidePerp}
     G53 G0 ${e.perpAxis}${e.loadingSidePerp}
     G53 G0 ${e.parAxis}${targetPar}
@@ -563,13 +596,17 @@ function isPastOppositeEdge(perp, e) {
   return (perp - e.oppositeSidePerp) * e.approachSign < 0;
 }
 
-// Does segment p1→p2 "wander through" the padded keepout? True if the
-// segment intersects the padded envelope AND the entry (or exit) point
-// STRICTLY INSIDE the segment sits at a par coord inside the slot par
-// range. That's the visual "the line cuts across the rack area"
-// pattern — a line grazing a corner (entry par outside slot extent) or
-// ending inside the envelope near a corner is considered safe. Endpoints
-// exactly on the boundary (t = 0 or t = 1) don't count as crossings.
+// Does segment p1→p2 "wander through" the padded keepout at a par coord
+// inside the slot range? Two ways this happens:
+//   (a) Strict-interior entry / exit at slot-range par — the classic
+//       "line cuts across a slot area" case.
+//   (b) The whole segment lies inside the envelope from origin to
+//       target (both endpoints on / inside envelope) with a mid-segment
+//       point inside the slot par range — captures "line stays inside
+//       the keepout the entire time".
+//
+// A line that only touches the envelope boundary (grazing) or sits on
+// an edge stays safe.
 function segmentClipsKeepout(p1, p2, e) {
   const isXAxisPar = e.parAxis === 'X';
   const parMin  = e.parMinPad;
@@ -601,23 +638,28 @@ function segmentClipsKeepout(p1, p2, e) {
     tEnter = Math.max(tEnter, t1);
     tExit  = Math.min(tExit,  t2);
   }
-  if (tEnter >= tExit) return false;                        // no intersection
+  if (tEnter >= tExit) return false;                        // no strict-interior intersection
 
   const EPS = 0.001;
   const rackParMin = e.parMinPad + e.margin;
   const rackParMax = e.parMaxPad - e.margin;
   const parAt = (t) => isXAxisPar ? p1.x + t * dx : p1.y + t * dy;
 
-  // Entry strictly inside segment interior AND at a par sitting inside
-  // the slot extent = the line cuts across a slot area.
   if (tEnter > EPS && tEnter < 1 - EPS) {
     const p = parAt(tEnter);
     if (p > rackParMin && p < rackParMax) return true;
   }
-  // Same check for the exit — a line that starts inside and exits at a
-  // slot-par point is equally bad.
   if (tExit > EPS && tExit < 1 - EPS) {
     const p = parAt(tExit);
+    if (p > rackParMin && p < rackParMax) return true;
+  }
+  // Midpoint of the in-envelope overlap — catches lines that stay
+  // inside envelope from origin to target (neither entry nor exit
+  // strictly interior). If the midpoint's par sits inside the slot
+  // range, the line runs through the rack area.
+  const midT = (tEnter + tExit) / 2;
+  if (midT > EPS && midT < 1 - EPS) {
+    const p = parAt(midT);
     if (p > rackParMin && p < rackParMax) return true;
   }
   return false;
