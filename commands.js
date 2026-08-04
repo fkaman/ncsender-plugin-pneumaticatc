@@ -594,17 +594,12 @@ function isPastOppositeEdge(perp, e) {
   return (perp - e.oppositeSidePerp) * e.approachSign < 0;
 }
 
-// Does segment p1→p2 "wander through" the padded keepout at a par coord
-// inside the slot range? Two ways this happens:
-//   (a) Strict-interior entry / exit at slot-range par — the classic
-//       "line cuts across a slot area" case.
-//   (b) The whole segment lies inside the envelope from origin to
-//       target (both endpoints on / inside envelope) with a mid-segment
-//       point inside the slot par range — captures "line stays inside
-//       the keepout the entire time".
-//
-// A line that only touches the envelope boundary (grazing) or sits on
-// an edge stays safe.
+// Does segment p1→p2 enter the interior of the padded keepout envelope?
+// Strict test — ANY strict-interior segment point sitting inside the
+// envelope counts as a clip, regardless of whether it lines up with a
+// slot par. Matches the visualizer's user-facing "the line goes through
+// the red rectangle" test. Lines that graze the boundary (endpoint on
+// edge / edge-parallel) stay safe.
 function segmentClipsKeepout(p1, p2, e) {
   const isXAxisPar = e.parAxis === 'X';
   const parMin  = e.parMinPad;
@@ -636,31 +631,18 @@ function segmentClipsKeepout(p1, p2, e) {
     tEnter = Math.max(tEnter, t1);
     tExit  = Math.min(tExit,  t2);
   }
-  if (tEnter >= tExit) return false;                        // no strict-interior intersection
+  if (tEnter >= tExit) return false;                        // grazes or misses
 
+  // Any strict-interior segment point inside envelope → clip.
+  // tEnter/tExit represent where the segment enters/exits the closed
+  // rect; if either is a strict-interior point of the segment, that
+  // point is strictly inside envelope. Otherwise fall back to a
+  // mid-overlap sample to catch "both endpoints inside" cases.
   const EPS = 0.001;
-  const rackParMin = e.parMinPad + e.margin;
-  const rackParMax = e.parMaxPad - e.margin;
-  const parAt = (t) => isXAxisPar ? p1.x + t * dx : p1.y + t * dy;
-
-  if (tEnter > EPS && tEnter < 1 - EPS) {
-    const p = parAt(tEnter);
-    if (p > rackParMin && p < rackParMax) return true;
-  }
-  if (tExit > EPS && tExit < 1 - EPS) {
-    const p = parAt(tExit);
-    if (p > rackParMin && p < rackParMax) return true;
-  }
-  // Midpoint of the in-envelope overlap — catches lines that stay
-  // inside envelope from origin to target (neither entry nor exit
-  // strictly interior). If the midpoint's par sits inside the slot
-  // range, the line runs through the rack area.
+  if (tEnter > EPS && tEnter < 1 - EPS) return true;
+  if (tExit  > EPS && tExit  < 1 - EPS) return true;
   const midT = (tEnter + tExit) / 2;
-  if (midT > EPS && midT < 1 - EPS) {
-    const p = parAt(midT);
-    if (p > rackParMin && p < rackParMax) return true;
-  }
-  return false;
+  return midT > EPS && midT < 1 - EPS;
 }
 
 // All four padded-envelope corners as XY objects, ready for distance
