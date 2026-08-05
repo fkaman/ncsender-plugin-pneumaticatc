@@ -886,7 +886,7 @@
               <label for="pa-rack-holding">Rack Holding</label>
               <select class="pa-select" id="pa-rack-holding">
                 <option value="Fork" selected>Fork</option>
-                <option value="Cup">Cup</option>
+                <option value="Cup" disabled>Cup (coming soon)</option>
               </select>
             </div>
           </div>
@@ -915,7 +915,7 @@
               <input class="pa-input" type="number" id="pa-slide-speed" value="500" min="1" step="1">
             </div>
             <div class="pa-field-inline">
-              <label id="pa-label-keepout-padding">Keepout Padding (mm)</label>
+              <label id="pa-label-keepout-padding">Safety Margin (mm)</label>
               <input class="pa-input" type="number" id="pa-keepout-padding" value="60" min="0" step="0.1">
             </div>
           </div>
@@ -1703,7 +1703,7 @@
     $('pa-label-slot-distance').textContent = 'Slot Distance (' + u + ')';
     $('pa-label-slide-distance').textContent = 'Slide Distance (' + u + ')';
     $('pa-label-slide-speed').textContent = 'Slide Speed (' + f + ')';
-    $('pa-label-keepout-padding').textContent = 'Keepout Padding (' + u + ')';
+    $('pa-label-keepout-padding').textContent = 'Safety Margin (' + u + ')';
     $('pa-label-z-retract').textContent = 'Z-Retract (' + u + ')';
     $('pa-label-seek-distance').textContent = 'Seek Distance (' + u + ')';
     $('pa-label-seek-feedrate').textContent = 'Seek Feedrate (' + f + ')';
