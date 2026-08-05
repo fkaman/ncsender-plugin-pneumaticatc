@@ -914,6 +914,10 @@
               <label id="pa-label-slide-speed">Slide Speed (mm/min)</label>
               <input class="pa-input" type="number" id="pa-slide-speed" value="500" min="1" step="1">
             </div>
+            <div class="pa-field-inline">
+              <label id="pa-label-keepout-padding">Keepout Padding (mm)</label>
+              <input class="pa-input" type="number" id="pa-keepout-padding" value="60" min="0" step="0.1">
+            </div>
           </div>
         </div>
 
@@ -949,7 +953,7 @@
             </div>
             <div class="pa-field-inline">
               <label id="pa-label-slot-distance">Slot Distance (mm)</label>
-              <input class="pa-input" type="number" id="pa-slot-distance" value="45" min="1" step="0.1">
+              <input class="pa-input" type="number" id="pa-slot-distance" value="60" min="1" step="0.1">
             </div>
 
             <div>
@@ -1649,8 +1653,9 @@
     updateRackHoldingVisibility();
 
     $('pa-slide-distance').value = fmtCoord(initialConfig.slideDistance ?? 40);
+    $('pa-keepout-padding').value = fmtCoord(initialConfig.keepoutPadding ?? 60);
     $('pa-slide-speed').value    = String(initialConfig.slideSpeed ?? 500);
-    $('pa-slot-distance').value  = fmtCoord(initialConfig.slotDistance ?? initialConfig.pocketDistance ?? 45);
+    $('pa-slot-distance').value  = fmtCoord(initialConfig.slotDistance ?? initialConfig.pocketDistance ?? 60);
     $('pa-z-retract').value      = fmtCoord(initialConfig.zRetract ?? 7);
     $('pa-seek-start-z').value   = fmtCoord(initialConfig.tlsSeekStartZ ?? initialConfig.zSafe ?? -5);
     $('pa-seek-distance').value  = fmtCoord(initialConfig.seekDistance ?? 50);
@@ -1698,6 +1703,7 @@
     $('pa-label-slot-distance').textContent = 'Slot Distance (' + u + ')';
     $('pa-label-slide-distance').textContent = 'Slide Distance (' + u + ')';
     $('pa-label-slide-speed').textContent = 'Slide Speed (' + f + ')';
+    $('pa-label-keepout-padding').textContent = 'Keepout Padding (' + u + ')';
     $('pa-label-z-retract').textContent = 'Z-Retract (' + u + ')';
     $('pa-label-seek-distance').textContent = 'Seek Distance (' + u + ')';
     $('pa-label-seek-feedrate').textContent = 'Seek Feedrate (' + f + ')';
@@ -1737,7 +1743,7 @@
 
       orientation: segOrientation ? segOrientation.get() : 'Y',
       direction: segDirection ? segDirection.get() : 'Negative',
-      slotDistance: toMetric(parseFloatOr($('pa-slot-distance').value, 45)),
+      slotDistance: toMetric(parseFloatOr($('pa-slot-distance').value, 60)),
       slot1: {
         x: toMetric(parseFloatOr($('pa-slot1-x').value, 0)),
         y: toMetric(parseFloatOr($('pa-slot1-y').value, 0)),
@@ -1749,6 +1755,7 @@
       slideDirection: segSlideDir ? segSlideDir.get() : 'Negative',
       slideDistance: toMetric(parseFloatOr($('pa-slide-distance').value, 40)),
       slideSpeed: parseFloatOr($('pa-slide-speed').value, 500),
+      keepoutPadding: toMetric(parseFloatOr($('pa-keepout-padding').value, 60)),
       zRetract: toMetric(parseFloatOr($('pa-z-retract').value, 7)),
 
       tlsMode: tlsMode,
@@ -1844,37 +1851,83 @@
   });
 
   // Compute the padded rack envelope from the plugin's own rack settings
-  // and expose it as ncSender's app-level Keepout Zone. Same math the
-  // rack routing uses inside commands.js — parallel axis extends from
-  // slot1 to slotN, perpendicular axis is a single slot line, slideDistance
-  // pads all four sides. Kept in config.html (not commands.js) because
-  // this is a UI-side sync — commands.js runs headless in Jint.
-  function computeKeepoutFromSettings(p) {
+  // and expose it as ncSender's app-level Keepout Zone. Parallel axis
+  // extends from slot1 to slotN, perpendicular axis is a single slot
+  // line, `keepoutPadding` pads all four sides. Uses its own padding
+  // parameter (not slideDistance) because the visualizer keepout wants
+  // a larger safety margin around the rack than the physical slide-off
+  // travel the routing needs. Result is clamped to machine limits when
+  // available so the rectangle never advertises area outside the bed.
+  //
+  // Async because it fetches firmware ($130/$131) and settings
+  // (homeLocation) to derive machine bounds. Falls back to unclamped
+  // when the fetches fail — the setting is still valid, just wider.
+  async function computeKeepoutFromSettings(p) {
     if (!p.slots || p.slots < 1) return null;
     var slotsN = p.slots;
     var slot1 = p.slot1;
     var slotDist = p.slotDistance || 0;
-    var slideDist = p.slideDistance || 0;
+    var pad = p.keepoutPadding || 0;
     var dirSign = p.direction === 'Positive' ? 1 : -1;
     var orientationY = p.orientation === 'Y';
     var slot1Par  = orientationY ? slot1.y : slot1.x;
     var slot1Perp = orientationY ? slot1.x : slot1.y;
     var slotNPar  = slot1Par + (slotsN - 1) * slotDist * dirSign;
-    var parMin  = Math.min(slot1Par, slotNPar) - slideDist;
-    var parMax  = Math.max(slot1Par, slotNPar) + slideDist;
-    var perpMin = slot1Perp - slideDist;
-    var perpMax = slot1Perp + slideDist;
+    var parMin  = Math.min(slot1Par, slotNPar) - pad;
+    var parMax  = Math.max(slot1Par, slotNPar) + pad;
+    var perpMin = slot1Perp - pad;
+    var perpMax = slot1Perp + pad;
+    var minX = orientationY ? perpMin : parMin;
+    var maxX = orientationY ? perpMax : parMax;
+    var minY = orientationY ? parMin  : perpMin;
+    var maxY = orientationY ? parMax  : perpMax;
+
+    var limits = await getMachineLimits();
+    if (limits) {
+      minX = Math.max(minX, limits.minX);
+      maxX = Math.min(maxX, limits.maxX);
+      minY = Math.max(minY, limits.minY);
+      maxY = Math.min(maxY, limits.maxY);
+    }
+
     return {
       enabled: true,
-      min: {
-        x: orientationY ? perpMin : parMin,
-        y: orientationY ? parMin  : perpMin
-      },
-      max: {
-        x: orientationY ? perpMax : parMax,
-        y: orientationY ? parMax  : perpMax
-      }
+      min: { x: minX, y: minY },
+      max: { x: maxX, y: maxY }
     };
+  }
+
+  // Machine physical envelope for keepout clamping. Derived from firmware
+  // ($130 = X max travel, $131 = Y max travel) + home location (which
+  // corner the machine homes to determines sign of the coord range).
+  // Matches the same derivation the client uses in `use-app-store.ts`
+  // and `AdvancedTab.vue`. Returns null on any missing data — caller
+  // then leaves the rectangle unclamped, which is the safe fallback for
+  // "we don't know the bounds, don't shrink it".
+  async function getMachineLimits() {
+    try {
+      var results = await Promise.all([
+        fetch(BASE_URL + '/api/firmware'),
+        fetch(BASE_URL + '/api/settings')
+      ]);
+      if (!results[0].ok || !results[1].ok) return null;
+      var firmware = await results[0].json();
+      var settings = await results[1].json();
+      var sx = parseFloat((firmware && firmware.settings && firmware.settings['130'] && firmware.settings['130'].value) || '');
+      var sy = parseFloat((firmware && firmware.settings && firmware.settings['131'] && firmware.settings['131'].value) || '');
+      if (!(sx > 0) || !(sy > 0)) return null;
+      var homeLocation = (settings && settings.homeLocation) || 'back-left';
+      var xHome = (homeLocation === 'back-right' || homeLocation === 'front-right') ? 'max' : 'min';
+      var yHome = (homeLocation === 'back-left'  || homeLocation === 'back-right')  ? 'max' : 'min';
+      return {
+        minX: xHome === 'max' ? -sx : 0,
+        maxX: xHome === 'max' ?   0 : sx,
+        minY: yHome === 'max' ? -sy : 0,
+        maxY: yHome === 'max' ?   0 : sy
+      };
+    } catch (err) {
+      return null;
+    }
   }
 
   async function doSave() {
@@ -1907,7 +1960,7 @@
     // an older core without /api/app-info responds 404 and we treat
     // that as "not pro" (safe fallback). Wrapped in try/catch so a
     // network hiccup can't derail the save.
-    var keepout = computeKeepoutFromSettings(payload);
+    var keepout = await computeKeepoutFromSettings(payload);
     if (keepout && await isProCore()) {
       try {
         await fetch(BASE_URL + '/api/settings', {
