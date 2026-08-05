@@ -334,6 +334,38 @@ describe('tlsExit (TLS → destination)', () => {
     assert.deepEqual(motionLines(gcode), ['G53 G0 X0 Y50']);
   });
 
+  test('TLS == destination: direct diagonal (zero motion), no bogus detour', () => {
+    // Regression for the reported bug: origin == pre-M6 location ==
+    // TLS location. Neither endpoint is "past sliding" (both sit
+    // inside the perp band beside the rack) so the old check fell
+    // through to the case-2 corner detour and emitted a walk out to
+    // the opposite-side edge before coming back. With the par-end
+    // "same side" checks added, both endpoints are past parMax and
+    // the direct diagonal wins.
+    const ORIENT_X_RACK = {
+      slots: 3, orientation: 'X', direction: 'Positive',
+      slot1: { x: 79.928, y: -9.009 }, slotDistance: 60,
+      slideDirection: 'Positive', slideDistance: 40, keepoutPadding: 60,
+    };
+    const same = { x: 306.809, y: -34.081 };
+    const gcode = tlsExit(same.x, same.y, same, ORIENT_X_RACK);
+    // Single direct-diagonal move to the destination — no detour lines.
+    assert.deepEqual(motionLines(gcode), ['G53 G0 X306.809 Y-34.081']);
+  });
+
+  test('both past parMax: direct diagonal (same-side par test)', () => {
+    // TLS and destination both sit past the rack's par-max end but
+    // at different perp values (inside the keepout perp band). Line
+    // stays past parMax the whole way, so it never enters the keepout.
+    const ORIENT_X_RACK = {
+      slots: 3, orientation: 'X', direction: 'Positive',
+      slot1: { x: 79.928, y: -9.009 }, slotDistance: 60,
+      slideDirection: 'Positive', slideDistance: 40, keepoutPadding: 60,
+    };
+    const gcode = tlsExit(306.809, -34.081, { x: 320, y: 10 }, ORIENT_X_RACK);
+    assert.deepEqual(motionLines(gcode), ['G53 G0 X320 Y10']);
+  });
+
   test('opposite-side destination: 3-move par-end corner detour (case 2)', () => {
     // Default RACK (sliding +X). TLS at (-300, 100) sits past -X
     // (opposite side of sliding). Destination at (60, 200) sits past

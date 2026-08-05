@@ -714,24 +714,39 @@ function tlsExit(tlsX, tlsY, origin, settings) {
   const originPerp = perpAxis === 'X' ? origin.x : origin.y;
   const originPar  = parAxis  === 'X' ? origin.x : origin.y;
 
+  const tlsPar    = parAxis  === 'X' ? tlsX     : tlsY;
   const tlsPastSliding    = (tlsPerp    - entryPerp)    * approachSign >= 0;
   const originPastSliding = (originPerp - entryPerp)    * approachSign >= 0;
   const tlsPastOpposite   = (tlsPerp    - oppositePerp) * approachSign <= 0;
   const originPastOpposite= (originPerp - oppositePerp) * approachSign <= 0;
 
-  const bothPastSliding  = tlsPastSliding  && originPastSliding;
-  const bothPastOpposite = tlsPastOpposite && originPastOpposite;
-
-  if (bothPastSliding || bothPastOpposite) {
-    return `
-      (tlsExit: TLS and destination on the same perp side of the rack — direct diagonal.)
-      G53 G0 X${origin.x} Y${origin.y}
-    `.trim();
-  }
-
   const zone = computeKeepoutZone(settings);
   const parMin = orientationY ? zone.minY : zone.minX;
   const parMax = orientationY ? zone.maxY : zone.maxX;
+
+  // "Same side" test — a direct diagonal is safe when both endpoints
+  // sit past the same edge of the keepout rectangle, so the line
+  // segment stays entirely outside the interior. Four edges to check:
+  //   * both past the sliding-side perp   → line stays on sliding side
+  //   * both past the opposite-side perp  → line stays on opposite side
+  //   * both past parMax                  → line stays past the rack's par-max end
+  //   * both past parMin                  → line stays past the rack's par-min end
+  // The par-end pair is what covers the bug where TLS and origin sit
+  // in the same workspace slot beside the rack (e.g. TLS == pre-M6
+  // origin, both at (306.809, -34.081) with par past parMax) — without
+  // it the old check missed and produced a bogus edge-walk that ran
+  // the machine out to the far side.
+  const bothPastSliding  = tlsPastSliding  && originPastSliding;
+  const bothPastOpposite = tlsPastOpposite && originPastOpposite;
+  const bothPastParMax   = tlsPar >= parMax && originPar >= parMax;
+  const bothPastParMin   = tlsPar <= parMin && originPar <= parMin;
+
+  if (bothPastSliding || bothPastOpposite || bothPastParMax || bothPastParMin) {
+    return `
+      (tlsExit: TLS and destination on the same side of the keepout — direct diagonal.)
+      G53 G0 X${origin.x} Y${origin.y}
+    `.trim();
+  }
   const cornerPar = Math.abs(originPar - parMin) <= Math.abs(originPar - parMax)
     ? parMin
     : parMax;
