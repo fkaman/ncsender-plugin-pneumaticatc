@@ -448,6 +448,38 @@ function computeKeepoutZone(settings) {
   };
 }
 
+// Line-segment vs axis-aligned rectangle intersection (slab method).
+// Returns true if the segment (ax,ay)→(bx,by) touches or crosses the
+// rectangle [minX,maxX] × [minY,maxY]. Used by tlsExit to decide
+// between a direct diagonal (safe) and a corner detour (crosses the
+// padded keepout box). Cheap enough to call per-routing decision.
+function segmentIntersectsRect(ax, ay, bx, by, minX, maxX, minY, maxY) {
+  const inside = (x, y) => x >= minX && x <= maxX && y >= minY && y <= maxY;
+  if (inside(ax, ay) || inside(bx, by)) return true;
+  const dx = bx - ax;
+  const dy = by - ay;
+  let tMin = 0, tMax = 1;
+  if (dx === 0) {
+    if (ax < minX || ax > maxX) return false;
+  } else {
+    const t1 = (minX - ax) / dx;
+    const t2 = (maxX - ax) / dx;
+    tMin = Math.max(tMin, Math.min(t1, t2));
+    tMax = Math.min(tMax, Math.max(t1, t2));
+    if (tMin > tMax) return false;
+  }
+  if (dy === 0) {
+    if (ay < minY || ay > maxY) return false;
+  } else {
+    const t1 = (minY - ay) / dy;
+    const t2 = (maxY - ay) / dy;
+    tMin = Math.max(tMin, Math.min(t1, t2));
+    tMax = Math.min(tMax, Math.max(t1, t2));
+    if (tMin > tMax) return false;
+  }
+  return true;
+}
+
 // Sliding-side padded perp — the perp coord on the OUTER edge of the
 // keepout zone, on the side the tool approaches from. `slotEntryPoint`
 // sits on this line; every rack entry / exit lands here first.
@@ -714,39 +746,32 @@ function tlsExit(tlsX, tlsY, origin, settings) {
   const originPerp = perpAxis === 'X' ? origin.x : origin.y;
   const originPar  = parAxis  === 'X' ? origin.x : origin.y;
 
-  const tlsPar    = parAxis  === 'X' ? tlsX     : tlsY;
   const tlsPastSliding    = (tlsPerp    - entryPerp)    * approachSign >= 0;
   const originPastSliding = (originPerp - entryPerp)    * approachSign >= 0;
-  const tlsPastOpposite   = (tlsPerp    - oppositePerp) * approachSign <= 0;
-  const originPastOpposite= (originPerp - oppositePerp) * approachSign <= 0;
 
   const zone = computeKeepoutZone(settings);
   const parMin = orientationY ? zone.minY : zone.minX;
   const parMax = orientationY ? zone.maxY : zone.maxX;
 
-  // "Same side" test — a direct diagonal is safe when both endpoints
-  // sit past the same edge of the keepout rectangle, so the line
-  // segment stays entirely outside the interior. Four edges to check:
-  //   * both past the sliding-side perp   → line stays on sliding side
-  //   * both past the opposite-side perp  → line stays on opposite side
-  //   * both past parMax                  → line stays past the rack's par-max end
-  //   * both past parMin                  → line stays past the rack's par-min end
-  // The par-end pair is what covers the bug where TLS and origin sit
-  // in the same workspace slot beside the rack (e.g. TLS == pre-M6
-  // origin, both at (306.809, -34.081) with par past parMax) — without
-  // it the old check missed and produced a bogus edge-walk that ran
-  // the machine out to the far side.
-  const bothPastSliding  = tlsPastSliding  && originPastSliding;
-  const bothPastOpposite = tlsPastOpposite && originPastOpposite;
-  const bothPastParMax   = tlsPar >= parMax && originPar >= parMax;
-  const bothPastParMin   = tlsPar <= parMin && originPar <= parMin;
-
-  if (bothPastSliding || bothPastOpposite || bothPastParMax || bothPastParMin) {
+  // Direct diagonal is safe iff the segment doesn't cross the padded
+  // keepout box. Previously this was a series of "both past edge X"
+  // enumerations, but that missed cases where one endpoint sits inside
+  // the keepout's perp band while the other sits inside its par band —
+  // the segment passes cleanly around a corner but no single edge-side
+  // test catches it. Proper segment-vs-rect intersection is cheap and
+  // correct in every configuration.
+  if (!segmentIntersectsRect(tlsX, tlsY, origin.x, origin.y,
+                             zone.minX, zone.maxX, zone.minY, zone.maxY)) {
     return `
-      (tlsExit: TLS and destination on the same side of the keepout — direct diagonal.)
+      (tlsExit: TLS and destination clear of the keepout — direct diagonal.)
       G53 G0 X${origin.x} Y${origin.y}
     `.trim();
   }
+
+  // Segment would cross the keepout → route via a par-end corner.
+  // Pick the corner nearest the destination (fewer wasted travel) and
+  // walk the outer edge from the TLS-side corner to the origin-side
+  // corner before diagonaling out to the destination.
   const cornerPar = Math.abs(originPar - parMin) <= Math.abs(originPar - parMax)
     ? parMin
     : parMax;

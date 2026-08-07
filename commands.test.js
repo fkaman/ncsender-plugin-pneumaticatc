@@ -378,6 +378,36 @@ describe('tlsExit (TLS → destination)', () => {
       'G53 G0 X60 Y200',    // diagonal out to destination
     ]);
   });
+
+  // Reported case: after M6 → TLS cycle, tlsExit routed via X=1316.581
+  // which was outside the machine's X travel — raw g-code capture in
+  // the commit message. Both endpoints sit BELOW the keepout's par-min
+  // edge (further negative than slotN.y − padding = −296.678), so a
+  // direct diagonal never crosses the keepout box and is the right
+  // answer. The plugin instead picked the "opposite perp sides" par-end
+  // corner detour and walked out past parMax to X=slot1.x+90.
+  //
+  // Fixed by replacing the enumerated "same side" checks with a proper
+  // segment-vs-rect intersection test in tlsExit — see commands.js
+  // segmentIntersectsRect + tlsExit.
+  test('regression: TLS below par range, dest left of perp range — direct diagonal (out-of-limits detour)', () => {
+    const RACK = {
+      slots: 3,
+      orientation: 'Y',
+      direction: 'Positive',
+      slot1: { x: 1216.581, y: -116.678 },
+      slotDistance: 60,
+      slideDirection: 'Positive',
+      slideDistance: 40,
+      keepoutPadding: 60,
+    };
+    // TLS at (1225.828, -337.775) and destination at (1079.828, -186.775).
+    // Slot par range: y ∈ [-236.678, -116.678]; +padding 60 → par-min edge
+    // at y = -296.678. Both TLS and destination sit BELOW that edge, so a
+    // direct diagonal stays outside the keepout box the entire way.
+    const gcode = tlsExit(1225.828, -337.775, { x: 1079.828, y: -186.775 }, RACK);
+    assert.deepEqual(motionLines(gcode), ['G53 G0 X1079.828 Y-186.775']);
+  });
 });
 
 // End-to-end program shape tests — the tool-change program builder
