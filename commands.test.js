@@ -31,6 +31,8 @@ import {
   slotApproachPoint,
   rackEntrance,
   rackExit,
+  cupEntrance,
+  cupExit,
   tlsEntrance,
   tlsExit,
   buildLoadTool,
@@ -511,5 +513,270 @@ describe('buildLoadTool — T1 → T2 chained swap (same-side)', () => {
       lines.slice(0, 2).filter(l => l.startsWith('G53 G0 X-55')).length, 0,
       'chained load must not include a sliding-side (X=-55) entry move'
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Cup regression suite.
+//
+// Cup used to be excluded from the rack routing model on the assumption
+// that it was a separate top-down flow. That produced two bugs:
+//   1. Cup unload skipped rackEntrance — a direct G0 X/Y to the slot from
+//      an off-side origin cut through the padded keepout.
+//   2. Cup chained load fell back to the padded-entry pair even though
+//      the machine sat at slot-m engaged, Z-safe (over the tools). It
+//      exited to the sliding edge and came back in — three extra moves.
+// These tests lock in the fix: Cup shares the same routing model as Fork,
+// minus only the horizontal G1 slide (cup catches from above during Z
+// descent, no fork groove to engage).
+// ─────────────────────────────────────────────────────────────────────────
+const CUP_RACK = {
+  ...RACK,
+  rackHolding: 'Cup',
+  slot1: { x: -115, y: 40, z: -100 },
+  drawbarOffset: 1,
+  drawbarFeedrate: 300,
+  zSafe: 0,
+  clampAuxOutput: 2,
+};
+
+describe('buildUnloadTool — Cup routes around keepout (regression)', () => {
+  test('T1 → T0 from same-side origin (+X): 2-move cupEntrance via +X edge, NO fork-style approach descent', () => {
+    const slotPos = calculateSlotPosition(CUP_RACK, 1);
+    const gcode = buildUnloadTool(
+      CUP_RACK,
+      /* currentTool */ 1,
+      slotPos,
+      /* origin */      { x: 60, y: 120 }   // workspace at +X of slot1.x=-115, INSIDE par range
+    );
+    const lines = motionLines(gcode);
+    // Cup does not need the fork's sliding-side entry (there's no G1
+    // slide to align). Origin (X=60) is +X of keepout perpMax=-55, so
+    // enter via +X edge — diagonal to (-55, engaged.y) then perp step
+    // to engaged. TWO moves, not fork's three (entry / approach / engaged).
+    assert.equal(lines[0], 'G53 G0 X-55 Y40',  'first move: diagonal to +X edge at engaged.par (no fork sliding-side detour)');
+    assert.equal(lines[1], 'G53 G0 X-115 Y40', 'second move: perp step into engaged.xy — that\'s IT for the entry');
+    // NO third padded-approach move at X=-75 like fork would emit.
+    assert.ok(!lines.slice(0, 3).some(l => l === 'G53 G0 X-75'),
+      'Cup must NOT emit fork\'s intermediate perp descent to slotApproach (X=-75)');
+    // No G1 slide either (fork-only).
+    assert.ok(!lines.some(l => /^G53 G1 [XY]/.test(l)),
+      'Cup unload must NOT emit a G1 horizontal XY slide — that\'s fork-only (G1 Z is fine, that\'s the drawbar back-off)');
+    // Unload descends to slot.z first (with clamped tool), then AFTER
+    // the unclamp aux fires, a G1 back-off retracts to slot.z + offset
+    // at drawbarFeedrate — this overlaps with the pneumatic push so the
+    // tool holder stays on the cup lip while the drawbar releases.
+    assert.ok(lines.some(l => l === 'G53 G0 Z-100'),
+      'unload initial descent should be to slot.z (with clamped tool still in cup position)');
+    assert.ok(lines.some(l => l === 'G53 G1 Z-99 F300'),
+      'unload should G1 back off to slot.z + drawbarOffset at drawbarFeedrate after unclamp aux');
+    assert.ok(lines.some(l => l === `G53 G0 Z${CUP_RACK.zSafe || 0}`),
+      'should retract to Z-safe at the end');
+  });
+
+  test('T1 → T0 from opposite-side origin (Positive slideDir): 2-move via +X edge, NOT 4-move opposite-corner detour', () => {
+    // This is the user-reported scenario: with slideDirection='Positive'
+    // the SLIDING side is -X (fork enters from -X). Origin sits at +X of
+    // the rack — OPPOSITE the sliding side. Fork routing (rackEntrance)
+    // must detour via the far -X sliding-side edge (4 moves). Cup has no
+    // slide constraint — it can enter from the origin's own +X edge in
+    // just 2 moves. Locks in the fix for the "cup still uses fork's
+    // opposite-corner detour" bug.
+    const POS_CUP_RACK = { ...CUP_RACK, slideDirection: 'Positive' };
+    const slotPos = calculateSlotPosition(POS_CUP_RACK, 1);
+    const gcode = buildUnloadTool(
+      POS_CUP_RACK,
+      /* currentTool */ 1,
+      slotPos,
+      /* origin */      { x: 701, y: 20 }  // +X of keepout (perpMax = -115+60 = -55)
+    );
+    const lines = motionLines(gcode);
+    // Cup routes via +X edge (perpMax = -55) — the ORIGIN-side edge — in
+    // 2 moves. NOT via the sliding-side edge which is now the -X side.
+    assert.equal(lines[0], 'G53 G0 X-55 Y40', 'first move: diagonal to ORIGIN-side (+X) edge at engaged.par');
+    assert.equal(lines[1], 'G53 G0 X-115 Y40', 'second move: perp step into engaged.xy');
+    // Explicitly reject the fork opposite-corner detour markers:
+    assert.ok(!lines.some(l => l === 'G53 G0 X-175 Y-20'),
+      'Cup must NOT visit the opposite-side corner (X=-175, i.e. -X sliding-side edge)');
+    assert.ok(!lines.some(l => l === 'G53 G0 X-175'),
+      'Cup must NOT emit a perp move to the far -X sliding side');
+  });
+
+  test('T1 → T0: ends at slot 1 engaged (Z-safe), so a chained load can par-walk over the rack', () => {
+    // Same guarantee as fork: no perp ascent after Z retract, so a
+    // subsequent chained load doesn't waste a move exiting to the
+    // sliding edge before par-walking to the next slot.
+    const slotPos = calculateSlotPosition(CUP_RACK, 1);
+    const gcode = buildUnloadTool(CUP_RACK, 1, slotPos, { x: 60, y: 120 });
+    const lines = motionLines(gcode);
+    const nonSentinel = lines.filter(l => !l.startsWith('M'));
+    const finalMotion = nonSentinel[nonSentinel.length - 1];
+    assert.ok(finalMotion.startsWith('G53 G0 Z'),
+      `unload should end with the Z retract, not a perp ascent (last motion was ${finalMotion})`);
+  });
+});
+
+describe('buildLoadTool — Cup T1 → T2 chained swap (regression)', () => {
+  test('chained: single par walk from slot 1 engaged to slot 2 engaged (no rackEntrance detour)', () => {
+    // Cup used to always fall through to non-chained mode, forcing the
+    // padded-entry pair even when unload had just placed the machine at
+    // slot 1 engaged. This test locks in the fast path: single G0 par
+    // walk at Z-safe, straight to slot 2 engaged.
+    const slotPos = calculateSlotPosition(CUP_RACK, 2);
+    const gcode = buildLoadTool(
+      CUP_RACK,
+      /* toolNumber */              2,
+      slotPos,
+      /* tlsRoutine */              '',
+      /* drawbarAlreadyReleased */  true,     // just unloaded, drawbar open
+      /* origin (ignored) */        { x: 60, y: 120 },
+      /* chainedFromRack */         true
+    );
+    const lines = motionLines(gcode);
+    // First (and only) approach move: straight to slot 2 engaged.
+    assert.equal(lines[0], 'G53 G0 X-115 Y120',
+      'chained cup load should take one par walk directly to slot 2 engaged — NO padded entry / descent detour');
+    // Followed by Z down (no releaseFirst since drawbarAlreadyReleased=true)
+    // → clamp → Z retract. No G1 slide (cup doesn't slide).
+    assert.ok(lines[1].startsWith('G53 G0 Z'),
+      'next move should be Z descent onto the shank');
+    assert.ok(!lines.some(l => /^G53 G1 [XY]/.test(l)),
+      'Cup chained load must not emit a G1 horizontal XY slide (fork-only)');
+    // And NO diagonal to sliding-side edge should appear before Z down.
+    assert.equal(
+      lines.slice(0, 2).filter(l => l.startsWith('G53 G0 X-55')).length, 0,
+      'chained cup load must not include a sliding-side (X=-55) entry move'
+    );
+  });
+});
+
+describe('cupEntrance / cupExit — direct 2-move routes', () => {
+  test('cupEntrance from +X same-side origin: diagonal to +X edge + perp step', () => {
+    const engaged = { x: -115, y: 40 };
+    const gcode = cupEntrance(engaged, { x: 60, y: 120 }, CUP_RACK);
+    const lines = motionLines(gcode);
+    assert.deepEqual(lines, ['G53 G0 X-55 Y40', 'G53 G0 X-115 Y40']);
+  });
+
+  test('cupEntrance from -X origin: diagonal to -X edge + perp step', () => {
+    const engaged = { x: -115, y: 40 };
+    const gcode = cupEntrance(engaged, { x: -500, y: 120 }, CUP_RACK);
+    const lines = motionLines(gcode);
+    assert.deepEqual(lines, ['G53 G0 X-175 Y40', 'G53 G0 X-115 Y40']);
+  });
+
+  test('cupExit to +X destination: perp step + diagonal out', () => {
+    const engaged = { x: -115, y: 40 };
+    const gcode = cupExit(engaged, { x: 60, y: 120 }, CUP_RACK);
+    const lines = motionLines(gcode);
+    assert.deepEqual(lines, ['G53 G0 X-55 Y40', 'G53 G0 X60 Y120']);
+  });
+
+  test('cupEntrance user-reported scenario (Positive slideDir, origin far +X, opposite of sliding)', () => {
+    // Reproduces the exact geometry from the log the user pasted:
+    //   slot1 at X=203.8, slideDirection='Positive', keepoutPadding=60
+    //   → perpMax=+263.8 (opposite sliding side, ORIGIN side)
+    //   → perpMin=+143.8 (sliding side)
+    //   origin at X=701.166, Y=-432.719
+    // Fork rackEntrance would 4-move detour via the far -X sliding
+    // side. Cup should just diagonal to +X edge (263.8) then perp
+    // step to (203.8, engaged.y).
+    const RACK_POS = { ...CUP_RACK, slot1: { x: 203.8, y: -443.031, z: -100 }, slideDirection: 'Positive' };
+    const engaged = { x: 203.8, y: -443.031 };
+    const gcode = cupEntrance(engaged, { x: 701.166, y: -432.719 }, RACK_POS);
+    const lines = motionLines(gcode);
+    assert.deepEqual(lines, ['G53 G0 X263.8 Y-443.031', 'G53 G0 X203.8 Y-443.031']);
+  });
+});
+
+describe('buildLoadTool — Cup T0 → T1 uses cupEntrance (non-chained)', () => {
+  test('T0 → T1: 2-move cupEntrance via origin-side edge, NO fork-style intermediate approach descent', () => {
+    const slotPos = calculateSlotPosition(CUP_RACK, 1);
+    const gcode = buildLoadTool(
+      CUP_RACK,
+      /* toolNumber */              1,
+      slotPos,
+      /* tlsRoutine */              '',
+      /* drawbarAlreadyReleased */  false,   // T0 start, drawbar clamped
+      /* origin */                  { x: 60, y: 120 }
+      // chainedFromRack defaults to false
+    );
+    const lines = motionLines(gcode);
+    assert.equal(lines[0], 'G53 G0 X-55 Y40',  'first move: diagonal to +X edge at engaged.par');
+    assert.equal(lines[1], 'G53 G0 X-115 Y40', 'second move: perp step into engaged.xy');
+    assert.ok(!lines.slice(0, 3).some(l => l === 'G53 G0 X-75'),
+      'Cup non-chained load must NOT emit fork\'s intermediate slot-approach descent');
+    // No G1 slide (fork-only).
+    assert.ok(!lines.some(l => /^G53 G1 [XY]/.test(l)),
+      'Cup non-chained load must not emit a G1 horizontal XY slide (fork-only)');
+  });
+});
+
+// Load-side drawbar offset compensation. Documented under buildInitialConfig
+// as `loadDrawbarOffset`. Purpose: with drawbar open, spindle descending to
+// slot.z would press the tool into the cup. Approach at slot.z + offset first
+// (no pressure), clamp, then descend the offset to slot.z so the holder
+// seats fully against the spindle nose taper as the drawbar completes its
+// upward pull.
+describe('buildLoadTool — drawbar offset compensation (regression)', () => {
+  test('Cup load with offset=1: G0 approach at slot.z+1, clamp, then G1 seat down at drawbarFeedrate', () => {
+    const slotPos = calculateSlotPosition(CUP_RACK, 1);
+    const gcode = buildLoadTool(
+      CUP_RACK, 1, slotPos, '', false, { x: 60, y: 120 }, false
+    );
+    const lines = motionLines(gcode);
+    assert.ok(lines.some(l => l === 'G53 G0 Z-99'),
+      'first Z descent should be G0 rapid to slot.z + drawbarOffset (approach at drawbar-open height)');
+    assert.ok(lines.some(l => l === 'G53 G1 Z-100 F300'),
+      'seat should be G1 (feedrate move) to slot.z at drawbarFeedrate — overlaps with pneumatic clamp actuation');
+    // Clamp aux (M65 P2) must fire BETWEEN the G0 approach and the G1 seat.
+    const approachIdx = lines.indexOf('G53 G0 Z-99');
+    const seatIdx     = lines.indexOf('G53 G1 Z-100 F300');
+    const clampIdx    = lines.findIndex(l => l === 'M65 P2');
+    assert.ok(clampIdx > approachIdx && clampIdx < seatIdx,
+      `clamp aux (M65 P2) must fire AFTER approach and BEFORE seat — got clampIdx=${clampIdx}, approachIdx=${approachIdx}, seatIdx=${seatIdx}`);
+  });
+
+  test('Cup unload with offset=1: descend to slot.z, unclamp, then G1 back off at drawbarFeedrate', () => {
+    const slotPos = calculateSlotPosition(CUP_RACK, 1);
+    const gcode = buildUnloadTool(CUP_RACK, 1, slotPos, { x: 60, y: 120 });
+    const lines = motionLines(gcode);
+    assert.ok(lines.some(l => l === 'G53 G0 Z-100'),
+      'first Z descent should be G0 rapid to slot.z (with clamped tool)');
+    assert.ok(lines.some(l => l === 'G53 G1 Z-99 F300'),
+      'back-off should be G1 to slot.z + drawbarOffset at drawbarFeedrate — overlaps with pneumatic unclamp actuation');
+    // Unclamp aux (M64 P2) must fire BETWEEN the descent and the back-off.
+    const descentIdx = lines.indexOf('G53 G0 Z-100');
+    const backoffIdx = lines.indexOf('G53 G1 Z-99 F300');
+    const unclampIdx = lines.findIndex(l => l === 'M64 P2');
+    assert.ok(unclampIdx > descentIdx && unclampIdx < backoffIdx,
+      `unclamp aux (M64 P2) must fire AFTER descent and BEFORE back-off — got unclampIdx=${unclampIdx}, descentIdx=${descentIdx}, backoffIdx=${backoffIdx}`);
+  });
+
+  test('offset=0 in both directions: no G1 compensation moves at all', () => {
+    const NO_OFFSET = { ...CUP_RACK, drawbarOffset: 0 };
+    const slotPos = calculateSlotPosition(NO_OFFSET, 1);
+    const loadGcode = buildLoadTool(NO_OFFSET, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    const unloadGcode = buildUnloadTool(NO_OFFSET, 1, slotPos, { x: 60, y: 120 });
+    // No G1 Z moves emitted for load or unload — the compensation is skipped.
+    assert.ok(!motionLines(loadGcode).some(l => /^G53 G1 Z/.test(l)),
+      'load with offset=0 must NOT emit a G1 Z seat move');
+    assert.ok(!motionLines(unloadGcode).some(l => /^G53 G1 Z/.test(l)),
+      'unload with offset=0 must NOT emit a G1 Z back-off move');
+  });
+
+  test('drawbarOffset reaches emitted G-code (non-default value proof, both directions)', () => {
+    const NON_DEFAULT = { ...CUP_RACK, drawbarOffset: 1.5 };
+    const slotPos = calculateSlotPosition(NON_DEFAULT, 1);
+    // Load-side: approach at slot.z + 1.5 = -98.5, seat back at slot.z.
+    const loadGcode = buildLoadTool(NON_DEFAULT, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    assert.ok(motionLines(loadGcode).some(l => l === 'G53 G0 Z-98.5'),
+      'load approach must use slot.z + drawbarOffset = -98.5');
+    assert.ok(motionLines(loadGcode).some(l => l === 'G53 G1 Z-100 F300'),
+      'load seat must G1 to slot.z at drawbarFeedrate');
+    // Unload-side: descend to slot.z, G1 back off to slot.z + 1.5 = -98.5.
+    const unloadGcode = buildUnloadTool(NON_DEFAULT, 1, slotPos, { x: 60, y: 120 });
+    assert.ok(motionLines(unloadGcode).some(l => l === 'G53 G1 Z-98.5 F300'),
+      'unload back-off must use slot.z + drawbarOffset = -98.5 at drawbarFeedrate');
   });
 });

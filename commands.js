@@ -157,6 +157,39 @@ const buildInitialConfig = (raw = {}) => {
 
     zSafe: toFiniteNumber(raw.zSafe, 0),
     zRetract: toFiniteNumber(raw.zRetract ?? raw.zRetreat, 7),
+    // Pneumatic drawbar compensation. Applied SYMMETRICALLY to both
+    // load and unload as a G1 slow-move that overlaps with the pneumatic
+    // clamp/unclamp actuation time — the spindle motion neutralises the
+    // drawbar's physical push/pull relative to the tool holder, so the
+    // tool holder itself stays stationary at its cup/fork resting
+    // position throughout the transition.
+    //
+    // Load (spindle descends onto tool sitting in cup/fork):
+    //   1. G0 approach at slot.z + drawbarOffset (drawbar open, spindle
+    //      nose held high — no pressure into the cup).
+    //   2. Fire clamp aux → drawbar starts pulling tang UP into taper.
+    //   3. G1 Z slot.z at drawbarFeedrate → spindle nose descends the
+    //      offset amount WHILE drawbar pulls tang up. Net effect: tool
+    //      holder flange stays at cup lip; spindle nose meets it there.
+    //
+    // Unload (spindle at slot.z with clamped tool, releasing into cup):
+    //   1. G0 descend to slot.z (with clamped tool — tool holder flange
+    //      sits on cup lip).
+    //   2. Fire unclamp aux → drawbar starts pushing tang DOWN out of taper.
+    //   3. G1 Z slot.z + drawbarOffset at drawbarFeedrate → spindle
+    //      retracts the offset amount WHILE drawbar pushes tang down.
+    //      Net: tool holder stays on cup lip; the drawbar's push against
+    //      the tang is absorbed by the spindle's upward motion.
+    //
+    // Feedrate matches typical pneumatic actuation time (300 mm/min
+    // = 200 ms for a 1 mm move, aligns with 150-300 ms solenoid response).
+    //
+    // Backward-compat aliases: `drawbarOffset` was previously named
+    // `loadDrawbarOffset` (load-only misdiagnosis) and before that
+    // `unclampZOffset` (unload-only misdiagnosis). Both are still read
+    // so existing configs continue to load unchanged.
+    drawbarOffset:   toFiniteNumber(raw.drawbarOffset ?? raw.loadDrawbarOffset ?? raw.unclampZOffset, 1),
+    drawbarFeedrate: toFiniteNumber(raw.drawbarFeedrate, 300),
 
     tlsSeekStartZ: toFiniteNumber(raw.tlsSeekStartZ, toFiniteNumber(raw.zSafe, -5)),
     seekDistance: toFiniteNumber(raw.seekDistance, 50),
@@ -322,7 +355,7 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     G43.1 Z0
     G38.2 G91 Z-${settings.seekDistance} F${settings.seekFeedrate}
     G4 P0.2
-    G38.4 G91 Z5 F75
+    G38.4 G91 Z5 F25
     G91 G0 Z5
     G90
     ${postTls}
@@ -708,6 +741,86 @@ function rackExit(fromSlotXY, destination, settings) {
   `.trim();
 }
 
+// === Cup-specific routing ===============================================
+//
+// Fork must enter/exit via the sliding-side edge because the G1 slide
+// physically engages the fork groove — you can't approach a fork from
+// the wrong side and still align the tang. Cup has no lateral slide
+// (it's a top-down drop into a cup that catches the tool holder), so it
+// can enter and exit from WHICHEVER edge is closer to the origin/
+// destination. That collapses rackEntrance's 4-move opposite-corner
+// detour into a 2-move route:
+//
+//   1. Diagonal from origin to (originSideEdge, target.par)
+//      — stays at or past the origin-side edge in perp axis, never
+//        inside the keepout box on the way in.
+//   2. Perp move to (target.perp, target.par)
+//      — crosses into the keepout at the TARGET slot's par row, which
+//        is fine because that's the slot we're aiming for; other slots
+//        are at other par rows.
+//
+// Symmetric for cupExit (target → destination).
+//
+// Fallback: if origin sits INSIDE the keepout's perp range (workspace
+// wedged into the rack, degenerate placement), defer to rackEntrance
+// which handles that case with its opposite-corner logic.
+function cupEntrance(engaged, origin, settings) {
+  const orientationY = settings.orientation === 'Y';
+  const perpAxis = orientationY ? 'X' : 'Y';
+  const originPerp = perpAxis === 'X' ? origin.x : origin.y;
+  const slot1Perp = orientationY ? settings.slot1.x : settings.slot1.y;
+  const pad = settings.keepoutPadding ?? settings.slideDistance ?? 0;
+  const perpMax = slot1Perp + pad;
+  const perpMin = slot1Perp - pad;
+
+  let entryEdge;
+  if (originPerp >= perpMax)       entryEdge = perpMax;
+  else if (originPerp <= perpMin)  entryEdge = perpMin;
+  else {
+    // Origin inside perp range — degenerate. Use fork routing to be safe.
+    return `${rackEntrance(engaged, origin, settings)}
+    G53 G0 X${engaged.x} Y${engaged.y}`;
+  }
+
+  const entryPoint = perpAxis === 'X'
+    ? { x: entryEdge, y: engaged.y }
+    : { x: engaged.x, y: entryEdge };
+
+  return `
+    (cupEntrance: 2-move route via origin-side edge to slot engaged.)
+    G53 G0 X${entryPoint.x} Y${entryPoint.y}
+    G53 G0 X${engaged.x} Y${engaged.y}
+  `.trim();
+}
+
+function cupExit(fromSlotEngaged, destination, settings) {
+  const orientationY = settings.orientation === 'Y';
+  const perpAxis = orientationY ? 'X' : 'Y';
+  const destPerp = perpAxis === 'X' ? destination.x : destination.y;
+  const slot1Perp = orientationY ? settings.slot1.x : settings.slot1.y;
+  const pad = settings.keepoutPadding ?? settings.slideDistance ?? 0;
+  const perpMax = slot1Perp + pad;
+  const perpMin = slot1Perp - pad;
+
+  let exitEdge;
+  if (destPerp >= perpMax)      exitEdge = perpMax;
+  else if (destPerp <= perpMin) exitEdge = perpMin;
+  else {
+    // Destination inside perp range — degenerate. Use fork routing.
+    return rackExit(fromSlotEngaged, destination, settings);
+  }
+
+  const exitPoint = perpAxis === 'X'
+    ? { x: exitEdge, y: fromSlotEngaged.y }
+    : { x: fromSlotEngaged.x, y: exitEdge };
+
+  return `
+    (cupExit: 2-move route via destination-side edge to destination.)
+    G53 G0 X${exitPoint.x} Y${exitPoint.y}
+    G53 G0 X${destination.x} Y${destination.y}
+  `.trim();
+}
+
 // Slot approach → TLS. Same routing pattern as rackExit (perp ascent
 // out of the keepout on the sliding side, then case 1/2/3 detour to
 // the destination) — TLS is just a specific destination XY.
@@ -839,33 +952,35 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     `.trim();
   }
 
-  // Cup: top-down drop. Center over the slot XY, descend to engagement Z,
-  // release the clamp, retract. No horizontal slide.
+  // Drawbar back-off during unclamp — mirror of buildLoadTool's seat.
+  // G1 retract from slot.z to slot.z + offset at drawbarFeedrate overlaps
+  // with the pneumatic push so the tool holder stays on the cup/fork lip
+  // while the drawbar pushes the tang down.
+  const drawbarOffset = settings.drawbarOffset;
+  const drawbarBackoff = drawbarOffset > 0
+    ? `
+      G53 G1 Z${settings.slot1.z + drawbarOffset} F${settings.drawbarFeedrate}`
+    : '';
+
   if (settings.rackHolding === 'Cup') {
     return `
-      G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}
+      ${cupEntrance(slotPos.engaged, origin, settings)}
       G53 G0 Z${settings.slot1.z}
       G4 P0.5
-      ${auxLineFor(settings, 'unclamp')}
+      ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
       G53 G0 Z${settings.zSafe}
       M61 Q0
     `.trim();
   }
 
-  // Fork: safe rackEntrance (routes around the rack when the origin is
-  // on the opposite side) → drop to engagement Z → slide into engaged →
-  // release → retract Z. Machine ends at slot engaged, Z-safe — the
-  // spindle sits above the tools sitting in the other slots, so a
-  // subsequent chained load can par-walk directly to the next slot
-  // engaged position at Z-safe without exiting to the sliding edge.
   const feed = slideFeedrate(settings);
   return `
     ${rackEntrance(slotPos.engaged, origin, settings)}
     G53 G0 Z${settings.slot1.z}
     G53 G1 X${slotPos.engaged.x} Y${slotPos.engaged.y} F${feed}
     G4 P0.5
-    ${auxLineFor(settings, 'unclamp')}
+    ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
     G53 G0 Z${settings.zSafe}
     M61 Q0
@@ -918,28 +1033,42 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       ${auxLineFor(settings, 'unclamp')}
       G4 P0.5`;
 
-  // Approach-to-engaged sequence differs by chain context:
-  //   * chainedFromRack=true (Tm→Tn swap): machine is already at slot
-  //     m engaged, Z-safe. Slot n engaged sits in the same rack row —
-  //     a single par walk at Z-safe passes over the tools sitting in
-  //     the intermediate slots (spindle is above them). One move.
-  //   * chainedFromRack=false (T0→Tn or manual→Tn): coming in from
-  //     outside the rack; must route via the padded slot entry (the
-  //     sliding-side edge of the outer keepout, offset by slot par),
-  //     descend perp to approach, then a plain G0 to engaged.
+  // Approach-to-engaged sequence differs by chain context AND hold style:
+  //   * chainedFromRack=true (Tm→Tn swap, fork or cup): machine is already
+  //     at slot m engaged, Z-safe. Slot n engaged sits in the same rack
+  //     row — a single par walk at Z-safe passes over the tools sitting
+  //     in the intermediate slots (spindle is above them). One move.
+  //   * chainedFromRack=false (T0→Tn or manual→Tn):
+  //     - Fork: rackEntrance (must enter via sliding-side edge for the
+  //             G1 slide-in), then a G0 perp step to engaged.
+  //     - Cup:  cupEntrance (2-move route via ORIGIN-side edge; no slide
+  //             so no reason to force sliding-side entry). Second move is
+  //             already to engaged.xy, no extra G0 needed.
   const approachToEngaged = chainedFromRack
     ? `G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}`
-    : `${rackEntrance(slotPos.engaged, { x: origin?.x ?? 0, y: origin?.y ?? 0 }, settings)}
-      G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}`;
+    : settings.rackHolding === 'Cup'
+      ? cupEntrance(slotPos.engaged, { x: origin?.x ?? 0, y: origin?.y ?? 0 }, settings)
+      : `${rackEntrance(slotPos.engaged, { x: origin?.x ?? 0, y: origin?.y ?? 0 }, settings)}
+        G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}`;
 
-  // Cup: top-down pickup. Approach → center over shank, descend Z,
-  // clamp, retract. No horizontal slide.
+  // Drawbar forward-seat during clamp — mirror of buildUnloadTool's
+  // back-off. G1 descend from slot.z + offset to slot.z at drawbarFeedrate
+  // overlaps with the pneumatic pull-up so the tool holder stays on the
+  // cup/fork lip while the drawbar pulls the tang up into the taper.
+  const offset = settings.drawbarOffset;
+  const approachZ = settings.slot1.z + offset;
+  const seatZ     = settings.slot1.z;
+  const drawbarSeat = offset > 0
+    ? `
+      G53 G1 Z${seatZ} F${settings.drawbarFeedrate}`
+    : '';
+
   if (settings.rackHolding === 'Cup') {
     return `
       ${approachToEngaged}${releaseFirst}
-      G53 G0 Z${settings.slot1.z}
+      G53 G0 Z${approachZ}
       G4 P0.5
-      ${auxLineFor(settings, 'clamp')}
+      ${auxLineFor(settings, 'clamp')}${drawbarSeat}
       G4 P0.5
       G53 G0 Z${settings.zSafe}
       M61 Q${toolNumber}
@@ -947,16 +1076,12 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     `.trim();
   }
 
-  // Fork: approach → descend Z onto the shank sitting in the fork →
-  // clamp → slide laterally back out to the approach point. Cannot
-  // slide into the fork with an empty collet — must land on the tool
-  // from above first.
   const feed = slideFeedrate(settings);
   return `
     ${approachToEngaged}${releaseFirst}
-    G53 G0 Z${settings.slot1.z}
+    G53 G0 Z${approachZ}
     G4 P0.5
-    ${auxLineFor(settings, 'clamp')}
+    ${auxLineFor(settings, 'clamp')}${drawbarSeat}
     G4 P0.5
     G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
     G53 G0 Z${settings.zSafe}
@@ -1000,11 +1125,12 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // Rack-fork gate: if we're loading a real rack tool via fork, wrap the
   // TLS entry with a safe rack exit so the trip from slot approach to
   // the toolsetter routes around the rack (par-first for same-side TLS;
-  // corner detour for opposite-side TLS). Manual and cup skip this —
-  // they don't share the rack routing model.
-  const isRackFork = toolNumber > 0
-    && toolNumber <= settings.slots
-    && settings.rackHolding !== 'Cup';
+  // corner detour for opposite-side TLS). Manual tools skip this — the
+  // manual station isn't in the rack routing model. Rack slots (both
+  // fork and cup styles) share the routing model since the keepout box
+  // is derived purely from slot geometry, not from how the tool is held.
+  const isRackSlot = toolNumber > 0
+    && toolNumber <= settings.slots;
   const rawTlsRoutine = shouldProbe
     ? createToolLengthSetRoutine(settings, toolOffsets).join('\n')
     : (settings.tlsMode === 'library' && hasStoredTlo
@@ -1012,8 +1138,10 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
         : '');
   const tlsX = settings.toolsetter.x + (toolOffsets.x || 0);
   const tlsY = settings.toolsetter.y + (toolOffsets.y || 0);
-  const tlsRoutine = (shouldProbe && isRackFork)
-    ? `${rackExitToTLS(targetSlot.engaged, tlsX, tlsY, settings)}\n${rawTlsRoutine}`
+  const tlsRoutine = (shouldProbe && isRackSlot)
+    ? `${settings.rackHolding === 'Cup'
+        ? cupExit(targetSlot.engaged, { x: tlsX, y: tlsY }, settings)
+        : rackExitToTLS(targetSlot.engaged, tlsX, tlsY, settings)}\n${rawTlsRoutine}`
     : rawTlsRoutine;
 
   // Every time we probe (both modes), arm the writeback so the next
@@ -1042,11 +1170,11 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // same rack row, so we can par-walk directly to it at Z-safe (over
   // the tools in the intermediate slots — spindle nose is above them).
   // Any other flow (T0→Tn, manual→Tn) has to route in through the
-  // padded slot entry.
+  // padded slot entry. Applies to both Fork and Cup — both leave the
+  // machine at slot engaged, Z-safe, after unload.
   const chainedFromRack = !isManualToManual
     && currentTool > 0
-    && currentTool <= settings.slots
-    && settings.rackHolding !== 'Cup';
+    && currentTool <= settings.slots;
 
   const loadSection = isManualToManual
     ? buildManualSwap(settings, toolNumber, tlsRoutine)
@@ -1060,20 +1188,26 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     : '';
 
   // Exit routing — pick the right "get back to origin" path based on
-  // what actually happened during the macro. Manual and cup paths skip
-  // this since they aren't inside the rack routing model.
-  //   * Probed a rack-fork tool → spindle is at the toolsetter; tlsExit.
-  //   * Unloaded to T0 (rack fork) → spindle empty at source approach; direct diagonal.
-  //   * Loaded a rack-fork tool without probing → spindle loaded at target approach; runtime-branched exit.
-  //   * Otherwise (cup / manual / T0→T0) → leave as-is; existing sequence handles it.
+  // what actually happened during the macro. Manual paths skip this
+  // since the manual station isn't inside the rack routing model. Rack
+  // slots (fork or cup) do participate — the keepout box and exit
+  // detour geometry are the same regardless of hold style.
+  //   * Probed a rack tool → spindle is at the toolsetter; tlsExit.
+  //   * Unloaded to T0 (any rack slot) → spindle empty at source approach; direct diagonal.
+  //   * Loaded a rack tool without probing → spindle loaded at target approach; runtime-branched exit.
+  //   * Otherwise (manual / T0→T0) → leave as-is; existing sequence handles it.
   let exitSection = '';
-  if (isRackFork && shouldProbe) {
+  const isCup = settings.rackHolding === 'Cup';
+  if (isRackSlot && shouldProbe) {
     exitSection = tlsExit(tlsX, tlsY, origin, settings);
-  } else if (toolNumber === 0 && currentTool > 0 && currentTool <= settings.slots
-             && settings.rackHolding !== 'Cup') {
-    exitSection = rackExitToOrigin(sourceSlot.engaged, /* isEmpty */ true, origin, settings);
-  } else if (isRackFork && !shouldProbe) {
-    exitSection = rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, origin, settings);
+  } else if (toolNumber === 0 && currentTool > 0 && currentTool <= settings.slots) {
+    exitSection = isCup
+      ? cupExit(sourceSlot.engaged, origin, settings)
+      : rackExitToOrigin(sourceSlot.engaged, /* isEmpty */ true, origin, settings);
+  } else if (isRackSlot && !shouldProbe) {
+    exitSection = isCup
+      ? cupExit(targetSlot.engaged, origin, settings)
+      : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, origin, settings);
   }
 
   const preCmd = settings.preToolChangeGcode?.trim() || '';
@@ -1239,7 +1373,7 @@ function onBeforeCommand(commands, context, settings) {
 
 export {
   onBeforeCommand, buildInitialConfig,
-  rackEntrance, rackExit, tlsEntrance, tlsExit,
+  rackEntrance, rackExit, cupEntrance, cupExit, tlsEntrance, tlsExit,
   computeKeepoutZone, slotEntryPoint, slotApproachPoint,
   buildLoadTool, buildUnloadTool, calculateSlotPosition,
 };
