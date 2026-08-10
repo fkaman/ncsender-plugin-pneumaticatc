@@ -1390,6 +1390,7 @@
           </p>
           <select id="pa-adv-profile" class="pa-select">
             <option value="" selected>Custom (no profile)</option>
+            <option value="generic">Generic Pneumatic ATC</option>
             <option value="sienci">Sienci ATC</option>
             <option value="ncsender-wireless" disabled>ncSender Wireless ATC (maybe)</option>
           </select>
@@ -1523,6 +1524,13 @@
   // pins that profile WOULD supply, so operators can see what to expect.
   // No persistence — nothing goes into settings until this is wired up.
   var ADV_PROFILES = {
+    // Generic pneumatic ATC — common aux-input pin convention for a
+    // typical 4-sensor pneumatic build. Same pin layout as Sienci (which
+    // is a widely-known reference kit) but with the tool-in-spindle
+    // sensor split across two pins in case the operator has independent
+    // proximity switches for unclamped-position vs seated-position.
+    // Operator can override any of these once the feature ships.
+    generic: { pres: 2, drawbar: 0, unclamp: 1, clamp: 3 },
     // Sienci ATC defaults from their P200.macro:
     //   _tc_input_pres = 2  (air pressure)
     //   _tc_input_db   = 0  (drawbar actuator sensor — verifies the drawbar
