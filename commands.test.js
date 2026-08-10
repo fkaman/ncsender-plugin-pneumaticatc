@@ -1002,3 +1002,59 @@ describe('gateSpindleUnclamp — safety block for M64 on clampAuxOutput while sp
     assert.equal(cmds[0].command, 'M64 P2', 'without clampAuxOutput setting, gate must not fire');
   });
 });
+
+// T0 → manual-tool UX: user shouldn't have to click "Release" when the
+// spindle is already empty. Plugin now auto-fires the unclamp and jumps
+// straight to the single-Clamp dialog (MANUAL_CLAMP_TOOL). The old
+// MANUAL_LOAD_TOOL "Release + Clamp" dialog should NEVER appear on any
+// path — with drawbarAlreadyReleased true or false, both paths converge
+// on MANUAL_CLAMP_TOOL. Only the pre-dialog auto-release differs.
+describe('buildLoadTool — T0 → manual tool auto-releases drawbar (no Release click)', () => {
+  const MANUAL_RACK = {
+    ...RACK,
+    slots: 3,
+    manualTool: { x: 321, y: -966 },
+    clampAuxOutput: 2,
+    zSafe: 0,
+  };
+  const MANUAL_TOOL_NUM = 4;  // > slots → treated as manual tool
+
+  test('T0 → T4 (manual): auto-fires M64 unclamp BEFORE the MANUAL_CLAMP_TOOL dialog', () => {
+    const slotPos = calculateSlotPosition(MANUAL_RACK, MANUAL_TOOL_NUM);
+    const gcode = buildLoadTool(
+      MANUAL_RACK, MANUAL_TOOL_NUM, slotPos,
+      /* tlsRoutine */ '',
+      /* drawbarAlreadyReleased */ false,   // T0 = empty spindle = drawbar clamped
+      /* origin */ { x: 0, y: 0 },
+      /* chainedFromRack */ false
+    );
+    // Use raw gcode for ordering — motionLines strips (MSG,...) comments,
+    // which is where the dialog anchor lives.
+    const unclampPos = gcode.indexOf('M64 P2');
+    const dialogPos  = gcode.indexOf('MANUAL_CLAMP_TOOL');
+    const clampPos   = gcode.lastIndexOf('M65 P2');
+    assert.notEqual(unclampPos, -1, 'must auto-fire M64 (unclamp)');
+    assert.notEqual(dialogPos, -1, 'must show MANUAL_CLAMP_TOOL dialog');
+    assert.ok(unclampPos < dialogPos,
+      'auto-unclamp must fire BEFORE the dialog so the collet is open when the operator inserts the tool');
+    assert.ok(clampPos > dialogPos,
+      'final clamp (M65) must fire AFTER the dialog / user Clamp click');
+    // Explicitly reject the old two-click dialog.
+    assert.ok(!gcode.includes('MANUAL_LOAD_TOOL'),
+      'MANUAL_LOAD_TOOL (Release + Clamp) dialog must NOT appear — replaced by auto-release + MANUAL_CLAMP_TOOL');
+  });
+
+  test('Tm (rack) → T4 (manual) with drawbarAlreadyReleased=true: NO extra auto-release', () => {
+    const slotPos = calculateSlotPosition(MANUAL_RACK, MANUAL_TOOL_NUM);
+    const gcode = buildLoadTool(
+      MANUAL_RACK, MANUAL_TOOL_NUM, slotPos, '',
+      /* drawbarAlreadyReleased */ true,    // just unloaded a rack tool
+      { x: 0, y: 0 }, false
+    );
+    // Count M64 (unclamp) — should be ZERO. Only M65 (clamp) at end.
+    const unclampCount = motionLines(gcode).filter(l => l === 'M64 P2').length;
+    assert.equal(unclampCount, 0,
+      'drawbar already open — must NOT emit another unclamp before the dialog');
+    assert.ok(gcode.includes('MANUAL_CLAMP_TOOL'), 'dialog is still MANUAL_CLAMP_TOOL');
+  });
+});

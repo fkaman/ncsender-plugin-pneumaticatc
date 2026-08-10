@@ -1062,30 +1062,26 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
   if (toolNumber === 0) return '';
 
   if (toolNumber > settings.slots) {
-    // Manual load. Dialog buttons depend on the drawbar state:
-    //   - Just unloaded a rack tool or manual tool → drawbar is already
-    //     released. Skip the Release step and use the CLAMP_TOOL dialog
-    //     (single Clamp button, then Continue).
-    //   - Coming from T0 (empty spindle at rest) → drawbar is clamped.
-    //     Use the LOAD_TOOL dialog with Release + Clamp + Continue.
-    if (drawbarAlreadyReleased) {
-      return `
-        G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
-        G4 P0
-        (MSG, PLUGIN_PNEUMATICATC:MANUAL_CLAMP_TOOL_${toolNumber})
-        M0
-        ${auxLineFor(settings, 'clamp')}
-        M0
-        M61 Q${toolNumber}
-        ${tlsRoutine}
-      `.trim();
-    }
+    // Manual load — dialog always shows the single-Clamp step
+    // (MANUAL_CLAMP_TOOL), regardless of prior state. Two paths to get
+    // there, differing only in whether we need to fire an auto-release
+    // before showing the dialog:
+    //   - drawbarAlreadyReleased=true — just unloaded a rack/manual tool,
+    //     drawbar is already open. Straight to the dialog.
+    //   - drawbarAlreadyReleased=false — coming from T0 (empty spindle,
+    //     drawbar is in its fail-safe clamped rest state). No tool is
+    //     in the spindle to drop, so auto-release the drawbar for the
+    //     operator (with a short dwell for the pneumatics to actuate)
+    //     and jump straight to the same insert-and-Clamp dialog.
+    // Both paths converge on MANUAL_CLAMP_TOOL — operator just inserts
+    // the bit, hits Clamp, hits Continue.
+    var autoRelease = drawbarAlreadyReleased ? '' : `
+      ${auxLineFor(settings, 'unclamp')}
+      G4 P0.5`;
     return `
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
-      G4 P0
-      (MSG, PLUGIN_PNEUMATICATC:MANUAL_LOAD_TOOL_${toolNumber})
-      M0
-      ${auxLineFor(settings, 'unclamp')}
+      G4 P0${autoRelease}
+      (MSG, PLUGIN_PNEUMATICATC:MANUAL_CLAMP_TOOL_${toolNumber})
       M0
       ${auxLineFor(settings, 'clamp')}
       M0
