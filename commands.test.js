@@ -39,6 +39,7 @@ import {
   buildUnloadTool,
   buildSlotNav,
   calculateSlotPosition,
+  gateSpindleUnclamp,
 } from './commands.js';
 
 // Strip comment lines and blank lines so the assertions read against
@@ -924,5 +925,80 @@ describe('buildSlotNav — routes through keepout-safe entrance', () => {
     const CUSTOM_SAFE = { ...RACK, zSafe: -5 };
     const gcode = buildSlotNav(CUSTOM_SAFE, 1, { x: 60, y: 120 });
     assert.equal(motionLines(gcode)[0], 'G53 G21 G90 G0 Z-5', 'nav must retract to zSafe before moving XY');
+  });
+});
+
+// Safety gate: user's shop incident — accidentally sending M64 P2 (release
+// pneumatic collet) while the spindle was still spinning launched the tool
+// holder across the wasteboard like a top. Plugin now refuses to forward
+// the unclamp aux-ON when machineState.spindleActive is true, replacing it
+// with a visible rejection comment so the operator sees why.
+describe('gateSpindleUnclamp — safety block for M64 on clampAuxOutput while spindle active', () => {
+  const SETTINGS = { clampAuxOutput: 2 };
+  const wrap = (line) => [{ command: line, isOriginal: true }];
+
+  test('spindle active + M64 P<clampAux> → replaced with one-line BLOCKED display, comment on wire', () => {
+    const cmds = wrap('M64 P2');
+    gateSpindleUnclamp(cmds, { machineState: { spindleActive: true } }, SETTINGS);
+    // Actual bytes on the wire — pure comment, grblHAL will no-op it.
+    assert.ok(/^\(M64 P2 BLOCKED/.test(cmds[0].command),
+      `wire form must be a comment starting with the original + BLOCKED, got ${cmds[0].command}`);
+    // Terminal display: shows the original command + reason on one line.
+    assert.ok(cmds[0].displayCommand.startsWith('M64 P2'),
+      `display must show original command first, got ${cmds[0].displayCommand}`);
+    assert.ok(/BLOCKED/.test(cmds[0].displayCommand),
+      `display must include BLOCKED reason, got ${cmds[0].displayCommand}`);
+    assert.equal(cmds[0].isOriginal, false);
+  });
+
+  test('spindle IDLE + M64 P<clampAux> → passes through unchanged', () => {
+    const cmds = wrap('M64 P2');
+    gateSpindleUnclamp(cmds, { machineState: { spindleActive: false } }, SETTINGS);
+    assert.equal(cmds[0].command, 'M64 P2', 'idle spindle must not block unclamp');
+    assert.equal(cmds[0].isOriginal, true, 'unmodified original stays original');
+  });
+
+  test('spindle active + M65 (fail-safe clamp) → passes through — M65 tightens, not releases', () => {
+    const cmds = wrap('M65 P2');
+    gateSpindleUnclamp(cmds, { machineState: { spindleActive: true } }, SETTINGS);
+    assert.equal(cmds[0].command, 'M65 P2', 'M65 must not be gated — it holds the tool');
+  });
+
+  test('spindle active + M64 on DIFFERENT aux (dust boot / coolant) → passes through', () => {
+    // Only the configured clampAuxOutput is guarded. M64 P3, M64 P0, etc.
+    // remain untouched so the job can freely toggle unrelated aux outputs.
+    const cmds = [
+      { command: 'M64 P3', isOriginal: true },
+      { command: 'M64 P0', isOriginal: true },
+    ];
+    gateSpindleUnclamp(cmds, { machineState: { spindleActive: true } }, SETTINGS);
+    assert.equal(cmds[0].command, 'M64 P3', 'M64 on unrelated aux must not be gated');
+    assert.equal(cmds[1].command, 'M64 P0', 'M64 on unrelated aux must not be gated');
+  });
+
+  test('N-prefix + leading-zero variants (N250 M0064 P02) — normalized match still gates', () => {
+    const cmds = wrap('N250 M0064 P02');
+    gateSpindleUnclamp(cmds, { machineState: { spindleActive: true } }, SETTINGS);
+    assert.ok(/BLOCKED/i.test(cmds[0].command),
+      `padded / N-prefixed form must still be gated, got ${cmds[0].command}`);
+    // Display strips the N-prefix so the operator sees a clean line.
+    assert.ok(!/^N\d+/.test(cmds[0].displayCommand),
+      `display must strip N-prefix, got ${cmds[0].displayCommand}`);
+  });
+
+  test('missing machineState.spindleActive — treat as unknown, do not gate', () => {
+    // Old host that doesn't yet expose spindleActive: falling through
+    // (no block) preserves the pre-safety-gate behavior. We only block
+    // when we CAN prove the spindle is active — false positives would
+    // break legitimate tool changes on older ncSender versions.
+    const cmds = wrap('M64 P2');
+    gateSpindleUnclamp(cmds, { machineState: {} }, SETTINGS);
+    assert.equal(cmds[0].command, 'M64 P2', 'no signal → no gate');
+  });
+
+  test('clampAuxOutput not configured — nothing to gate', () => {
+    const cmds = wrap('M64 P2');
+    gateSpindleUnclamp(cmds, { machineState: { spindleActive: true } }, {});
+    assert.equal(cmds[0].command, 'M64 P2', 'without clampAuxOutput setting, gate must not fire');
   });
 });

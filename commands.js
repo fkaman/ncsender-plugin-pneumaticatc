@@ -1447,11 +1447,52 @@ function handleM6Command(commands, context, settings) {
 // missing so an older core without this field falls back safely.
 let _coreEdition = 'unknown';
 
+// Reject an aux-ON (M64) command that would release the pneumatic collet
+// while the spindle is spinning. Aux-OFF (M65) is fail-safe clamp so it
+// doesn't need gating. Matches only the configured clampAuxOutput — jobs
+// that legitimately toggle other aux outputs (dust boot, coolant, laser)
+// pass through untouched. Rejected command is replaced with a visible
+// comment so the operator can see WHY the release didn't fire.
+//
+// Runs first in onBeforeCommand — this covers every source (terminal,
+// macros, job g-code, plugin-expanded routines from other plugins) since
+// they all funnel through here. The plugin's OWN tool-change program
+// spins the spindle down before firing M64, so this gate is a no-op on
+// the happy path; it catches accidents.
+function gateSpindleUnclamp(commands, context, settings) {
+  var clampAux = settings.clampAuxOutput;
+  if (!Number.isFinite(clampAux)) return;
+  if (!context || !context.machineState || !context.machineState.spindleActive) return;
+
+  var unclampPattern = new RegExp('(^|[^A-Z])M0*64(\\s+P0*' + clampAux + ')(\\s|$|;|\\()', 'i');
+  for (var i = 0; i < commands.length; i++) {
+    var cmd = commands[i];
+    if (!cmd.isOriginal) continue;
+    var stripped = cmd.command.trim().replace(/^N\d+\s+/i, '');
+    if (!unclampPattern.test(stripped)) continue;
+    // Replace with a rejection comment sent to grblHAL (no-op) but keep
+    // the terminal display anchored to what the operator typed, with the
+    // reason appended so it reads as one line: `M64 P2 (BLOCKED: spindle
+    // active — unclamp refused)`. Original command is preserved as
+    // display text; the actual bytes on the wire are pure comment.
+    var originalDisplay = (cmd.displayCommand || cmd.command).trim().replace(/^N\d+\s+/i, '');
+    var reason = 'BLOCKED: spindle active - unclamp refused';
+    var comment = '(' + originalDisplay + ' ' + reason + ')';
+    commands[i] = {
+      command: comment,
+      displayCommand: originalDisplay + '  (' + reason + ')',
+      isOriginal: false,
+      meta: {}
+    };
+  }
+}
+
 function onBeforeCommand(commands, context, settings) {
   _coreEdition = (context && typeof context.edition === 'string') ? context.edition : 'unknown';
   if (context && context.safeZHeight !== undefined) {
     settings.zSafe = context.safeZHeight;
   }
+  gateSpindleUnclamp(commands, context, settings);
   handleHomeCommand(commands, context, settings);
   handleTLSCommand(commands, context, settings);
   handleSlotCommand(commands, context, settings);
@@ -1464,4 +1505,5 @@ export {
   rackEntrance, rackExit, cupEntrance, cupExit, tlsEntrance, tlsExit,
   computeKeepoutZone, slotEntryPoint, slotApproachPoint,
   buildLoadTool, buildUnloadTool, buildSlotNav, calculateSlotPosition,
+  gateSpindleUnclamp,
 };
