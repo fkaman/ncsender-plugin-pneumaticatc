@@ -37,6 +37,7 @@ import {
   tlsExit,
   buildLoadTool,
   buildUnloadTool,
+  buildSlotNav,
   calculateSlotPosition,
 } from './commands.js';
 
@@ -410,6 +411,45 @@ describe('tlsExit (TLS → destination)', () => {
     const gcode = tlsExit(1225.828, -337.775, { x: 1079.828, y: -186.775 }, RACK);
     assert.deepEqual(motionLines(gcode), ['G53 G0 X1079.828 Y-186.775']);
   });
+
+  // Reported case: after T3 tool change + TLS on the .117 kiosk, tlsExit
+  // returned via the WRONG par-end corner. TLS sat 45 mm north of parMax
+  // and origin sat 300 mm north of parMin — the old rule looked only at
+  // "which corner is closer to the destination" and picked parMin, forcing
+  // TLS to walk 826 mm south before diagonaling back out to origin. Total
+  // path ~1560 mm vs. ~870 mm for the parMax route. Fix: minimize TOTAL
+  // par travel (TLS→corner + origin→corner), not just origin distance.
+  test('regression (.117 kiosk T3): pick corner minimizing total par travel, not just origin distance', () => {
+    const KIOSK = {
+      slots: 12,
+      orientation: 'Y',
+      direction: 'Positive',
+      slot1: { x: 3.8, y: -863.231 },
+      slotDistance: 60,
+      slideDirection: 'Positive',
+      slideDistance: 40,
+      keepoutPadding: 60,
+    };
+    // Keepout Y: [-923.231, -143.231]. TLS Y=-97.5 is 45.7 mm above parMax;
+    // origin Y=-622.103 is 301 mm below parMax and 301 mm above parMin.
+    // Origin-only rule → parMin (301 vs 479). Total-travel rule → parMax
+    // (46+479=525 vs 826+301=1127).
+    const gcode = tlsExit(2, -97.5, { x: 701.456, y: -622.103 }, KIOSK);
+    const lines = motionLines(gcode);
+    // Must route via parMax (Y=-143.231), NOT parMin (Y=-923.231).
+    assert.ok(!lines.some(l => /Y-923\.231(?:\D|$)/.test(l)),
+      `must NOT walk to parMin corner (Y=-923.231) — got ${JSON.stringify(lines)}`);
+    assert.ok(lines.some(l => /Y-143\.231(?:\D|$)/.test(l)),
+      `must route via parMax corner (Y=-143.231) — got ${JSON.stringify(lines)}`);
+    // Both endpoints on opposite side of sliding edge (+X of keepout at
+    // X=63.8), so both walk out to the same +X edge at parMax before
+    // diagonaling to origin.
+    assert.deepEqual(lines, [
+      'G53 G0 X63.8 Y-143.231',       // TLS → +X edge at parMax corner
+      'G53 G0 X63.8 Y-143.231',       // same corner (same-side collapse)
+      'G53 G0 X701.456 Y-622.103',    // diagonal to origin
+    ]);
+  });
 });
 
 // End-to-end program shape tests — the tool-change program builder
@@ -672,6 +712,39 @@ describe('cupEntrance / cupExit — direct 2-move routes', () => {
     assert.deepEqual(lines, ['G53 G0 X-55 Y40', 'G53 G0 X60 Y120']);
   });
 
+  test('cupEntrance user-reported ALARM:2 scenario (origin at homed (0,0) inside keepout perp range, rack near X=0)', () => {
+    // Live-reproduced on kiosk .117 (log line: rackEntrance case 2 with
+    // sliding-side edge X=-56.1, outside machine's X≥0 travel envelope).
+    // Config: slot1.x=3.9, slideDirection='Positive', pad=60 → keepout
+    // X = [-56.1, +63.9]. Origin at (0, 0) after homing sits INSIDE
+    // that perp range. Previously fell back to rackEntrance (sliding-
+    // side edge = X=-56.1 → soft-limit alarm). Fix: use opposite-of-
+    // sliding edge (X=+63.9) instead — inside travel, safe route.
+    const KIOSK = {
+      slots: 4,
+      orientation: 'Y',
+      direction: 'Positive',
+      slot1: { x: 3.9, y: -383.231, z: -116.5 },
+      slotDistance: 60,
+      slideDirection: 'Positive',
+      slideDistance: 40,
+      keepoutPadding: 60,
+    };
+    const engaged = { x: 3.9, y: -203.231 };  // slot 4
+    const gcode = cupEntrance(engaged, { x: 0, y: 0 }, KIOSK);
+    const lines = motionLines(gcode);
+    // Route must go via +X edge (+63.9), NOT -X edge (-56.1).
+    assert.ok(lines.every(l => !l.includes('X-56.1')),
+      `must NOT include the sliding-side edge X=-56.1 (outside machine travel). got: ${JSON.stringify(lines)}`);
+    // Expect 3 moves: corner → par walk end → engaged.
+    assert.equal(lines[0], 'G53 G0 X63.9 Y-143.231',
+      'first move: diagonal to opposite-of-sliding edge at nearest corner par (parMax=-143.231)');
+    assert.equal(lines[1], 'G53 G0 X63.9 Y-203.231',
+      'second move: par walk down the +X edge to slot par');
+    assert.equal(lines[2], 'G53 G0 X3.9 Y-203.231',
+      'third move: perp step into engaged.xy');
+  });
+
   test('cupEntrance user-reported scenario (Positive slideDir, origin far +X, opposite of sliding)', () => {
     // Reproduces the exact geometry from the log the user pasted:
     //   slot1 at X=203.8, slideDirection='Positive', keepoutPadding=60
@@ -778,5 +851,78 @@ describe('buildLoadTool — drawbar offset compensation (regression)', () => {
     const unloadGcode = buildUnloadTool(NON_DEFAULT, 1, slotPos, { x: 60, y: 120 });
     assert.ok(motionLines(unloadGcode).some(l => l === 'G53 G1 Z-98.5 F300'),
       'unload back-off must use slot.z + drawbarOffset = -98.5 at drawbarFeedrate');
+  });
+});
+
+// $slotN manual navigation. Before the fix this emitted a direct
+// `G0 Z-safe / G0 X Y` pair with no keepout awareness, so a jog from an
+// origin on the wrong side of the rack would cut a diagonal straight
+// through the tools sitting in the other pockets. Same routing surface
+// the tool change uses — no reason nav should bypass it.
+describe('buildSlotNav — routes through keepout-safe entrance', () => {
+  test('Cup: same-side origin (+X, inside par) → 2-move cupEntrance to engaged.xy', () => {
+    const gcode = buildSlotNav(CUP_RACK, 1, { x: 60, y: 120 });
+    const lines = motionLines(gcode);
+    assert.equal(lines[0], 'G53 G21 G90 G0 Z0', 'first move: retract to Z-safe');
+    assert.equal(lines[1], 'G53 G0 X-55 Y40',  'second move: cupEntrance diagonal to +X edge at engaged.par');
+    assert.equal(lines[2], 'G53 G0 X-115 Y40', 'third move: perp step into engaged.xy');
+    // No stray G1 slides (fork-only).
+    assert.ok(!lines.some(l => /^G53 G1 [XY]/.test(l)),
+      'cup nav must NOT emit a G1 horizontal XY slide (fork-only)');
+  });
+
+  test('Cup: opposite-slide origin (Positive slideDir) still uses ORIGIN-side edge', () => {
+    // slideDirection='Positive' puts the sliding side at -X, but the
+    // cup has no slide constraint — nav must still take the shorter
+    // ORIGIN-side (+X) route, not detour to the far -X sliding edge.
+    const POS_CUP = { ...CUP_RACK, slideDirection: 'Positive' };
+    const gcode = buildSlotNav(POS_CUP, 1, { x: 701, y: 20 });
+    const lines = motionLines(gcode);
+    assert.equal(lines[1], 'G53 G0 X-55 Y40', 'via ORIGIN-side (+X) edge, not fork sliding-side (-X)');
+    assert.ok(!lines.some(l => l === 'G53 G0 X-175'),
+      'cup nav must NOT emit a move to the far -X sliding-side edge');
+  });
+
+  test('Cup: degenerate origin (inside keepout perp range) routes via opposite-of-sliding edge', () => {
+    // User-reported ALARM:2 geometry: rack sits near X=0 boundary, origin
+    // at (0,0) is inside the keepout perp range. Sliding-side edge would
+    // land outside the machine envelope — cupEntrance must go the other
+    // way. Regression guard for the same ALARM:2 bug that hit tool change.
+    const NEAR_ZERO = {
+      ...CUP_RACK,
+      slot1: { x: 3.9, y: 40, z: -100 },
+      slideDirection: 'Positive',   // sliding side = -X (falls outside 0..+1260 envelope)
+      keepoutPadding: 60,
+    };
+    const gcode = buildSlotNav(NEAR_ZERO, 1, { x: 0, y: 0 });
+    const lines = motionLines(gcode);
+    // Opposite-of-sliding edge sits at slot1.x + pad = 3.9 + 60 = +63.9,
+    // well inside the machine envelope. No move should land at the
+    // sliding-side edge (3.9 - 60 = -56.1, outside envelope → ALARM:2).
+    assert.ok(!lines.some(l => /X-56\.1(?:\D|$)/.test(l)),
+      'must NOT route via sliding-side edge X=-56.1 (outside 0..+1260 envelope → ALARM:2)');
+    assert.ok(lines.some(l => /X63\.9(?:\D|$)/.test(l)),
+      'must route via opposite-of-sliding edge X=+63.9 (inside envelope)');
+  });
+
+  test('Fork: same-side origin → rackEntrance + G0 to engaged', () => {
+    // RACK: slideDirection='Negative' → sliding side = +X. Origin at +X
+    // inside par range takes case 1 (same-side): diagonal to sliding-side
+    // edge at engaged.par, then perp step to engaged.xy.
+    const FORK_RACK = { ...RACK, zSafe: 0 };
+    const gcode = buildSlotNav(FORK_RACK, 2, { x: 60, y: 120 });
+    const lines = motionLines(gcode);
+    assert.equal(lines[0], 'G53 G21 G90 G0 Z0', 'first move: retract to Z-safe');
+    // rackEntrance case 1 emits diagonal to (-55, 120) then perp to
+    // slot approach (-75, 120); then the nav wrapper G0s to engaged.
+    assert.equal(lines[1], 'G53 G0 X-55 Y120',  'rackEntrance: diagonal to +X sliding-side edge at engaged.par');
+    assert.equal(lines[2], 'G53 G0 X-75',        'rackEntrance: perp step to slot approach (Y omitted, unchanged)');
+    assert.equal(lines[3], 'G53 G0 X-115 Y120',  'nav wrapper: final G0 to engaged.xy');
+  });
+
+  test('zSafe retract always emitted first', () => {
+    const CUSTOM_SAFE = { ...RACK, zSafe: -5 };
+    const gcode = buildSlotNav(CUSTOM_SAFE, 1, { x: 60, y: 120 });
+    assert.equal(motionLines(gcode)[0], 'G53 G21 G90 G0 Z-5', 'nav must retract to zSafe before moving XY');
   });
 });

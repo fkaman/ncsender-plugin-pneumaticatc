@@ -188,7 +188,7 @@ const buildInitialConfig = (raw = {}) => {
     // `loadDrawbarOffset` (load-only misdiagnosis) and before that
     // `unclampZOffset` (unload-only misdiagnosis). Both are still read
     // so existing configs continue to load unchanged.
-    drawbarOffset:   toFiniteNumber(raw.drawbarOffset ?? raw.loadDrawbarOffset ?? raw.unclampZOffset, 1),
+    drawbarOffset:   toFiniteNumber(raw.drawbarOffset ?? raw.loadDrawbarOffset ?? raw.unclampZOffset, 2),
     drawbarFeedrate: toFiniteNumber(raw.drawbarFeedrate, 300),
 
     tlsSeekStartZ: toFiniteNumber(raw.tlsSeekStartZ, toFiniteNumber(raw.zSafe, -5)),
@@ -767,28 +767,71 @@ function rackExit(fromSlotXY, destination, settings) {
 function cupEntrance(engaged, origin, settings) {
   const orientationY = settings.orientation === 'Y';
   const perpAxis = orientationY ? 'X' : 'Y';
+  const parAxis  = orientationY ? 'Y' : 'X';
   const originPerp = perpAxis === 'X' ? origin.x : origin.y;
+  const originPar  = parAxis  === 'X' ? origin.x : origin.y;
   const slot1Perp = orientationY ? settings.slot1.x : settings.slot1.y;
   const pad = settings.keepoutPadding ?? settings.slideDistance ?? 0;
   const perpMax = slot1Perp + pad;
   const perpMin = slot1Perp - pad;
 
-  let entryEdge;
-  if (originPerp >= perpMax)       entryEdge = perpMax;
-  else if (originPerp <= perpMin)  entryEdge = perpMin;
-  else {
-    // Origin inside perp range — degenerate. Use fork routing to be safe.
-    return `${rackEntrance(engaged, origin, settings)}
-    G53 G0 X${engaged.x} Y${engaged.y}`;
+  // Non-degenerate: origin clearly on one perp side. 2-move route via
+  // that side's edge — diagonal stays outside keepout box perp-wise,
+  // then perp step into engaged at target par.
+  if (originPerp >= perpMax || originPerp <= perpMin) {
+    const entryEdge = originPerp >= perpMax ? perpMax : perpMin;
+    const entryPoint = perpAxis === 'X'
+      ? { x: entryEdge, y: engaged.y }
+      : { x: engaged.x, y: entryEdge };
+    return `
+      (cupEntrance: 2-move route via origin-side edge to slot engaged.)
+      G53 G0 X${entryPoint.x} Y${entryPoint.y}
+      G53 G0 X${engaged.x} Y${engaged.y}
+    `.trim();
   }
 
-  const entryPoint = perpAxis === 'X'
+  // Degenerate: origin sits INSIDE the keepout perp range (common when
+  // starting a tool change from a homed (0,0) position with the rack
+  // placed near the machine's X or Y=0 edge).
+  //
+  // Previously fell back to rackEntrance which forces the sliding-side
+  // edge. That's wrong for cup — cup has no slide-in requirement, and
+  // if the rack sits close to a travel boundary the sliding-side edge
+  // can be OUTSIDE machine soft limits (seen live: slot1.x=3.9 +
+  // slideDirection='Positive' + pad=60 → sliding side at X=-56.1 while
+  // machine's X range starts at 0 → ALARM:2 soft limit).
+  //
+  // Instead, use the perp edge OPPOSITE the sliding direction (the
+  // "back" of the rack from a physical setup standpoint). Rationale:
+  // users typically place the rack such that the sliding side faces
+  // the workspace or the machine's usable envelope, leaving the
+  // opposite side toward the machine wall / boundary. That means the
+  // opposite side is more likely to be INSIDE travel, not less.
+  //
+  // Route (3 moves): diagonal from origin to (entryEdge, cornerPar)
+  // where cornerPar is the par-end of the keepout closest to origin's
+  // par (keeps the diagonal outside the keepout par range) → par walk
+  // along the entryEdge to (entryEdge, engaged.par) → perp step into
+  // (engaged.perp, engaged.par).
+  const slideSign = settings.slideDirection === 'Positive' ? 1 : -1;
+  const entryEdge = slot1Perp + slideSign * pad;
+  const zone = computeKeepoutZone(settings);
+  const parMin = orientationY ? zone.minY : zone.minX;
+  const parMax = orientationY ? zone.maxY : zone.maxX;
+  const cornerPar = Math.abs(originPar - parMin) <= Math.abs(originPar - parMax)
+    ? parMin
+    : parMax;
+  const corner = perpAxis === 'X'
+    ? { x: entryEdge, y: cornerPar }
+    : { x: cornerPar, y: entryEdge };
+  const parWalkEnd = perpAxis === 'X'
     ? { x: entryEdge, y: engaged.y }
     : { x: engaged.x, y: entryEdge };
 
   return `
-    (cupEntrance: 2-move route via origin-side edge to slot engaged.)
-    G53 G0 X${entryPoint.x} Y${entryPoint.y}
+    (cupEntrance: origin inside keepout perp range — route via opposite-of-sliding edge.)
+    G53 G0 X${corner.x} Y${corner.y}
+    G53 G0 X${parWalkEnd.x} Y${parWalkEnd.y}
     G53 G0 X${engaged.x} Y${engaged.y}
   `.trim();
 }
@@ -796,27 +839,51 @@ function cupEntrance(engaged, origin, settings) {
 function cupExit(fromSlotEngaged, destination, settings) {
   const orientationY = settings.orientation === 'Y';
   const perpAxis = orientationY ? 'X' : 'Y';
+  const parAxis  = orientationY ? 'Y' : 'X';
   const destPerp = perpAxis === 'X' ? destination.x : destination.y;
+  const destPar  = parAxis  === 'X' ? destination.x : destination.y;
   const slot1Perp = orientationY ? settings.slot1.x : settings.slot1.y;
   const pad = settings.keepoutPadding ?? settings.slideDistance ?? 0;
   const perpMax = slot1Perp + pad;
   const perpMin = slot1Perp - pad;
 
-  let exitEdge;
-  if (destPerp >= perpMax)      exitEdge = perpMax;
-  else if (destPerp <= perpMin) exitEdge = perpMin;
-  else {
-    // Destination inside perp range — degenerate. Use fork routing.
-    return rackExit(fromSlotEngaged, destination, settings);
+  // Non-degenerate: destination clearly on one perp side. 2-move route.
+  if (destPerp >= perpMax || destPerp <= perpMin) {
+    const exitEdge = destPerp >= perpMax ? perpMax : perpMin;
+    const exitPoint = perpAxis === 'X'
+      ? { x: exitEdge, y: fromSlotEngaged.y }
+      : { x: fromSlotEngaged.x, y: exitEdge };
+    return `
+      (cupExit: 2-move route via destination-side edge to destination.)
+      G53 G0 X${exitPoint.x} Y${exitPoint.y}
+      G53 G0 X${destination.x} Y${destination.y}
+    `.trim();
   }
 
-  const exitPoint = perpAxis === 'X'
+  // Degenerate: destination inside keepout perp range. Mirror of
+  // cupEntrance's degenerate handling — use the perp edge opposite the
+  // sliding direction (see cupEntrance comment for rationale). Route:
+  // perp step from engaged to (edge, engaged.par) → par walk to
+  // (edge, cornerPar) → diagonal to destination.
+  const slideSign = settings.slideDirection === 'Positive' ? 1 : -1;
+  const exitEdge = slot1Perp + slideSign * pad;
+  const zone = computeKeepoutZone(settings);
+  const parMin = orientationY ? zone.minY : zone.minX;
+  const parMax = orientationY ? zone.maxY : zone.maxX;
+  const cornerPar = Math.abs(destPar - parMin) <= Math.abs(destPar - parMax)
+    ? parMin
+    : parMax;
+  const parWalkStart = perpAxis === 'X'
     ? { x: exitEdge, y: fromSlotEngaged.y }
     : { x: fromSlotEngaged.x, y: exitEdge };
+  const corner = perpAxis === 'X'
+    ? { x: exitEdge, y: cornerPar }
+    : { x: cornerPar, y: exitEdge };
 
   return `
-    (cupExit: 2-move route via destination-side edge to destination.)
-    G53 G0 X${exitPoint.x} Y${exitPoint.y}
+    (cupExit: destination inside keepout perp range — route via opposite-of-sliding edge.)
+    G53 G0 X${parWalkStart.x} Y${parWalkStart.y}
+    G53 G0 X${corner.x} Y${corner.y}
     G53 G0 X${destination.x} Y${destination.y}
   `.trim();
 }
@@ -856,6 +923,7 @@ function tlsExit(tlsX, tlsY, origin, settings) {
   const oppositePerp = slot1Perp + slideSign * pad;
 
   const tlsPerp    = perpAxis === 'X' ? tlsX     : tlsY;
+  const tlsPar     = parAxis  === 'X' ? tlsX     : tlsY;
   const originPerp = perpAxis === 'X' ? origin.x : origin.y;
   const originPar  = parAxis  === 'X' ? origin.x : origin.y;
 
@@ -882,12 +950,15 @@ function tlsExit(tlsX, tlsY, origin, settings) {
   }
 
   // Segment would cross the keepout → route via a par-end corner.
-  // Pick the corner nearest the destination (fewer wasted travel) and
-  // walk the outer edge from the TLS-side corner to the origin-side
-  // corner before diagonaling out to the destination.
-  const cornerPar = Math.abs(originPar - parMin) <= Math.abs(originPar - parMax)
-    ? parMin
-    : parMax;
+  // Pick the corner that minimizes TOTAL par travel across both
+  // endpoints, not just proximity to the destination. Old rule only
+  // measured destination-to-corner and picked the wrong end when TLS
+  // sat far from the destination-favored corner — e.g. TLS just past
+  // parMax, destination just past parMin: dest-only rule picks parMin
+  // and TLS ends up walking the full par length before diagonaling out.
+  const parViaMin = Math.abs(tlsPar - parMin) + Math.abs(originPar - parMin);
+  const parViaMax = Math.abs(tlsPar - parMax) + Math.abs(originPar - parMax);
+  const cornerPar = parViaMin <= parViaMax ? parMin : parMax;
   const tlsPerpAtEdge    = tlsPastSliding    ? entryPerp : oppositePerp;
   const originPerpAtEdge = originPastSliding ? entryPerp : oppositePerp;
   const tlsSideCorner    = perpAxis === 'X'
@@ -1302,7 +1373,24 @@ function handleHomeCommand(commands, context, settings) {
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
 
-function handleSlotCommand(commands, settings) {
+// Manual $slotN navigation. Routes through the same keepout-safe
+// entrance used by tool change (buildLoadTool / buildUnloadTool). A
+// direct G0 XY from an origin on the wrong side of the rack would
+// otherwise cut straight through the keepout envelope over the other
+// tools — the whole reason cupEntrance / rackEntrance exist.
+function buildSlotNav(settings, slotNum, origin = { x: 0, y: 0 }) {
+  const engaged = calculateSlotPosition(settings, slotNum).engaged;
+  const entrance = settings.rackHolding === 'Cup'
+    ? cupEntrance(engaged, origin, settings)
+    : `${rackEntrance(engaged, origin, settings)}
+       G53 G0 X${engaged.x} Y${engaged.y}`;
+  return `
+    G53 G21 G90 G0 Z${settings.zSafe}
+    ${entrance}
+  `.trim();
+}
+
+function handleSlotCommand(commands, context, settings) {
   const idx = commands.findIndex((c) => {
     if (!c.isOriginal) return false;
     return parseSlotCommand(c.command) !== null;
@@ -1315,11 +1403,11 @@ function handleSlotCommand(commands, settings) {
   // fallback position — the user probably meant a slot they'll add later.
   if (slotNum < 1 || slotNum > settings.slots) return;
 
-  const base = calculateSlotBase(settings, slotNum);
-  const gcode = `
-    G53 G21 G90 G0 Z${settings.zSafe}
-    G53 G21 G90 G0 X${base.x} Y${base.y}
-  `.trim();
+  const origin = {
+    x: context?.machineState?.mpos?.x ?? 0,
+    y: context?.machineState?.mpos?.y ?? 0,
+  };
+  const gcode = buildSlotNav(settings, slotNum, origin);
   const program = formatGCode(gcode);
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
@@ -1366,7 +1454,7 @@ function onBeforeCommand(commands, context, settings) {
   }
   handleHomeCommand(commands, context, settings);
   handleTLSCommand(commands, context, settings);
-  handleSlotCommand(commands, settings);
+  handleSlotCommand(commands, context, settings);
   handleM6Command(commands, context, settings);
   return commands;
 }
@@ -1375,5 +1463,5 @@ export {
   onBeforeCommand, buildInitialConfig,
   rackEntrance, rackExit, cupEntrance, cupExit, tlsEntrance, tlsExit,
   computeKeepoutZone, slotEntryPoint, slotApproachPoint,
-  buildLoadTool, buildUnloadTool, calculateSlotPosition,
+  buildLoadTool, buildUnloadTool, buildSlotNav, calculateSlotPosition,
 };

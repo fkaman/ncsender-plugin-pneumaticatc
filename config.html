@@ -1681,7 +1681,7 @@
     $('pa-slide-speed').value    = String(initialConfig.slideSpeed ?? 500);
     $('pa-slot-distance').value  = fmtCoord(initialConfig.slotDistance ?? initialConfig.pocketDistance ?? 60);
     $('pa-z-retract').value      = fmtCoord(initialConfig.zRetract ?? 7);
-    $('pa-drawbar-offset').value = fmtCoord(initialConfig.drawbarOffset ?? initialConfig.loadDrawbarOffset ?? initialConfig.unclampZOffset ?? 1);
+    $('pa-drawbar-offset').value = fmtCoord(initialConfig.drawbarOffset ?? initialConfig.loadDrawbarOffset ?? initialConfig.unclampZOffset ?? 2);
     $('pa-drawbar-feedrate').value = String(initialConfig.drawbarFeedrate ?? 300);
     $('pa-seek-start-z').value   = fmtCoord(initialConfig.tlsSeekStartZ ?? initialConfig.zSafe ?? -5);
     $('pa-seek-distance').value  = fmtCoord(initialConfig.seekDistance ?? 50);
@@ -1785,7 +1785,7 @@
       slideSpeed: parseFloatOr($('pa-slide-speed').value, 500),
       keepoutPadding: toMetric(parseFloatOr($('pa-keepout-padding').value, 60)),
       zRetract: toMetric(parseFloatOr($('pa-z-retract').value, 7)),
-      drawbarOffset:   toMetric(parseFloatOr($('pa-drawbar-offset').value, 1)),
+      drawbarOffset:   toMetric(parseFloatOr($('pa-drawbar-offset').value, 2)),
       drawbarFeedrate: parseFloatOr($('pa-drawbar-feedrate').value, 300),
 
       tlsMode: tlsMode,
