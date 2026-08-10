@@ -1,4 +1,4 @@
 ## What's Changed
 
 ### 🔧 Improvements
-- Slot routing now uses an entrance-based strategy, TLS exits choose the corner with the shortest total travel, and the default drawbar offset is now 2
+- M64 auxiliary output commands are now blocked while the spindle is active, preventing unsafe aux output changes mid-operation
