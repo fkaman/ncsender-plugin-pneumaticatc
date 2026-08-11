@@ -519,6 +519,41 @@ describe('tlsExit (TLS → destination)', () => {
   });
 });
 
+describe('tlsExit (.117 kiosk Cup): TLS + origin both inside perp band on opposite par-ends', () => {
+  // Tx→Ty tool change on the .117 kiosk. After probing, tlsExit routes
+  // from TLS (1.984, -931) — inside perp band [-56.2, 63.8], BELOW
+  // parMin — back to origin (0, -57.419) — inside perp band, ABOVE
+  // parMax. Old path fell into the par-end corner detour where both
+  // "side corners" collapsed to (63.8, parMin) and the final diagonal
+  // to origin cut through the box on the way up. Correct: route the
+  // WHOLE workspace-side edge — TLS → (edge, tls par-end) →
+  // (edge, origin par-end) → origin.
+  test('routes via full workspace-side edge (parMin corner → parMax corner)', () => {
+    const KIOSK_CUP = {
+      slots: 12,
+      orientation: 'Y',
+      direction: 'Positive',
+      slot1: { x: 3.8, y: -863.231 },
+      slotDistance: 60,
+      slideDirection: 'Positive',
+      slideDistance: 40,
+      keepoutPadding: 60,
+      rackHolding: 'Cup',
+    };
+    const gcode = tlsExit(1.984, -931, { x: 0, y: -57.419 }, KIOSK_CUP);
+    assert.deepEqual(motionLines(gcode), [
+      'G53 G0 X63.8 Y-923.231',   // TLS → (workspace edge, parMin) — near TLS
+      'G53 G0 X63.8 Y-143.231',   // par walk up edge to (workspace edge, parMax) — near origin
+      'G53 G0 X0 Y-57.419',       // diagonal to origin (Y stays above parMax → outside box)
+    ]);
+    // Guard against regression to the collapsed 2-same-corner shape
+    // that used to emit `X63.8 Y-923.231` twice in a row.
+    const lines = motionLines(gcode);
+    assert.ok(!(lines[0] === lines[1]),
+      `must NOT emit two identical consecutive corner moves — got ${JSON.stringify(lines)}`);
+  });
+});
+
 // Standalone $TLS approach. createToolLengthSetRoutine runs before every
 // probe cycle — via $TLS, via M6, via $H+performTlsAfterHome. It didn't
 // know about the keepout: a single `G53 G0 X{tlsX} Y{tlsY}` from wherever
@@ -552,6 +587,195 @@ describe('createToolLengthSetRoutine — approach honors sliding-side edge', () 
     // BEFORE any G38 probe move.
     assert.equal(lines[zSafeIdx + 1], 'G53 G0 X70.5 Y-640', 'edge landing first');
     assert.equal(lines[zSafeIdx + 2], 'G53 G0 X3 Y-640', 'perp-in second');
+  });
+
+  // .117 kiosk (Cup rack): slot1={x:3.8, y:-863.231}, 12 slots,
+  // slotDistance=60, slideDirection=Positive → fork's slidingSidePerp
+  // would land at -56.2, which is OUTSIDE the machine's X travel
+  // [0, 1260]. Cup racks aren't constrained to the fork side — cup
+  // uses the origin-side edge (or workspace-side when origin sits
+  // inside the perp band), mirroring cupEntrance/cupExit. Correct
+  // edge here is +63.8 (workspace side, +slideSign*pad).
+  const KIOSK_CUP = {
+    slots: 12,
+    orientation: 'Y',
+    direction: 'Positive',
+    slot1: { x: 3.8, y: -863.231 },
+    slotDistance: 60,
+    slideDirection: 'Positive',
+    slideDistance: 40,
+    keepoutPadding: 60,
+    zSafe: -5,
+    toolsetter: { x: 1.984, y: -931 },
+    tlsSeekStartZ: -5,
+    seekDistance: 115,
+    seekFeedrate: 700,
+    rackHolding: 'Cup',
+  };
+
+  test('regression (.117 kiosk Cup): origin INSIDE perp band → 3-move via NEAREST CORNER (diagonal → par walk → diagonal-in)', () => {
+    // Origin (24.984, -49.331) sits INSIDE perp band [-56.2, 63.8],
+    // ABOVE parMax=-143.231. Nearest corner heading toward TLS is the
+    // top-right (perpMax, parMax) = (63.8, -143.231). Move 1 diagonals
+    // there (Y stays ≥ parMax → segment above box). Move 2 walks down
+    // the right edge to parMin. Move 3 diagonals into TLS below parMin.
+    // A direct diagonal from origin to (63.8, parMin) would cut through
+    // the box; the corner-first routing avoids it.
+    const routine = createToolLengthSetRoutine(
+      KIOSK_CUP, { x: 0, y: 0, z: 0 },
+      { originMPos: { x: 24.984, y: -49.331 } }
+    ).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    assert.equal(lines[zSafeIdx + 1], 'G53 G0 X63.8 Y-143.231',
+      'move 1: diagonal to NEAREST corner (perpMax, parMax) — above the box');
+    assert.equal(lines[zSafeIdx + 2], 'G53 G0 X63.8 Y-923.231',
+      'move 2: par walk down right edge to parMin');
+    assert.equal(lines[zSafeIdx + 3], 'G53 G0 X1.984 Y-931',
+      'move 3: diagonal-in to TLS (past parMin → below the box)');
+    assert.ok(!lines.some(l => /X-56\.2/.test(l)),
+      `must NOT hop to fork side X=-56.2 (out of travel) — got ${JSON.stringify(lines)}`);
+  });
+
+  test('regression (.117 kiosk Cup): exit mirrors approach — 3 moves back to origin via same corner', () => {
+    // Symmetric with the 3-move entry: perp-out from TLS to (edge,
+    // parMin), par walk back up the edge to (edge, parMax = corner
+    // near origin), diagonal back to origin. Last diagonal stays
+    // above parMax → outside box. Without this the exit lands at
+    // (edge, parMin) and the operator's next jog to workspace can cut
+    // through the box on the way up.
+    const program = createToolLengthSetProgram(
+      KIOSK_CUP, { x: 0, y: 0, z: 0 },
+      { originMPos: { x: 24.984, y: -49.331 } }
+    ).join('\n');
+    const lines = motionLines(program);
+    let postProbeZIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^G53 G0 Z-5$/.test(lines[i])) { postProbeZIdx = i; break; }
+    }
+    assert.equal(lines[postProbeZIdx + 1], 'G53 G0 X63.8 Y-923.231',
+      'exit move 1: diagonal-out from TLS to (edge, parMin)');
+    assert.equal(lines[postProbeZIdx + 2], 'G53 G0 X63.8 Y-143.231',
+      'exit move 2: par walk up edge to nearest-origin corner (edge, parMax)');
+    assert.equal(lines[postProbeZIdx + 3], 'G53 G0 X24.984 Y-49.331',
+      'exit move 3: diagonal back to origin (Y goes above parMax → outside box)');
+  });
+
+  test('Cup: origin clearly on +X side of perp range → use +X edge (perpMax)', () => {
+    // Origin far +X → cupEntrance rule: use origin-side edge.
+    const routine = createToolLengthSetRoutine(
+      KIOSK_CUP, { x: 0, y: 0, z: 0 },
+      { originMPos: { x: 500, y: -400 } }
+    ).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    assert.equal(lines[zSafeIdx + 1], 'G53 G0 X63.8 Y-923.231');
+    assert.equal(lines[zSafeIdx + 2], 'G53 G0 X1.984 Y-931');
+  });
+
+  test('Cup: origin clearly on -X side of perp range → use -X edge (perpMin)', () => {
+    // Contrived — configure a rack whose perpMin is inside travel and
+    // origin sits past it on the -X side. Cup rule picks origin-side.
+    const CUP_LEFT = {
+      ...KIOSK_CUP,
+      slot1: { x: 500, y: -863.231 },  // perp band [440, 560]
+      toolsetter: { x: 480, y: -900 }, // inside perp band, past par-min
+    };
+    const routine = createToolLengthSetRoutine(
+      CUP_LEFT, { x: 0, y: 0, z: 0 },
+      { originMPos: { x: 100, y: -400 } }  // far -X → past perpMin=440
+    ).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    // TLS Y=-900 is INSIDE par range [-923.231, -143.231] → entryPar
+    // stays at tlsY (no clamp needed).
+    assert.equal(lines[zSafeIdx + 1], 'G53 G0 X440 Y-900',
+      'origin on -X side → hop to perpMin=440 at tlsY');
+  });
+
+  test('Cup: no originMPos → falls back to workspace-side edge', () => {
+    // Handler didn't supply origin (old host / edge case). Fall back
+    // to workspace-side (slot1Perp + slideSign*pad) — same choice
+    // cupEntrance makes in its degenerate branch.
+    const routine = createToolLengthSetRoutine(
+      KIOSK_CUP, { x: 0, y: 0, z: 0 },
+      /* no options.originMPos */
+    ).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    assert.equal(lines[zSafeIdx + 1], 'G53 G0 X63.8 Y-923.231');
+  });
+
+  test('Cup + origin inside perp band + orientation=X: 3-move with axes swapped', () => {
+    // Same logic but rack aligned along X (perp = Y). Origin par is
+    // above the rack (X above parMax). Approach = perp-out to (originX,
+    // entryPerp), par walk on Y=entryPerp, then diagonal to TLS.
+    const CUP_X = {
+      slots: 4,
+      orientation: 'X',
+      direction: 'Positive',
+      slot1: { x: -600, y: 3.8 },        // rack aligned along X, perp=Y at 3.8
+      slotDistance: 60,
+      slideDirection: 'Positive',
+      slideDistance: 40,
+      keepoutPadding: 60,
+      zSafe: -5,
+      toolsetter: { x: -700, y: 1.984 }, // par=X=-700 past parMin, perp=Y=1.984 inside band
+      tlsSeekStartZ: -5,
+      seekDistance: 115,
+      seekFeedrate: 700,
+      rackHolding: 'Cup',
+    };
+    // orient=X: perpAxis=Y, parAxis=X. slot1.y=3.8, pad=60 → perp band Y[-56.2, 63.8].
+    // slot par range: X in [-660, -360]. Toolsetter X=-700 past parMin → clamp entryPar to -660.
+    // Origin (30, 40): Y=40 inside perp band; X=30 above parMax=-360.
+    // Nearest corner heading toward TLS: X=parMax=-360, Y=workspace edge=63.8.
+    // Cup + origin inside: workspace-side = slot1.y + slideSign*pad = 3.8 + 60 = 63.8.
+    const routine = createToolLengthSetRoutine(
+      CUP_X, { x: 0, y: 0, z: 0 },
+      { originMPos: { x: 30, y: 40 } }
+    ).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    assert.equal(lines[zSafeIdx + 1], 'G53 G0 X-360 Y63.8',
+      'move 1: diagonal to nearest corner (parMax, workspace edge)');
+    assert.equal(lines[zSafeIdx + 2], 'G53 G0 X-660 Y63.8',
+      'move 2: par (X) walk along edge to clamped parMin=-660');
+    assert.equal(lines[zSafeIdx + 3], 'G53 G0 X-700 Y1.984',
+      'move 3: diagonal-in to TLS');
+  });
+
+  test('Cup + origin far outside perp band: skips 3-move, uses 2-move (edge, perp-in)', () => {
+    // Origin (500, -400): X=500 well past perpMax=63.8. Diagonal from
+    // origin to (perpMax, parMin) stays past perpMax the whole way,
+    // no box crossing risk. 2-move is correct — 3-move would add an
+    // unnecessary perp-out.
+    const routine = createToolLengthSetRoutine(
+      KIOSK_CUP, { x: 0, y: 0, z: 0 },
+      { originMPos: { x: 500, y: -400 } }
+    ).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    assert.equal(lines[zSafeIdx + 1], 'G53 G0 X63.8 Y-923.231');
+    assert.equal(lines[zSafeIdx + 2], 'G53 G0 X1.984 Y-931');
+    // Only 2 XY moves after Z-safe, then G38 probe seq.
+    assert.doesNotMatch(lines[zSafeIdx + 3] ?? '', /^G53 G0 X/,
+      'no 3rd XY move — origin outside perp collapses to 2-move');
+  });
+
+  test('Fork rack: still uses sliding-side edge regardless of origin', () => {
+    // Fork geometry forces sliding-side approach. Origin should have
+    // zero effect on the edge choice.
+    const KIOSK_FORK = { ...KIOSK_CUP, rackHolding: 'Fork' };
+    const routine = createToolLengthSetRoutine(
+      KIOSK_FORK, { x: 0, y: 0, z: 0 },
+      { originMPos: { x: 500, y: -400 } }  // origin far +X — would tempt cup
+    ).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    // Fork uses slidingSidePerp = slot1.x + approachSign*pad = 3.8 - 60 = -56.2
+    assert.equal(lines[zSafeIdx + 1], 'G53 G0 X-56.2 Y-923.231',
+      'Fork ignores origin and uses slidingSidePerp');
   });
 
   test('TLS past sliding side (outside keepout perp range): single-move approach', () => {
