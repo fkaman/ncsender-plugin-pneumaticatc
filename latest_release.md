@@ -1,4 +1,4 @@
 ## What's Changed
 
-### ✨ New Features
-- Added a Generic Pneumatic ATC profile, so you can set up and use a generic pneumatic tool changer without a device-specific configuration.
+### 🐛 Bug Fixes
+- Approach and exit routing for TLS now respects keepout zones, preventing routes from being generated through restricted airspace.
