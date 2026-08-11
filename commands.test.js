@@ -40,6 +40,8 @@ import {
   buildSlotNav,
   calculateSlotPosition,
   gateSpindleUnclamp,
+  createToolLengthSetRoutine,
+  createToolLengthSetProgram,
 } from './commands.js';
 
 // Strip comment lines and blank lines so the assertions read against
@@ -330,6 +332,40 @@ describe('tlsEntrance (slot approach → TLS)', () => {
   });
 });
 
+describe('tlsEntrance — TLS inside keepout (regression)', () => {
+  // Reported case: TLS mounted between slots (inside the padded keepout).
+  // tlsEntrance is rackExit under the hood. Old logic: destPastSlidingEdge
+  // was false AND destInParRange was true → case 3 opposite-corner detour
+  // walked to (70.5, -770) → (-49.5, -770) → destination. Y=-770 was
+  // beyond machine travel. Fix: destInPerpRange && destInParRange → ascent
+  // + sliding-edge walk + perp-in.
+  test('slot 2 approach → TLS inside keepout: ascent + edge walk + perp-in (not opposite-corner detour)', () => {
+    const RACK = {
+      slots: 4,
+      orientation: 'Y',
+      direction: 'Positive',
+      slot1: { x: 10.5, y: -710 },
+      slotDistance: 140,
+      slideDirection: 'Negative',
+      slideDistance: 40,
+      keepoutPadding: 60,
+    };
+    // Zone: X[-49.5, 70.5], Y[-770, -230]. Slot 2 approach at (50.5, -570).
+    // TLS at (3, -640) — strictly inside both perp and par ranges.
+    const gcode = tlsEntrance(
+      /* fromSlotXY */ { x: 50.5, y: -570 },
+      /* tlsX */       3,
+      /* tlsY */       -640,
+      RACK
+    );
+    assert.deepEqual(motionLines(gcode), [
+      'G53 G0 X70.5',        // ascent from approach perp to sliding-side edge
+      'G53 G0 X70.5 Y-640',  // walk along sliding edge to TLS par
+      'G53 G0 X3 Y-640',     // perp-in to TLS
+    ]);
+  });
+});
+
 describe('tlsExit (TLS → destination)', () => {
   test('same-side destination: direct diagonal (case 1)', () => {
     // Default RACK. TLS (400, -100) and origin (0, 50) both past +X
@@ -450,6 +486,130 @@ describe('tlsExit (TLS → destination)', () => {
       'G53 G0 X63.8 Y-143.231',       // same corner (same-side collapse)
       'G53 G0 X701.456 Y-622.103',    // diagonal to origin
     ]);
+  });
+
+  // Reported case: TLS mounted BETWEEN slots (inside the padded keepout
+  // box). Old logic couldn't tell "tlsPastSliding=false because TLS is
+  // outside on the opposite perp side" from "tlsPastSliding=false
+  // because TLS is inside the keepout perp band", so it routed via the
+  // opposite-perp par-end corner — walking to (-49.5, -770), across to
+  // (70.5, -770), then out to origin. Y=-770 was beyond machine travel.
+  // Fix: detect TLS-inside and exit through the sliding-side edge at
+  // the same par as TLS, then direct diagonal to origin.
+  test('regression: TLS inside keepout box — exit via sliding edge, not par-end detour', () => {
+    const RACK = {
+      slots: 4,
+      orientation: 'Y',
+      direction: 'Positive',
+      slot1: { x: 10.5, y: -710 },
+      slotDistance: 140,
+      slideDirection: 'Negative',
+      slideDistance: 40,
+      keepoutPadding: 60,
+    };
+    // Zone: X[-49.5, 70.5], Y[-770, -230]. TLS (3, -640) sits strictly
+    // inside both perp and par ranges. Origin (535.925, -377.362) sits
+    // well past the +X sliding edge. Expect a single perp exit move
+    // to (70.5, -640) then a direct diagonal to origin.
+    const gcode = tlsExit(3, -640, { x: 535.925, y: -377.362 }, RACK);
+    assert.deepEqual(motionLines(gcode), [
+      'G53 G0 X70.5 Y-640',
+      'G53 G0 X535.925 Y-377.362',
+    ]);
+  });
+});
+
+// Standalone $TLS approach. createToolLengthSetRoutine runs before every
+// probe cycle — via $TLS, via M6, via $H+performTlsAfterHome. It didn't
+// know about the keepout: a single `G53 G0 X{tlsX} Y{tlsY}` from wherever
+// the spindle sat could cut diagonally across occupied slot columns on
+// the way in. Fix mirrors rackExit — if TLS sits inside the padded rack
+// envelope, land on the sliding-side edge at TLS par first, then perp-in.
+describe('createToolLengthSetRoutine — approach honors sliding-side edge', () => {
+  const RACK = {
+    slots: 4,
+    orientation: 'Y',
+    direction: 'Positive',
+    slot1: { x: 10.5, y: -710 },
+    slotDistance: 140,
+    slideDirection: 'Negative',
+    slideDistance: 40,
+    keepoutPadding: 60,
+    zSafe: -5,
+    toolsetter: { x: 3, y: -640 },
+    seekDistance: 115,
+    seekFeedrate: 700,
+    tlsSeekStartZ: -5,
+  };
+
+  test('TLS inside padded keepout perp range: 2-move approach (edge, then perp-in)', () => {
+    // Zone X[-49.5, 70.5]. TLS X=3 is inside → must land at X=70.5 first
+    // (sliding edge, Negative slideDirection → +X approach), then perp in.
+    const routine = createToolLengthSetRoutine(RACK, { x: 0, y: 0, z: 0 }).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    // Two XY approach lines immediately follow the Z-safe retract,
+    // BEFORE any G38 probe move.
+    assert.equal(lines[zSafeIdx + 1], 'G53 G0 X70.5 Y-640', 'edge landing first');
+    assert.equal(lines[zSafeIdx + 2], 'G53 G0 X3 Y-640', 'perp-in second');
+  });
+
+  test('TLS past sliding side (outside keepout perp range): single-move approach', () => {
+    // Toolsetter mounted past the rack in +X — no risk of crossing slots.
+    const OUTSIDE = { ...RACK, toolsetter: { x: 400, y: -100 } };
+    const routine = createToolLengthSetRoutine(OUTSIDE, { x: 0, y: 0, z: 0 }).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    assert.equal(lines[zSafeIdx + 1], 'G53 G0 X400 Y-100');
+    // No second XY move — the next line goes straight into the probe
+    // sequence (G43.1 TLO reset, then G38 seek).
+    assert.doesNotMatch(lines[zSafeIdx + 2] ?? '', /^G53 G0 X/);
+  });
+
+  test('chained after rackExitToTLS: skipXYApproach suppresses the redundant edge-hop', () => {
+    // rackExitToTLS parks the spindle AT (tlsX, tlsY). The routine's
+    // own XY approach would then walk out to the sliding edge and back
+    // to TLS — round-trip motion for no reason. skipXYApproach:true
+    // omits both the edge-hop and the perp-in.
+    const routine = createToolLengthSetRoutine(RACK, { x: 0, y: 0, z: 0 }, { skipXYApproach: true }).join('\n');
+    const lines = motionLines(routine);
+    const zSafeIdx = lines.findIndex(l => /G53 G0 Z-5/.test(l));
+    // Immediately after Z-safe, next line is the G43.1 TLO reset or
+    // G38 seek, NOT another `G53 G0 X…` XY move.
+    assert.doesNotMatch(lines[zSafeIdx + 1] ?? '', /^G53 G0 X/,
+      'chained routine must not re-emit the XY approach');
+  });
+
+  test('standalone $TLS program: XY exit through sliding edge after Z-safe (TLS inside keepout)', () => {
+    // After the probe & Z-safe retract, the spindle sits at (tlsX, tlsY)
+    // inside the keepout. Without an exit move, the next operator action
+    // (jog to XY0, run a program) cuts across occupied slot columns on
+    // the way out. Program must emit `G53 G0 X{entryPerp} Y{tlsY}` between
+    // the final Z-safe and G4 dwell.
+    const program = createToolLengthSetProgram(RACK, { x: 0, y: 0, z: 0 }).join('\n');
+    const lines = motionLines(program);
+    // Find the LAST Z-safe (the post-probe retract, not the pre-approach).
+    let postProbeZIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^G53 G0 Z-5$/.test(lines[i])) { postProbeZIdx = i; break; }
+    }
+    assert.notEqual(postProbeZIdx, -1, 'expected post-probe Z-safe retract');
+    assert.equal(lines[postProbeZIdx + 1], 'G53 G0 X70.5 Y-640',
+      'exit must land on sliding edge at TLS par before anything else');
+  });
+
+  test('standalone $TLS program: no XY exit when TLS is outside keepout perp range', () => {
+    // Toolsetter mounted past the rack — direct exit is safe, don't
+    // emit a redundant edge-hop.
+    const OUTSIDE = { ...RACK, toolsetter: { x: 400, y: -100 } };
+    const program = createToolLengthSetProgram(OUTSIDE, { x: 0, y: 0, z: 0 }).join('\n');
+    const lines = motionLines(program);
+    let postProbeZIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^G53 G0 Z-5$/.test(lines[i])) { postProbeZIdx = i; break; }
+    }
+    assert.doesNotMatch(lines[postProbeZIdx + 1] ?? '', /^G53 G0 X/,
+      'no XY exit expected when TLS is outside the padded rack envelope');
   });
 });
 

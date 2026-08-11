@@ -312,9 +312,34 @@ function auxOnOff(auxOutput) {
 
 // === Tool Length Setter routine ===
 
-function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }) {
+function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }, options = {}) {
   const tlsX = settings.toolsetter.x + (toolOffsets.x || 0);
   const tlsY = settings.toolsetter.y + (toolOffsets.y || 0);
+  // If TLS sits inside the keepout perp range, a direct XY rapid could
+  // cut across rack slots on the way in. Split into two moves: land on
+  // the sliding-side edge at the TLS par first, then perp-in. Same
+  // pattern as rackExit/tlsExit — sliding-side is the only clean way
+  // in or out of the padded rack envelope. If TLS is outside the perp
+  // range (toolsetter mounted past the rack), a single direct move is
+  // still safe.
+  //
+  // options.skipXYApproach — when the caller already parked the spindle
+  // at (tlsX, tlsY) (e.g. rackExitToTLS ran immediately before this
+  // routine), don't re-emit the edge-hop + perp-in — those moves would
+  // walk out to the sliding edge and back for no reason.
+  const orientationY = settings.orientation === 'Y';
+  const pad = settings.keepoutPadding ?? settings.slideDistance ?? 0;
+  const slot1Perp = orientationY ? settings.slot1.x : settings.slot1.y;
+  const tlsPerp = orientationY ? tlsX : tlsY;
+  const tlsInsidePerpRange = tlsPerp > slot1Perp - pad && tlsPerp < slot1Perp + pad;
+  const entryPerp = slidingSidePerp(settings);
+  const tlsApproach = options.skipXYApproach
+    ? ''
+    : (tlsInsidePerpRange
+        ? (orientationY
+            ? `G53 G0 X${entryPerp} Y${tlsY}\n    G53 G0 X${tlsX} Y${tlsY}`
+            : `G53 G0 X${tlsX} Y${entryPerp}\n    G53 G0 X${tlsX} Y${tlsY}`)
+        : `G53 G0 X${tlsX} Y${tlsY}`);
   // Per-tool TLS bias from the tool library — added on top of the
   // configured start Z. Long tools store a positive bias so probing
   // starts higher up (further from the toolsetter) to avoid crashing.
@@ -349,7 +374,7 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
 
   const gcode = `
     G53 G0 Z${settings.zSafe}
-    G53 G0 X${tlsX} Y${tlsY}
+    ${tlsApproach}
     ${approach}
     ${preTls}
     G43.1 Z0
@@ -371,10 +396,33 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
   return gcode.split('\n');
 }
 
+// Exit move for post-TLS Z-safe: mirror of the approach split in
+// createToolLengthSetRoutine. If TLS sits inside the padded keepout
+// perp range, we came IN via the sliding edge — so we must go OUT via
+// the sliding edge before whatever comes next (jog to XY0, run a
+// program, etc.). A direct move from inside the keepout to somewhere
+// past the workspace otherwise cuts diagonally across occupied slot
+// columns. Returns '' when TLS sits outside the perp range.
+function createToolLengthSetExitMove(settings, toolOffsets = { x: 0, y: 0, z: 0 }) {
+  const tlsX = settings.toolsetter.x + (toolOffsets.x || 0);
+  const tlsY = settings.toolsetter.y + (toolOffsets.y || 0);
+  const orientationY = settings.orientation === 'Y';
+  const pad = settings.keepoutPadding ?? settings.slideDistance ?? 0;
+  const slot1Perp = orientationY ? settings.slot1.x : settings.slot1.y;
+  const tlsPerp = orientationY ? tlsX : tlsY;
+  const tlsInsidePerpRange = tlsPerp > slot1Perp - pad && tlsPerp < slot1Perp + pad;
+  if (!tlsInsidePerpRange) return '';
+  const entryPerp = slidingSidePerp(settings);
+  return orientationY
+    ? `G53 G0 X${entryPerp} Y${tlsY}`
+    : `G53 G0 X${tlsX} Y${entryPerp}`;
+}
+
 function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }) {
   const tlsRoutine = createToolLengthSetRoutine(settings, toolOffsets).join('\n');
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
+  const tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets);
 
   const gcode = `
     (Start of Tool Length Setter)
@@ -383,6 +431,7 @@ function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     G21
     ${tlsRoutine}
     G53 G0 Z${settings.zSafe}
+    ${tlsExitMove}
     G4 P0
     G[#<return_units>]
     ${postCmd}
@@ -698,7 +747,29 @@ function rackExit(fromSlotXY, destination, settings) {
   const zone = computeKeepoutZone(settings);
   const parMin = orientationY ? zone.minY : zone.minX;
   const parMax = orientationY ? zone.maxY : zone.maxX;
+  const perpMin = orientationY ? zone.minX : zone.minY;
+  const perpMax = orientationY ? zone.maxX : zone.maxY;
   const destInParRange = destPar > parMin && destPar < parMax;
+  const destInPerpRange = destPerp > perpMin && destPerp < perpMax;
+
+  // Destination inside the padded keepout box (e.g. toolsetter mounted
+  // between slots): ascent to sliding-side edge, walk along the edge
+  // to destination's par, perp-in to destination. Without this,
+  // destPastSlidingEdge=false collapses "destination inside keepout"
+  // into the case-3 opposite-corner detour and the tool walks the long
+  // way around the box — sometimes past machine limits.
+  if (destInPerpRange && destInParRange) {
+    const edgeAtDestPar = perpAxis === 'X'
+      ? { x: entryPerp, y: destPar }
+      : { x: destPar,   y: entryPerp };
+    return `
+      (rackExit: destination inside keepout — ascent + sliding-edge walk + perp-in.)
+      ${ascent}
+      G53 G0 X${edgeAtDestPar.x} Y${edgeAtDestPar.y}
+      G53 G0 X${destination.x} Y${destination.y}
+    `.trim();
+  }
+
   const cornerPar = Math.abs(destPar - parMin) <= Math.abs(destPar - parMax)
     ? parMin
     : parMax;
@@ -933,6 +1004,8 @@ function tlsExit(tlsX, tlsY, origin, settings) {
   const zone = computeKeepoutZone(settings);
   const parMin = orientationY ? zone.minY : zone.minX;
   const parMax = orientationY ? zone.maxY : zone.maxX;
+  const perpMin = orientationY ? zone.minX : zone.minY;
+  const perpMax = orientationY ? zone.maxX : zone.maxY;
 
   // Direct diagonal is safe iff the segment doesn't cross the padded
   // keepout box. Previously this was a series of "both past edge X"
@@ -945,6 +1018,26 @@ function tlsExit(tlsX, tlsY, origin, settings) {
                              zone.minX, zone.maxX, zone.minY, zone.maxY)) {
     return `
       (tlsExit: TLS and destination clear of the keepout — direct diagonal.)
+      G53 G0 X${origin.x} Y${origin.y}
+    `.trim();
+  }
+
+  // TLS inside the padded keepout box (toolsetter mounted between
+  // slots): exit through the sliding-side edge at the same par as TLS,
+  // then direct diagonal to origin. Without this, tlsPastSliding=false
+  // is indistinguishable from "TLS outside on the opposite perp side"
+  // and the par-end corner detour below runs — sending the tool the
+  // long way around, sometimes past machine limits.
+  const tlsInside =
+    tlsPerp > perpMin && tlsPerp < perpMax &&
+    tlsPar  > parMin  && tlsPar  < parMax;
+  if (tlsInside && originPastSliding) {
+    const exitPoint = perpAxis === 'X'
+      ? { x: entryPerp, y: tlsPar }
+      : { x: tlsPar,    y: entryPerp };
+    return `
+      (tlsExit: TLS inside keepout — exit sliding side, then direct diagonal.)
+      G53 G0 X${exitPoint.x} Y${exitPoint.y}
       G53 G0 X${origin.x} Y${origin.y}
     `.trim();
   }
@@ -1198,14 +1291,19 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // is derived purely from slot geometry, not from how the tool is held.
   const isRackSlot = toolNumber > 0
     && toolNumber <= settings.slots;
+  // When the routine is chained after rackExitToTLS/cupExit, we're
+  // already parked at (tlsX, tlsY) from the routing above. Tell the
+  // routine to skip its own XY approach so we don't emit the redundant
+  // edge-hop-back-to-TLS pair.
+  const chainedFromRackExit = shouldProbe && isRackSlot;
   const rawTlsRoutine = shouldProbe
-    ? createToolLengthSetRoutine(settings, toolOffsets).join('\n')
+    ? createToolLengthSetRoutine(settings, toolOffsets, { skipXYApproach: chainedFromRackExit }).join('\n')
     : (settings.tlsMode === 'library' && hasStoredTlo
         ? `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`
         : '');
   const tlsX = settings.toolsetter.x + (toolOffsets.x || 0);
   const tlsY = settings.toolsetter.y + (toolOffsets.y || 0);
-  const tlsRoutine = (shouldProbe && isRackSlot)
+  const tlsRoutine = chainedFromRackExit
     ? `${settings.rackHolding === 'Cup'
         ? cupExit(targetSlot.engaged, { x: tlsX, y: tlsY }, settings)
         : rackExitToTLS(targetSlot.engaged, tlsX, tlsY, settings)}\n${rawTlsRoutine}`
@@ -1348,6 +1446,7 @@ function handleHomeCommand(commands, context, settings) {
   const currentTool = context.machineState?.tool ?? 0;
   const toolOffsets = getToolOffsets(currentTool, context.tools);
   const tlsRoutine = createToolLengthSetRoutine(settings, toolOffsets).join('\n');
+  const tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets);
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
 
@@ -1359,6 +1458,7 @@ function handleHomeCommand(commands, context, settings) {
       G21
       ${tlsRoutine}
       G53 G0 Z${settings.zSafe}
+      ${tlsExitMove}
       G4 P0
       G53 G0 X0 Y0
       ${postCmd}
@@ -1502,4 +1602,5 @@ export {
   computeKeepoutZone, slotEntryPoint, slotApproachPoint,
   buildLoadTool, buildUnloadTool, buildSlotNav, calculateSlotPosition,
   gateSpindleUnclamp,
+  createToolLengthSetRoutine, createToolLengthSetProgram,
 };
