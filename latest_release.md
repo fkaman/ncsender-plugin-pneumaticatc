@@ -1,4 +1,7 @@
 ## What's Changed
 
 ### 🐛 Bug Fixes
-- Approach and exit routing for TLS now respects keepout zones, preventing routes from being generated through restricted airspace.
+- Fixed tube routing so paths stay clear of keepout zones when working with Cup racks and origins placed inside boxes.
+
+### 🔧 Improvements
+- Routes now always include an exit path back to the origin, giving you a complete round trip.
