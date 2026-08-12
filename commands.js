@@ -377,6 +377,8 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     G38.2 G91 Z-${settings.seekDistance} F${settings.seekFeedrate}
     G4 P0.2
     G38.4 G91 Z5 F25
+    (Slow 1mm ease-off before rapid retract — strong TLS springs bounce if released too fast)
+    G91 G1 Z1 F25
     G91 G0 Z5
     G90
     ${postTls}
