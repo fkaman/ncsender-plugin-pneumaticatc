@@ -434,13 +434,18 @@ function createToolLengthSetExitMove(settings, toolOffsets = { x: 0, y: 0, z: 0 
   const tlsY = settings.toolsetter.y + (toolOffsets.y || 0);
   const originMPos = options.originMPos;
 
-  const orientationY = settings.orientation === 'Y';
-  const pad = settings.keepoutPadding ?? settings.slideDistance ?? 0;
-  const slot1Perp = orientationY ? settings.slot1.x : settings.slot1.y;
-  const tlsPerp = orientationY ? tlsX : tlsY;
-  const tlsInsidePerpRange = tlsPerp > slot1Perp - pad && tlsPerp < slot1Perp + pad;
-  if (!tlsInsidePerpRange) return '';
-
+  // Always run routePoint(TLS -> origin) when we know the origin, and let
+  // it decide whether a detour is needed. The old TLS-inside-perp-band
+  // short-circuit was too narrow — even when TLS sits outside the perp
+  // band, a direct TLS -> origin diagonal can still cut through the
+  // keepout if origin is on the far side. routePoint returns just [origin]
+  // when the direct move is clean, so we emit a single move (which the
+  // client's return-to-origin move would have done anyway) or 2-3 lines
+  // for a detour.
+  //
+  // If origin is unknown (older host), fall back to the edge-only hop
+  // that peels TLS off the rack so the client's follow-up move starts
+  // from a safe perimeter point.
   const tlsTarget = { x: tlsX, y: tlsY };
   const waypoints = originMPos
     ? routePoint(tlsTarget, originMPos, settings, { edgeAnchor: originMPos })
@@ -820,7 +825,7 @@ function rackEntrance(targetSlotXY, origin, settings) {
   const waypoints = routePoint(origin, entry, settings, { edgeAnchor: origin });
   const lines = waypointsToGCode(waypoints);
   return `
-    (rackEntrance: routePoint(origin → slot entry) + perp descent to approach.)
+    (rackEntrance: routePoint origin -> slot entry + perp descent to approach.)
     ${lines}
     G53 G0 ${perpAxis}${approachPerp}
   `.trim();
@@ -845,7 +850,7 @@ function rackExit(fromSlotXY, destination, settings) {
   const waypoints = routePoint(ascentStart, destination, settings, { edgeAnchor: destination });
   const lines = waypointsToGCode(waypoints);
   return `
-    (rackExit: perp ascent to sliding edge + routePoint(edge → destination).)
+    (rackExit: perp ascent to sliding edge + routePoint edge -> destination.)
     G53 G0 ${perpAxis}${entryPerp}
     ${lines}
   `.trim();
@@ -882,7 +887,7 @@ function cupEntrance(engaged, origin, settings) {
   const cupSettings = settings.rackHolding === 'Cup' ? settings : { ...settings, rackHolding: 'Cup' };
   const waypoints = routePoint(origin, engaged, cupSettings, { edgeAnchor: origin });
   return `
-    (cupEntrance: routePoint(origin → slot engaged).)
+    (cupEntrance: routePoint origin -> slot engaged.)
     ${waypointsToGCode(waypoints)}
   `.trim();
 }
@@ -891,7 +896,7 @@ function cupExit(fromSlotEngaged, destination, settings) {
   const cupSettings = settings.rackHolding === 'Cup' ? settings : { ...settings, rackHolding: 'Cup' };
   const waypoints = routePoint(fromSlotEngaged, destination, cupSettings, { edgeAnchor: destination });
   return `
-    (cupExit: routePoint(slot engaged → destination).)
+    (cupExit: routePoint slot engaged -> destination.)
     ${waypointsToGCode(waypoints)}
   `.trim();
 }
@@ -907,7 +912,7 @@ function tlsEntrance(fromSlotXY, tlsX, tlsY, settings) {
 function tlsExit(tlsX, tlsY, origin, settings) {
   const waypoints = routePoint({ x: tlsX, y: tlsY }, origin, settings, { edgeAnchor: origin });
   return `
-    (tlsExit: routePoint(TLS → destination).)
+    (tlsExit: routePoint TLS -> destination.)
     ${waypointsToGCode(waypoints)}
   `.trim();
 }
