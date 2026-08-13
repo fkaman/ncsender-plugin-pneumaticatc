@@ -956,32 +956,45 @@ function auxLineFor(settings, action) {
 
 // === Safety sensors ===
 //
-// Air pressure. Mirrors Sienci's P501 helper: `M66 P<n> L4 Q0.01` waits for
-// the pressure input to read LOW with a 10ms timeout, and a timeout (#5399
-// == -1) is the fault — i.e. pressure OK is the LOW state, matching how the
-// switch is wired on their kit. Invert the port in firmware ($370) if your
-// switch reads the other way round.
+// Air pressure. The read itself mirrors Sienci's P501 helper:
+// `M66 P<n> L4 Q0.01` waits for the pressure input to read LOW with a 10ms
+// timeout, and a timeout (#5399 == -1) is the fault — pressure OK is the LOW
+// state on their wiring. Invert the port in firmware ($370) if the switch
+// reads the other way round.
 //
-// On fault the macro parks in a while-loop: show the operator dialog, M0 to
-// pause, then re-read once they resume. So the dialog's Continue button is
-// really "re-check" — the loop only exits when pressure has actually come
-// back — while Abort soft-resets out of the whole tool change. That's the
-// same shape as P501, just with our dialog instead of a (print,..) line.
+// P501 parks in a `while` loop until pressure returns, and that's the one
+// thing we can't copy: grblHAL only allows o-word flow control when the
+// program is read from a file on its own filesystem. Theirs is invoked as
+// G65 P501 from the SD card; ours is streamed line by line, where a `while`
+// answers error:80 ("Flow statement only allowed in filesystem macro") and
+// takes the rest of the block down with it. Plain IF is fine streamed.
 //
-// `label` distinguishes the o-word blocks so two guards can't collide.
+// So the retry is unrolled instead: read, and if it faults show the dialog
+// and M0. The operator fixes the air and hits Re-check, which resumes into
+// another read — a genuine re-verification, not an override. Three passes,
+// and if pressure still hasn't returned the last dialog says plainly that
+// continuing proceeds unverified, so nobody clicks through it believing the
+// check passed.
+//
+// `oNum` is the base for this guard's o-word blocks; each guard site needs
+// its own base, spaced far enough apart not to collide.
 function pressureGuard(settings, oNum) {
   if (settings.pressureInput < 0) return '';
-  const read = `M66 P${settings.pressureInput} L4 Q0.01`;
-  return `
-    ${read}
-    G4 P0.1
-    o${oNum} while [#5399 EQ -1]
-      G4 P0
+  const read = `M66 P${settings.pressureInput} L4 Q0.01\n    G4 P0.1`;
+  const retry = (n) => `
+    o${n} if [#5399 EQ -1]
       (MSG, PLUGIN_PNEUMATICATC:PRESSURE_FAULT)
       M0
       ${read}
-      G4 P0.1
-    o${oNum} endwhile
+    o${n} endif`;
+  return `
+    ${read}
+    ${retry(oNum).trim()}
+    ${retry(oNum + 1).trim()}
+    o${oNum + 2} if [#5399 EQ -1]
+      (MSG, PLUGIN_PNEUMATICATC:PRESSURE_FAULT_UNVERIFIED)
+      M0
+    o${oNum + 2} endif
   `.trim();
 }
 
@@ -1025,7 +1038,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
-      ${pressureGuard(settings, 121)}
+      ${pressureGuard(settings, 130)}
       G53 G0 Z${settings.zSafe}
       M61 Q0
     `.trim();
@@ -1039,7 +1052,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     G4 P0.5
     ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
-    ${pressureGuard(settings, 122)}
+    ${pressureGuard(settings, 140)}
     G53 G0 Z${settings.zSafe}
     M61 Q0
   `.trim();
@@ -1086,7 +1099,7 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}
       G4 P0.5
-      ${pressureGuard(settings, 123)}`;
+      ${pressureGuard(settings, 150)}`;
 
   // Approach-to-engaged sequence differs by chain context AND hold style:
   //   * chainedFromRack=true (Tm→Tn swap, fork or cup): machine is already

@@ -2,7 +2,7 @@
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
   "version": "0.1.22",
-  "minAppVersion": "2.0.0",
+  "minAppVersion": "2.0.88",
   "commands": "commands.js",
   "configUi": "config.html",
   "author": "ncSender",
@@ -12,7 +12,8 @@
   "priority": 50,
   "icon": "logo.png",
   "platforms": {
-    "pro-v2": "2.0.0"
+    "v2": "2.0.88",
+    "pro-v2": "2.0.149"
   },
   "events": [
     "onBeforeCommand"
@@ -33,6 +34,11 @@
       "title": "Air Pressure Low",
       "message": "The air-pressure sensor is not reporting enough pressure to work the drawbar, so the tool change cannot safely continue.<br><br>Check that the compressor is running and up to pressure, the regulator is set correctly, and no line is kinked or disconnected. Once pressure is restored, click <em>\"Re-check\"</em> — the macro reads the sensor again and only carries on if it now reads good. Click <em>\"Abort\"</em> to stop the tool change.",
       "continueLabel": "Re-check"
+    },
+    "PRESSURE_FAULT_UNVERIFIED": {
+      "title": "Air Pressure Still Low",
+      "message": "Pressure has been re-checked twice and is still below what the drawbar needs.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The tool change will carry on without confirmed air pressure, which risks the drawbar not opening or closing fully — a tool can be left loose in the spindle or dropped. Only continue if you have a reason to believe the sensor is wrong rather than the air.<br><br>Click <em>\"Abort\"</em> to stop the tool change, which is the safe choice.",
+      "continueLabel": "Continue anyway"
     },
     "FAILED_UNLOAD_TOOL": {
       "title": "Unload Failed",

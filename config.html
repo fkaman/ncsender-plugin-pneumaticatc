@@ -90,15 +90,17 @@
     appearance: none;
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 12px 14px;
+    gap: 10px;
+    padding: 12px 12px;
     background: transparent !important;
     border: none !important;
     border-radius: 8px !important;
     color: var(--color-text-secondary) !important;
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease;
-    font-size: 0.95rem;
+    /* Sized so the longest label ("ATC/Rack Setup") still fits in the 220px
+       rail when it goes bold in the active state. */
+    font-size: 0.9rem;
     font-weight: 500;
     font-family: inherit;
     width: 100%;
@@ -461,6 +463,56 @@
 
   /* The whole Advanced panel is not wired yet — dim it so users see it
      as informational and don't wonder why nothing sticks after typing. */
+  /* Pin fixed by the selected hardware profile — visibly not editable,
+     but still readable (a disabled control alone reads as "broken"). */
+  /* Pin pickers all share one column width so the rows line up, and the
+     label keeps its own line rather than wrapping into two. */
+  .pa-form-row .pa-adv-pin {
+    width: 200px;
+    flex: 0 0 200px;
+  }
+  .pa-form-row .pa-form-label { white-space: nowrap; }
+
+  /* Read-only pin value: same footprint as the control it replaces, so the
+     row doesn't reflow when a profile locks it. */
+  .pa-pin-static {
+    display: inline-flex;
+    align-items: center;
+    min-height: 38px;
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px dashed var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface-muted);
+    color: var(--color-text-primary);
+    font-size: 0.9rem;
+  }
+  .pa-form-row .pa-pin-static {
+    width: 210px;
+    flex: 0 0 210px;
+    white-space: nowrap;
+  }
+
+  .pa-pin-static.pa-pin-missing {
+    border-color: color-mix(in srgb, var(--color-danger, #e74c3c) 45%, transparent);
+    color: var(--color-danger, #e74c3c);
+  }
+
+  .pa-select.pa-locked,
+  .pa-input.pa-locked {
+    opacity: 0.85;
+    background: var(--color-surface-muted);
+    border-style: dashed;
+    cursor: not-allowed;
+  }
+  .pa-profile-note {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius-small);
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 25%, transparent);
+    color: var(--color-text-primary);
+  }
   .pa-card.pa-advanced-preview { opacity: 0.7; }
   .pa-card.pa-advanced-preview .pa-input,
   .pa-card.pa-advanced-preview .pa-select { cursor: not-allowed; }
@@ -871,6 +923,29 @@
     color: var(--color-text-secondary);
     line-height: 1.5;
   }
+  .pa-import-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 14px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-small);
+    background: var(--color-surface-muted);
+    font-size: 0.9rem;
+  }
+  .pa-import-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .pa-import-row span:last-child {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--color-accent);
+  }
+  .pa-import-row.pa-import-empty span:last-child {
+    color: var(--color-text-secondary);
+  }
+
   .pa-modal-actions {
     display: flex;
     justify-content: flex-end;
@@ -894,7 +969,7 @@
               <path d="M7 10v4M11 10v4M15 10v4M19 10v4"/>
             </svg>
           </span>
-          <span class="pa-nav-label">Rack Setup</span>
+          <span class="pa-nav-label">ATC/Rack Setup</span>
           <span class="pa-tab-caret" aria-hidden="true"></span>
         </button>
         <button type="button" class="pa-nav-btn" data-nav="tls">
@@ -947,7 +1022,7 @@
     <!-- ===================== RACK SETUP ===================== -->
     <section class="pa-content active" data-view="rack">
       <header class="pa-panel-header">
-        <h2 class="pa-panel-title">Rack Setup</h2>
+        <h2 class="pa-panel-title">ATC/Rack Setup</h2>
         <!-- Header widgets — Machine DRO (left) + Step & Jog (right). Both
              stay pinned above the scrolling panel; hidden on tabs that
              don't need it (Events). -->
@@ -972,6 +1047,25 @@
       </header>
 
       <div class="pa-panel">
+
+        <!-- Hardware profile. Lives here rather than under Advanced because
+             it drives fields on both tabs — a known kit fixes its own wiring,
+             so those fields go read-only instead of inviting an edit that
+             would just be wrong. -->
+        <div class="pa-card">
+          <h3 class="pa-card-title">ATC Profile</h3>
+          <p class="pa-card-help">
+            Pick your ATC hardware. A known kit fills in the aux outputs and sensor inputs it ships with and locks them, since that wiring is fixed. Use <em>Generic Pneumatic ATC</em> for any build that isn't a listed kit and set the pins yourself.
+          </p>
+          <select id="pa-adv-profile" class="pa-select">
+            <option value="generic" selected>Generic Pneumatic ATC</option>
+            <option value="sienci">Sienci ATC</option>
+            <option value="ncsender-wireless" disabled>ncSender Wireless ATC (maybe)</option>
+          </select>
+          <p class="pa-card-help pa-profile-note" id="pa-profile-note" style="display: none;">
+            <strong>Sienci ATC selected.</strong> Clamp Aux Output and the sensor inputs on the Advanced tab are set to this kit's wiring and shown read-only.
+          </p>
+        </div>
 
         <!-- Rack Settings — combined magazine + engage motion. Slide fields
              show only when Rack Holding is Fork (Cup drops top-down). -->
@@ -1363,12 +1457,22 @@
          accept text but nothing is saved / applied. Purpose is to lock in
          the shape (profile-driven defaults + 3 configurable inputs) so the
          later wire-up is a small diff, not a full-panel redesign. -->
-    <section class="pa-content pa-content--soon" data-view="advanced">
+    <section class="pa-content" data-view="advanced">
       <header class="pa-panel-header">
         <h2 class="pa-panel-title">Advanced</h2>
       </header>
 
       <div class="pa-panel">
+        <div class="pa-soon-banner" id="pa-adv-profile-note" style="display: none;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          <div>
+            <strong>Sienci ATC profile — these pins are read-only.</strong>
+            The wiring on this kit is fixed, so the inputs below are set from it. Switch the profile to <em>Generic Pneumatic ATC</em> on the ATC/Rack Setup tab to edit them; the fields here are meant for builds that aren't a known kit.
+          </div>
+        </div>
         <div class="pa-soon-banner">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"/>
@@ -1376,28 +1480,15 @@
             <path d="M12 16h.01"/>
           </svg>
           <div>
-            <strong>Air Pressure is live. The other sensors are still a preview.</strong>
-            The pressure input is read with <code>M66</code> before the tool change starts and again after every drawbar release — a fault pauses the job with a dialog instead of moving on. Drawbar and tool-in-spindle confirmation are not wired up yet.
+            <strong>Air Pressure is live. The tool sensors are still a preview.</strong>
+            The pressure input is read with <code>M66</code> before the tool change starts and again after every drawbar release — a fault pauses the job with a dialog instead of moving on. Tool Sensor and Tool Holder are recorded here but nothing reads them yet.
           </div>
-        </div>
-
-        <div class="pa-card">
-          <h3 class="pa-card-title">Profile</h3>
-          <p class="pa-card-help">
-            Picks sensible defaults for the sensor input pins below based on a known ATC hardware kit. You can still override any individual pin after selecting a profile.
-          </p>
-          <select id="pa-adv-profile" class="pa-select">
-            <option value="" selected>Custom (no profile)</option>
-            <option value="generic">Generic Pneumatic ATC</option>
-            <option value="sienci">Sienci ATC</option>
-            <option value="ncsender-wireless" disabled>ncSender Wireless ATC (maybe)</option>
-          </select>
         </div>
 
         <div class="pa-card">
           <h3 class="pa-card-title">Air Pressure Sensor</h3>
           <p class="pa-card-help">
-            grblHAL aux input the pressure switch is wired to. Leave empty for no sensor. Pressure is read as <b>OK when the input is LOW</b> (same wiring convention Sienci's macros assume) — invert the port with <code>$370</code> if your switch reads the other way round. Checked once before the tool change starts, and again after each drawbar release: a fault pauses the job with a dialog offering Re-check or Abort.
+            grblHAL aux input the pressure switch is wired to. The list is read from the controller, so it only offers inputs this board actually has. Pick <em>N/A</em> if you don't have one. Pressure is read as <b>OK when the input is LOW</b> (same wiring convention Sienci's macros assume) — invert the port with <code>$370</code> if your switch reads the other way round. Checked once before the tool change starts, and again after each drawbar release: a fault pauses the job with a dialog offering Re-check or Abort.
           </p>
 
           <div class="pa-form-row">
@@ -1405,54 +1496,73 @@
               Air Pressure
               <span class="pa-help-tip" title="Pneumatic supply pressure adequate for the drawbar. Read with M66 before the tool change and after every release — a fault pauses the job rather than moving on with a drawbar that may not have opened.">?</span>
             </label>
-            <div class="pa-input-with-suffix">
-              <span class="pa-input-prefix">P</span>
-              <input type="number" min="0" step="1" id="pa-adv-input-pres" class="pa-input" placeholder="—">
-            </div>
+            <!-- Options come from the controller's [AUX IO:..] report so a
+                 port the board doesn't have can't be picked: M66 with a wait
+                 mode on a missing port errors and leaves the controller
+                 needing a reset. -->
+            <select id="pa-adv-input-pres" class="pa-select pa-adv-pin">
+              <option value="">N/A</option>
+            </select>
           </div>
         </div>
 
-        <div class="pa-card pa-advanced-preview">
-          <h3 class="pa-card-title">Other Sensors<sup class="pa-title-sup">Coming soon</sup></h3>
+        <div class="pa-card pa-advanced-preview" id="pa-adv-sensors">
+          <h3 class="pa-card-title">Tool Sensors<sup class="pa-title-sup">Coming soon</sup></h3>
           <p class="pa-card-help">
-            Planned drawbar and tool-in-spindle confirmation. These inputs are informational only — nothing reads them yet.
+            Inputs the tool-change sequence will read once these checks ship. Nothing reads them yet — the pins are recorded now so the wiring can be set up ahead of time.
           </p>
 
           <div class="pa-form-row">
-            <label class="pa-form-label" for="pa-adv-input-drawbar">
-              Drawbar Sensor
-              <span class="pa-help-tip" title="Confirms the drawbar actuator physically moved after firing the release solenoid. Fires on both unload and load — catches dead compressor / seized actuator / low pressure BEFORE the machine tries to move.">?</span>
+            <label class="pa-form-label" for="pa-adv-input-tool">
+              Tool Sensor
+              <span class="pa-help-tip" title="Reports drawbar / tool state at the spindle. On the Sienci kit this is the spindle proximity sensor, aux input P0.">?</span>
             </label>
-            <div class="pa-input-with-suffix">
-              <span class="pa-input-prefix">P</span>
-              <input type="number" min="0" step="1" id="pa-adv-input-drawbar" class="pa-input" placeholder="—" disabled>
-            </div>
+            <select id="pa-adv-input-tool" class="pa-select pa-adv-pin" disabled>
+              <option value="">N/A</option>
+            </select>
           </div>
 
           <div class="pa-form-row">
-            <label class="pa-form-label" for="pa-adv-input-unclamp">
-              Unclamp Sensor
-              <span class="pa-help-tip" title="Tool-in-spindle sensor — confirms the tool holder has left the spindle after an unload. Aborts if the tool is still detected (drawbar didn't fully release, tool stuck in taper).">?</span>
+            <label class="pa-form-label" for="pa-adv-input-holder">
+              Tool Holder
+              <span class="pa-help-tip" title="Detects the tip of the ISO20 holder in a rack slot, so the sequence can tell an occupied slot from an empty one before putting a tool away. Sienci ties this to the same pin as the tool sensor and reads it during a slow descent over the slot.">?</span>
             </label>
-            <div class="pa-input-with-suffix">
-              <span class="pa-input-prefix">P</span>
-              <input type="number" min="0" step="1" id="pa-adv-input-unclamp" class="pa-input" placeholder="—" disabled>
-            </div>
-          </div>
-
-          <div class="pa-form-row">
-            <label class="pa-form-label" for="pa-adv-input-clamp">
-              Clamp Sensor
-              <span class="pa-help-tip" title="Tool-in-spindle sensor — confirms the tool holder is fully seated after a load. Aborts if no tool is detected (empty rack slot, tool didn't seat, misalignment). Often the same physical sensor as Unclamp Sensor, just checked for opposite state.">?</span>
-            </label>
-            <div class="pa-input-with-suffix">
-              <span class="pa-input-prefix">P</span>
-              <input type="number" min="0" step="1" id="pa-adv-input-clamp" class="pa-input" placeholder="—" disabled>
-            </div>
+            <select id="pa-adv-input-holder" class="pa-select pa-adv-pin" disabled>
+              <option value="">N/A</option>
+            </select>
           </div>
         </div>
       </div>
+
+      <!-- This tab was preview-only when it was built, so it never had a
+           footer. Air Pressure is a real setting now, so it needs the same
+           Save as every other panel — every footer runs the same full-form
+           save, so it doesn't matter which one is used. -->
+      <footer class="pa-panel-footer">
+        <button type="button" class="pa-save-btn" data-save>Save</button>
+      </footer>
     </section>
+  </div>
+
+  <!-- Offer to lift positions straight out of the controller's work
+       coordinate systems, which is where the Sienci setup macros store
+       them. Read-only: nothing moves, the operator just gets the fields
+       filled instead of typing coordinates by hand. -->
+  <div class="pa-modal-backdrop" id="pa-import-modal">
+    <div class="pa-modal-card">
+      <h3 class="pa-modal-title">Import positions from the controller?</h3>
+      <p class="pa-modal-body">
+        The Sienci setup macros store these in work coordinate systems, so they can be read straight off the controller instead of typed in.
+      </p>
+      <div class="pa-import-list" id="pa-import-list"></div>
+      <p class="pa-modal-body" style="margin-top: 14px;">
+        Existing values in those fields are replaced. Nothing moves — this only fills the form.
+      </p>
+      <div class="pa-modal-actions">
+        <button type="button" class="pa-btn pa-btn-ghost" id="pa-import-no">Skip</button>
+        <button type="button" class="pa-btn" id="pa-import-yes">Import</button>
+      </div>
+    </div>
   </div>
 
   <!-- Confirm modal used when switching to Custom layout mode. -->
@@ -1523,37 +1633,367 @@
     });
   });
 
-  // ---------- Advanced tab: profile preview ----------
-  // Preview-only. The Safety Sensors inputs are disabled (feature is not
-  // wired to backend yet); selecting a profile just fills them with the
-  // pins that profile WOULD supply, so operators can see what to expect.
-  // No persistence — nothing goes into settings until this is wired up.
+  // ---------- Advanced tab: sensor profiles ----------
+  // Air Pressure is a live setting; the drawbar / tool-in-spindle pins are
+  // still preview-only, so a profile fills those in purely to show what that
+  // kit would use once they ship.
+  // ---------- Aux input discovery ----------
+  //
+  // `$I` answers with [AUX IO:<inputs>,<outputs>,<ain>,<aout>]; the first
+  // field is how many aux inputs this board has. Sent once per dialog with
+  // meta.quiet so the operator's terminal stays clean — the server log still
+  // records it, which is where you'd want it when diagnosing a setup.
+  var AUX_INPUT_FALLBACK = 8;
+  var auxInputCount = null;
+  var auxOutputCount = null;
+  var PIN_SELECT_IDS = ['pa-adv-input-pres', 'pa-adv-input-tool', 'pa-adv-input-holder'];
+
+  function pinOptionExists(sel, value) {
+    return qsa('option', sel).some(function(o) { return o.value === String(value); });
+  }
+
+  function rebuildPinOptions(id, count) {
+    var sel = $(id);
+    if (!sel) return;
+    var current = sel.value;
+    while (sel.firstChild) sel.removeChild(sel.firstChild);
+    var none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'N/A';
+    sel.appendChild(none);
+    for (var i = 0; i < count; i += 1) {
+      var opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = 'Aux In P' + i;
+      sel.appendChild(opt);
+    }
+    // A saved (or profile-supplied) pin this board doesn't have stays
+    // visible and selected instead of being silently swapped for another.
+    if (current !== '' && !pinOptionExists(sel, current)) {
+      var stale = document.createElement('option');
+      stale.value = current;
+      stale.textContent = 'Aux In P' + current + ' — not on this board';
+      sel.appendChild(stale);
+    }
+    sel.value = current;
+  }
+
+  function rebuildAllPinOptions(count) {
+    PIN_SELECT_IDS.forEach(function(id) { rebuildPinOptions(id, count); });
+    // Same reason as the aux-output fill: refresh any locked display with
+    // the newly built option labels.
+    var prof = $('pa-adv-profile');
+    if (prof && typeof applyProfile === 'function') applyProfile(prof.value, { silent: true });
+  }
+
+  function setPinValue(id, value) {
+    var sel = $(id);
+    if (!sel) return;
+    var v = (value === '' || value === null || value === undefined) ? '' : String(value);
+    if (v !== '' && !pinOptionExists(sel, v)) {
+      var opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = 'Aux In P' + v;
+      sel.appendChild(opt);
+    }
+    sel.value = v;
+  }
+
+  function setPressurePin(value) { setPinValue('pa-adv-input-pres', value); }
+
+  function requestAuxIo() {
+    fetch(BASE_URL + '/api/send-command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: '$I',
+        meta: {
+          sourceId: 'pneumaticatc-auxio',
+          silent: true,
+          quiet: { terminalCommand: true, terminalResponse: true }
+        }
+      })
+    }).catch(function() {});
+    // Disconnected, or a controller that doesn't report aux IO — fall back to
+    // a plain list so the fields stay usable offline.
+    setTimeout(function() {
+      if (auxInputCount === null) rebuildAllPinOptions(AUX_INPUT_FALLBACK);
+    }, 3000);
+  }
+
+  window.addEventListener('message', function(evt) {
+    if (!evt.data || evt.data.type !== 'cnc-data') return;
+    var line = evt.data.data;
+    if (typeof line !== 'string') return;
+    var m = /\[AUX IO:(\d+)\s*,\s*(\d+)/i.exec(line);
+    if (!m) return;
+    auxInputCount = parseInt(m[1], 10);
+    auxOutputCount = parseInt(m[2], 10);
+    rebuildAllPinOptions(auxInputCount);
+  });
+
+  var DEFAULT_PROFILE = 'generic';
   var ADV_PROFILES = {
-    // Generic pneumatic ATC — common aux-input pin convention for a
-    // typical 4-sensor pneumatic build. Same pin layout as Sienci (which
-    // is a widely-known reference kit) but with the tool-in-spindle
-    // sensor split across two pins in case the operator has independent
-    // proximity switches for unclamped-position vs seated-position.
-    // Operator can override any of these once the feature ships.
-    generic: { pres: 2, drawbar: 0, unclamp: 1, clamp: 3 },
-    // Sienci ATC defaults from their P200.macro:
+    // Generic pneumatic ATC — the default, and the one to use for any build
+    // that isn't a known kit. Pins are a starting point, all editable.
+    // No pressure pin by default: a fresh install must not arm a safety check
+    // against a sensor that may not exist, or every tool change stops at a
+    // dialog the operator never asked for. Pick the pin to turn it on.
+    generic: { clampOut: null, pres: '', tool: 0, holder: 0, locked: false },
+    // Sienci ATC, from their P200.macro:
+    //   _tc_output_db  = 1  (drawbar solenoid — our clamp aux output)
+    //   _tc_input_db   = 0  (drawbar sensor)
+    //   _tc_input_th   = _tc_input_db  (tool holder — same pin, read during a
+    //                                   descent over the slot to tell an
+    //                                   occupied slot from an empty one)
     //   _tc_input_pres = 2  (air pressure)
-    //   _tc_input_db   = 0  (drawbar actuator sensor — verifies the drawbar
-    //                        physically moved after firing the release
-    //                        solenoid; fires on both load and unload paths)
-    //   _tc_input_tis  = 1  (tool-in-spindle — same physical sensor used
-    //                        for both unclamp-verify [expect LOW] and
-    //                        clamp-verify [expect HIGH])
-    sienci: { pres: 2, drawbar: 0, unclamp: 1, clamp: 1 }
+    // Fixed wiring on a known kit, so the fields are shown read-only.
+    sienci: {
+      clampOut: '1', pres: 2, tool: 0, holder: 0, locked: true,
+      // Shown alongside the port on the locked fields. These are Sienci's
+      // own names from P200.macro, deliberately used instead of whatever
+      // the operator may have aliased that output to in Settings — on a
+      // fixed kit the kit's terminology is the useful one.
+      names: {
+        'pa-clamp-aux': 'Drawbar',
+        'pa-adv-input-pres': 'Pressure',
+        'pa-adv-input-tool': 'Drawbar',
+        'pa-adv-input-holder': 'Tool holder'
+      }
+    }
   };
+
+  // Profile-driven fields live on two tabs: the clamp output on ATC/Rack
+  // Setup, the sensor pins on Advanced. A kit with fixed wiring locks them
+  // all rather than letting an edit silently disagree with the hardware.
+  function applyProfile(key, opts) {
+    var p = ADV_PROFILES[key] || ADV_PROFILES[DEFAULT_PROFILE];
+    var fromUser = !(opts && opts.silent);
+
+    // A profile's pins are a starting point for someone who just picked it,
+    // not a truth to re-impose every time this runs. The silent calls are
+    // restoring saved settings or refreshing labels after an async list
+    // arrives — seeding there would overwrite the operator's saved pin with
+    // the profile default (Generic's is "none", so a saved sensor silently
+    // became N/A and the next save wrote it away for good). A locked kit is
+    // the exception: its wiring is fixed, so it always wins.
+    var seedPins = fromUser || p.locked;
+    if (seedPins) {
+      setPressurePin(p.pres);
+      setAdvPin('pa-adv-input-tool', p.tool);
+      setAdvPin('pa-adv-input-holder', p.holder);
+      if (p.clampOut !== null) setClampAux(p.clampOut);
+    }
+
+    var locked = !!p.locked;
+    ['pa-adv-input-pres', 'pa-adv-input-tool', 'pa-adv-input-holder', 'pa-clamp-aux']
+      .forEach(function(id) {
+        var el = $(id);
+        if (!el) return;
+        // Tool Sensor / Tool Holder aren't implemented yet, so they stay
+        // disabled regardless; the profile only decides the other two.
+        var previewOnly = (id === 'pa-adv-input-tool' || id === 'pa-adv-input-holder');
+        el.disabled = locked || previewOnly;
+        el.classList.toggle('pa-locked', locked);
+        showPinAsLabel(id, locked, (p.names || {})[id]);
+      });
+
+    var rackNote = $('pa-profile-note');
+    if (rackNote) rackNote.style.display = locked ? '' : 'none';
+    var advNote = $('pa-adv-profile-note');
+    if (advNote) advNote.style.display = locked ? '' : 'none';
+
+    if (fromUser && typeof markDirty === 'function') markDirty();
+  }
+
+  function setAdvPin(id, value) { setPinValue(id, value); }
+
+  // The aux OUTPUT list is filled asynchronously from /api/server-state, so a
+  // profile applied first would set a value with no matching option and the
+  // field would render blank. Create the option if it isn't there yet; the
+  // later fill() replaces it with the properly named one.
+  function setClampAux(value) {
+    var sel = $('pa-clamp-aux');
+    if (!sel) return;
+    var v = String(value);
+    if (!qsa('option', sel).some(function(o) { return o.value === v; })) {
+      var opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = /^M[78]$/.test(v) ? v : ('Aux Out P' + v);
+      sel.appendChild(opt);
+    }
+    sel.value = v;
+  }
+
+  // A pin the profile owns is shown as plain text rather than a dead
+  // dropdown — a disabled select reads as "broken", and an empty-looking one
+  // reads as "unset". The select stays in the DOM (hidden) so saving still
+  // picks the value up.
+  function showPinAsLabel(id, asLabel, name) {
+    var sel = $(id);
+    if (!sel) return;
+    var span = $(id + '-static');
+    if (!span) {
+      span = document.createElement('span');
+      span.id = id + '-static';
+      span.className = 'pa-pin-static';
+      if (sel.classList.contains('pa-adv-pin')) span.classList.add('pa-adv-pin');
+      sel.parentNode.insertBefore(span, sel.nextSibling);
+    }
+    var port = portTextFor(id, sel.value);
+    var text = name ? (port + ' — ' + name) : port;
+    // The profile is fixed for the kit, so a pin this board doesn't have is
+    // worth saying out loud — otherwise a tester wires to a port that will
+    // never fire and has nothing to go on.
+    var missing = pinMissingOnBoard(id, sel.value);
+    span.textContent = missing ? (text + ' · not on this board') : text;
+    span.classList.toggle('pa-pin-missing', missing);
+    span.style.display = asLabel ? '' : 'none';
+    sel.style.display = asLabel ? 'none' : '';
+  }
+
+  // Built from the raw value rather than the option's text, so a user alias
+  // from Settings ("Clamp", "Dust Collector") can't stand in for the port on
+  // a field the profile owns.
+  function pinMissingOnBoard(id, value) {
+    if (value === '' || value === null || value === undefined) return false;
+    if (/^M[0-9]+$/i.test(value)) return false;   // M7/M8 are not aux ports
+    var n = parseInt(value, 10);
+    if (!Number.isFinite(n)) return false;
+    var count = (id === 'pa-clamp-aux') ? auxOutputCount : auxInputCount;
+    return typeof count === 'number' && n >= count;
+  }
+
+  function portTextFor(id, value) {
+    if (value === '' || value === null || value === undefined) return 'N/A';
+    if (/^M[0-9]+$/i.test(value)) return String(value);
+    var isOutput = (id === 'pa-clamp-aux');
+    return (isOutput ? 'Aux Out P' : 'Aux In P') + value;
+  }
+
+  // ---------- Import positions from the controller ----------
+  //
+  // The Sienci setup macros keep their positions in work coordinate systems
+  // (P200.macro reads them straight back out):
+  //   G59.1 X/Y/Z -> slot 1 and the load Z   (#5341-#5343)
+  //   G59.2 X/Y   -> off-rack / manual position (#5361-#5362)
+  //   G59.3 X/Y   -> tool setter              (#5381-#5382)
+  // `$#` dumps all of them, so a machine that's been through their setup can
+  // fill this form itself. Read-only — nothing moves.
+  var wcsOffsets = null;
+
+  function requestWcsOffsets() {
+    fetch(BASE_URL + '/api/send-command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: '$#',
+        meta: {
+          sourceId: 'pneumaticatc-wcs',
+          silent: true,
+          quiet: { terminalCommand: true, terminalResponse: true }
+        }
+      })
+    }).catch(function() {});
+  }
+
+  window.addEventListener('message', function(evt) {
+    if (!evt.data || evt.data.type !== 'cnc-data') return;
+    var line = evt.data.data;
+    if (typeof line !== 'string') return;
+    var m = /^\[(G59\.[123]):([^\]]+)\]/.exec(line.trim());
+    if (!m) return;
+    var parts = m[2].split(',').map(function(v) { return Number.parseFloat(v); });
+    if (!parts.length || !parts.every(function(v) { return Number.isFinite(v); })) return;
+    wcsOffsets = wcsOffsets || {};
+    wcsOffsets[m[1]] = { x: parts[0], y: parts[1], z: parts[2] };
+  });
+
+  // A work offset left at 0,0 was never set up — importing it would wipe
+  // good values with nothing, so those rows are shown but not applied.
+  function wcsIsSet(o) {
+    return !!o && (Math.abs(o.x) > 0.0001 || Math.abs(o.y) > 0.0001);
+  }
+
+  function importablePositions() {
+    var o = wcsOffsets || {};
+    return [
+      { key: 'G59.1', label: 'Slot 1 (X / Y / Z)', v: o['G59.1'], withZ: true },
+      { key: 'G59.2', label: 'Manual tool (X / Y)', v: o['G59.2'], withZ: false },
+      { key: 'G59.3', label: 'Tool setter (X / Y)', v: o['G59.3'], withZ: false }
+    ];
+  }
+
+  function showImportConfirm() {
+    return new Promise(function(resolve) {
+      var modal = $('pa-import-modal');
+      var list = $('pa-import-list');
+      var yes = $('pa-import-yes');
+      var no = $('pa-import-no');
+      if (!modal || !list || !yes || !no) { resolve(false); return; }
+
+      list.innerHTML = '';
+      importablePositions().forEach(function(row) {
+        var el = document.createElement('div');
+        el.className = 'pa-import-row' + (wcsIsSet(row.v) ? '' : ' pa-import-empty');
+        var name = document.createElement('span');
+        name.textContent = row.label + '  (' + row.key + ')';
+        var val = document.createElement('span');
+        val.textContent = wcsIsSet(row.v)
+          ? (fmtCoord(row.v.x) + ', ' + fmtCoord(row.v.y) + (row.withZ ? ', ' + fmtCoord(row.v.z) : ''))
+          : 'not set — skipped';
+        el.appendChild(name);
+        el.appendChild(val);
+        list.appendChild(el);
+      });
+
+      modal.classList.add('pa-open');
+      function cleanup(v) {
+        modal.classList.remove('pa-open');
+        yes.removeEventListener('click', onYes);
+        no.removeEventListener('click', onNo);
+        resolve(v);
+      }
+      function onYes() { cleanup(true); }
+      function onNo() { cleanup(false); }
+      yes.addEventListener('click', onYes);
+      no.addEventListener('click', onNo);
+    });
+  }
+
+  function applyImportedPositions() {
+    var o = wcsOffsets || {};
+    if (wcsIsSet(o['G59.1'])) {
+      $('pa-slot1-x').value = fmtCoord(o['G59.1'].x);
+      $('pa-slot1-y').value = fmtCoord(o['G59.1'].y);
+      // Load Z lives in the same offset; both layout modes keep their own
+      // engagement-Z field, so set whichever is in play.
+      if ($('pa-slot1-z')) $('pa-slot1-z').value = fmtCoord(o['G59.1'].z);
+      if ($('pa-slot1-z-custom')) $('pa-slot1-z-custom').value = fmtCoord(o['G59.1'].z);
+    }
+    if (wcsIsSet(o['G59.2'])) {
+      $('pa-manualtool-x').value = fmtCoord(o['G59.2'].x);
+      $('pa-manualtool-y').value = fmtCoord(o['G59.2'].y);
+    }
+    if (wcsIsSet(o['G59.3'])) {
+      $('pa-toolsetter-x').value = fmtCoord(o['G59.3'].x);
+      $('pa-toolsetter-y').value = fmtCoord(o['G59.3'].y);
+    }
+    if (typeof markDirty === 'function') markDirty();
+  }
+
+  function offerPositionImport() {
+    if (!importablePositions().some(function(r) { return wcsIsSet(r.v); })) return;
+    showImportConfirm().then(function(ok) { if (ok) applyImportedPositions(); });
+  }
+
   var advProfileSel = $('pa-adv-profile');
   if (advProfileSel) {
     advProfileSel.addEventListener('change', function() {
-      var p = ADV_PROFILES[advProfileSel.value] || { pres: '', drawbar: '', unclamp: '', clamp: '' };
-      $('pa-adv-input-pres').value    = p.pres    === '' ? '' : String(p.pres);
-      $('pa-adv-input-drawbar').value = p.drawbar === '' ? '' : String(p.drawbar);
-      $('pa-adv-input-unclamp').value = p.unclamp === '' ? '' : String(p.unclamp);
-      $('pa-adv-input-clamp').value   = p.clamp   === '' ? '' : String(p.clamp);
+      applyProfile(advProfileSel.value);
+      // Only the kits that store positions this way get the offer, and only
+      // on a deliberate switch — not on every dialog open.
+      if (advProfileSel.value === 'sienci') offerPositionImport();
     });
   }
 
@@ -1849,6 +2289,11 @@
         }
       }
       fill($('pa-clamp-aux'), false, initialConfig.clampAuxOutput);
+      // Re-apply the profile now the real option names exist, so a locked
+      // field shows "Aux Out P1" (or the user's alias) rather than a
+      // placeholder — and so the value survives the list being rebuilt.
+      var profNow = $('pa-adv-profile');
+      if (profNow) applyProfile(profNow.value, { silent: true });
     } catch (e) {
       console.error('[PneumaticATC] populateAuxOutputs failed', e);
     }
@@ -1928,10 +2373,15 @@
     updateRackHoldingVisibility();
 
     // Air-pressure sensor input (-1 / missing = no sensor = blank field).
-    var presInput = $('pa-adv-input-pres');
-    if (presInput) {
-      var savedPres = initialConfig.pressureInput;
-      presInput.value = (typeof savedPres === 'number' && savedPres >= 0) ? String(savedPres) : '';
+    var savedPres = initialConfig.pressureInput;
+    setPressurePin((typeof savedPres === 'number' && savedPres >= 0) ? savedPres : '');
+
+    // Profile last, so it can lock/overwrite the pin fields it owns. Silent:
+    // restoring saved state isn't a user edit.
+    var profSel = $('pa-adv-profile');
+    if (profSel) {
+      profSel.value = initialConfig.atcProfile || DEFAULT_PROFILE;
+      applyProfile(profSel.value, { silent: true });
     }
 
     $('pa-slide-distance').value = fmtCoord(initialConfig.slideDistance ?? 40);
@@ -2025,11 +2475,14 @@
       slots: parseInt($('pa-slots').value, 10) || 1,
       layoutMode: layout,
       clampAuxOutput: parseAuxValue($('pa-clamp-aux')),
+      // Which hardware profile the pins came from. Stored so the dialog can
+      // reopen in the same mode (and so a locked kit stays locked).
+      atcProfile: ($('pa-adv-profile') || {}).value || DEFAULT_PROFILE,
       // Air-pressure sensor aux input. Empty field = no sensor = -1, which
       // switches every pressure check off in the generated macro.
       pressureInput: (function() {
-        var raw = ($('pa-adv-input-pres') || {}).value;
-        var n = Number.parseInt(raw, 10);
+        var sel = $('pa-adv-input-pres');
+        var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
       rackHolding: $('pa-rack-holding').value || 'Fork',
@@ -2358,6 +2811,8 @@
     .finally(function() {
       applyInitial();
       updateLabelUnits();
+      requestAuxIo();
+      requestWcsOffsets();
       // Reset dirty after seeding the form — segLayout.set() etc. above
       // fire synthetic clicks that our delegated listener would count as
       // user activity.
