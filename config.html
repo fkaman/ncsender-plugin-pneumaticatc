@@ -461,9 +461,9 @@
 
   /* The whole Advanced panel is not wired yet — dim it so users see it
      as informational and don't wonder why nothing sticks after typing. */
-  .pa-advanced-preview .pa-card { opacity: 0.75; }
-  .pa-advanced-preview .pa-card .pa-input,
-  .pa-advanced-preview .pa-card .pa-select { cursor: not-allowed; }
+  .pa-card.pa-advanced-preview { opacity: 0.7; }
+  .pa-card.pa-advanced-preview .pa-input,
+  .pa-card.pa-advanced-preview .pa-select { cursor: not-allowed; }
 
   .pa-form-row {
     display: flex;
@@ -1365,12 +1365,10 @@
          later wire-up is a small diff, not a full-panel redesign. -->
     <section class="pa-content pa-content--soon" data-view="advanced">
       <header class="pa-panel-header">
-        <h2 class="pa-panel-title">
-          Advanced<sup class="pa-title-sup">Coming soon</sup>
-        </h2>
+        <h2 class="pa-panel-title">Advanced</h2>
       </header>
 
-      <div class="pa-panel pa-advanced-preview">
+      <div class="pa-panel">
         <div class="pa-soon-banner">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"/>
@@ -1378,8 +1376,8 @@
             <path d="M12 16h.01"/>
           </svg>
           <div>
-            <strong>Safety sensor integration — coming in a later release.</strong>
-            This tab is a preview of the planned safety layer (air-pressure watchdog, clamp / unclamp confirmation). The controls below are informational only — none of them are wired up yet.
+            <strong>Air Pressure is live. The other sensors are still a preview.</strong>
+            The pressure input is read with <code>M66</code> before the tool change starts and again after every drawbar release — a fault pauses the job with a dialog instead of moving on. Drawbar and tool-in-spindle confirmation are not wired up yet.
           </div>
         </div>
 
@@ -1397,21 +1395,28 @@
         </div>
 
         <div class="pa-card">
-          <h3 class="pa-card-title">Safety Sensors</h3>
+          <h3 class="pa-card-title">Air Pressure Sensor</h3>
           <p class="pa-card-help">
-            grblHAL aux input pin numbers (from <code>$pinstate</code>) for each sensor. The plugin will read these via <code>M66</code> before/after the corresponding drawbar action and abort with a clear message if the sensor doesn't confirm the expected state.
+            grblHAL aux input the pressure switch is wired to. Leave empty for no sensor. Pressure is read as <b>OK when the input is LOW</b> (same wiring convention Sienci's macros assume) — invert the port with <code>$370</code> if your switch reads the other way round. Checked once before the tool change starts, and again after each drawbar release: a fault pauses the job with a dialog offering Re-check or Abort.
           </p>
 
           <div class="pa-form-row">
             <label class="pa-form-label" for="pa-adv-input-pres">
               Air Pressure
-              <span class="pa-help-tip" title="Pneumatic supply pressure adequate for the drawbar. Checked before every M6 — pauses the job with a resumable message if pressure drops below the compressor's threshold.">?</span>
+              <span class="pa-help-tip" title="Pneumatic supply pressure adequate for the drawbar. Read with M66 before the tool change and after every release — a fault pauses the job rather than moving on with a drawbar that may not have opened.">?</span>
             </label>
             <div class="pa-input-with-suffix">
               <span class="pa-input-prefix">P</span>
-              <input type="number" min="0" step="1" id="pa-adv-input-pres" class="pa-input" placeholder="—" disabled>
+              <input type="number" min="0" step="1" id="pa-adv-input-pres" class="pa-input" placeholder="—">
             </div>
           </div>
+        </div>
+
+        <div class="pa-card pa-advanced-preview">
+          <h3 class="pa-card-title">Other Sensors<sup class="pa-title-sup">Coming soon</sup></h3>
+          <p class="pa-card-help">
+            Planned drawbar and tool-in-spindle confirmation. These inputs are informational only — nothing reads them yet.
+          </p>
 
           <div class="pa-form-row">
             <label class="pa-form-label" for="pa-adv-input-drawbar">
@@ -1922,6 +1927,13 @@
     if (rackHolding && initialConfig.rackHolding) rackHolding.value = initialConfig.rackHolding;
     updateRackHoldingVisibility();
 
+    // Air-pressure sensor input (-1 / missing = no sensor = blank field).
+    var presInput = $('pa-adv-input-pres');
+    if (presInput) {
+      var savedPres = initialConfig.pressureInput;
+      presInput.value = (typeof savedPres === 'number' && savedPres >= 0) ? String(savedPres) : '';
+    }
+
     $('pa-slide-distance').value = fmtCoord(initialConfig.slideDistance ?? 40);
     $('pa-keepout-padding').value = fmtCoord(initialConfig.keepoutPadding ?? 60);
     $('pa-slide-speed').value    = String(initialConfig.slideSpeed ?? 500);
@@ -2013,6 +2025,13 @@
       slots: parseInt($('pa-slots').value, 10) || 1,
       layoutMode: layout,
       clampAuxOutput: parseAuxValue($('pa-clamp-aux')),
+      // Air-pressure sensor aux input. Empty field = no sensor = -1, which
+      // switches every pressure check off in the generated macro.
+      pressureInput: (function() {
+        var raw = ($('pa-adv-input-pres') || {}).value;
+        var n = Number.parseInt(raw, 10);
+        return Number.isFinite(n) && n >= 0 ? n : -1;
+      })(),
       rackHolding: $('pa-rack-holding').value || 'Fork',
 
       orientation: segOrientation ? segOrientation.get() : 'Y',

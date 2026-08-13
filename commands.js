@@ -96,6 +96,14 @@ const sanitizeAuxOutput = (value) => {
   return Number.isFinite(parsed) ? parsed : -1;
 };
 
+// Aux INPUT port number for a sensor. -1 means "not wired" and every check
+// that depends on it is skipped — M66 against a port the board doesn't have
+// is not an error the operator can act on, it just leaves #5399 stale.
+const sanitizeAuxInput = (value) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : -1;
+};
+
 // Custom-mode per-slot XY. Returns a Map keyed by slot number for O(1) lookup.
 function sanitizeSlotCoords(raw, slots) {
   const map = new Map();
@@ -207,6 +215,9 @@ const buildInitialConfig = (raw = {}) => {
     preTlsGcode: raw.preTlsGcode ?? migrateLegacyTlsAux(raw.tlsAuxOutput, 'on'),
     postTlsGcode: raw.postTlsGcode ?? migrateLegacyTlsAux(raw.tlsAuxOutput, 'off'),
     clampAuxOutput: sanitizeAuxOutput(raw.clampAuxOutput),
+    // grblHAL aux INPUT carrying the air-pressure switch. -1 = no sensor
+    // wired, which disables every pressure check.
+    pressureInput: sanitizeAuxInput(raw.pressureInput),
 
     dialogBehavior: {
       countdownSec: toFiniteNumber(raw.dialogBehavior?.countdownSec, 5),
@@ -943,6 +954,37 @@ function auxLineFor(settings, action) {
   return cmd || '(no clamp aux output configured)';
 }
 
+// === Safety sensors ===
+//
+// Air pressure. Mirrors Sienci's P501 helper: `M66 P<n> L4 Q0.01` waits for
+// the pressure input to read LOW with a 10ms timeout, and a timeout (#5399
+// == -1) is the fault — i.e. pressure OK is the LOW state, matching how the
+// switch is wired on their kit. Invert the port in firmware ($370) if your
+// switch reads the other way round.
+//
+// On fault the macro parks in a while-loop: show the operator dialog, M0 to
+// pause, then re-read once they resume. So the dialog's Continue button is
+// really "re-check" — the loop only exits when pressure has actually come
+// back — while Abort soft-resets out of the whole tool change. That's the
+// same shape as P501, just with our dialog instead of a (print,..) line.
+//
+// `label` distinguishes the o-word blocks so two guards can't collide.
+function pressureGuard(settings, oNum) {
+  if (settings.pressureInput < 0) return '';
+  const read = `M66 P${settings.pressureInput} L4 Q0.01`;
+  return `
+    ${read}
+    G4 P0.1
+    o${oNum} while [#5399 EQ -1]
+      G4 P0
+      (MSG, PLUGIN_PNEUMATICATC:PRESSURE_FAULT)
+      M0
+      ${read}
+      G4 P0.1
+    o${oNum} endwhile
+  `.trim();
+}
+
 function slideFeedrate(settings) {
   return settings.slideSpeed > 0 ? settings.slideSpeed : 500;
 }
@@ -983,6 +1025,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
+      ${pressureGuard(settings, 121)}
       G53 G0 Z${settings.zSafe}
       M61 Q0
     `.trim();
@@ -996,6 +1039,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     G4 P0.5
     ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
+    ${pressureGuard(settings, 122)}
     G53 G0 Z${settings.zSafe}
     M61 Q0
   `.trim();
@@ -1041,7 +1085,8 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
   const releaseFirst = drawbarAlreadyReleased ? '' : `
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}
-      G4 P0.5`;
+      G4 P0.5
+      ${pressureGuard(settings, 123)}`;
 
   // Approach-to-engaged sequence differs by chain context AND hold style:
   //   * chainedFromRack=true (Tm→Tn swap, fork or cup): machine is already
@@ -1234,6 +1279,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     #<return_units> = [20 + #<_metric>]
     G21
     M5
+    ${pressureGuard(settings, 120)}
     G53 G0 Z${settings.zSafe}
     ${unloadSection}
     ${loadSection}

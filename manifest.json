@@ -29,6 +29,11 @@
     }
   ],
   "messages": {
+    "PRESSURE_FAULT": {
+      "title": "Air Pressure Low",
+      "message": "The air-pressure sensor is not reporting enough pressure to work the drawbar, so the tool change cannot safely continue.<br><br>Check that the compressor is running and up to pressure, the regulator is set correctly, and no line is kinked or disconnected. Once pressure is restored, click <em>\"Re-check\"</em> — the macro reads the sensor again and only carries on if it now reads good. Click <em>\"Abort\"</em> to stop the tool change.",
+      "continueLabel": "Re-check"
+    },
     "FAILED_UNLOAD_TOOL": {
       "title": "Unload Failed",
       "message": "Failed to unload {toolNumber}. Please manually remove the bit, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
