@@ -24,6 +24,16 @@ const LAYOUT_MODES = ['linear', 'custom'];
 const TLS_MODES = ['library', 'always'];
 const MAX_SLOTS = 32;
 
+// Pneumatic drawbar compensation for CUP-style racks only. On a cup rack
+// the tool holder rests on the cup lip and the drawbar's actuation would
+// otherwise push the holder up out of / down into the taper. A tiny
+// (1 mm) G1 in the opposite direction at a slow feed (matches the
+// solenoid's ~200 ms actuation time) neutralises that motion so the
+// holder stays on the cup lip throughout. Fork racks slide horizontally
+// into/out of engagement and don't need this — omitted below.
+const DRAWBAR_OFFSET_MM = 1;
+const DRAWBAR_FEEDRATE_MMPM = 300;
+
 const M6_PATTERN = /(?:^|[^A-Z])M0*6(?:\s*T0*(\d+)|(?=[^0-9T])|$)|(?:^|[^A-Z])T0*(\d+)\s*M0*6(?:[^0-9]|$)/i;
 const SLOT_PATTERN = /^\$SLOT0*(\d+)$/i;
 
@@ -164,40 +174,6 @@ const buildInitialConfig = (raw = {}) => {
     manualTool: sanitizeCoords2D(raw.manualTool),
 
     zSafe: toFiniteNumber(raw.zSafe, 0),
-    zRetract: toFiniteNumber(raw.zRetract ?? raw.zRetreat, 7),
-    // Pneumatic drawbar compensation. Applied SYMMETRICALLY to both
-    // load and unload as a G1 slow-move that overlaps with the pneumatic
-    // clamp/unclamp actuation time — the spindle motion neutralises the
-    // drawbar's physical push/pull relative to the tool holder, so the
-    // tool holder itself stays stationary at its cup/fork resting
-    // position throughout the transition.
-    //
-    // Load (spindle descends onto tool sitting in cup/fork):
-    //   1. G0 approach at slot.z + drawbarOffset (drawbar open, spindle
-    //      nose held high — no pressure into the cup).
-    //   2. Fire clamp aux → drawbar starts pulling tang UP into taper.
-    //   3. G1 Z slot.z at drawbarFeedrate → spindle nose descends the
-    //      offset amount WHILE drawbar pulls tang up. Net effect: tool
-    //      holder flange stays at cup lip; spindle nose meets it there.
-    //
-    // Unload (spindle at slot.z with clamped tool, releasing into cup):
-    //   1. G0 descend to slot.z (with clamped tool — tool holder flange
-    //      sits on cup lip).
-    //   2. Fire unclamp aux → drawbar starts pushing tang DOWN out of taper.
-    //   3. G1 Z slot.z + drawbarOffset at drawbarFeedrate → spindle
-    //      retracts the offset amount WHILE drawbar pushes tang down.
-    //      Net: tool holder stays on cup lip; the drawbar's push against
-    //      the tang is absorbed by the spindle's upward motion.
-    //
-    // Feedrate matches typical pneumatic actuation time (300 mm/min
-    // = 200 ms for a 1 mm move, aligns with 150-300 ms solenoid response).
-    //
-    // Backward-compat aliases: `drawbarOffset` was previously named
-    // `loadDrawbarOffset` (load-only misdiagnosis) and before that
-    // `unclampZOffset` (unload-only misdiagnosis). Both are still read
-    // so existing configs continue to load unchanged.
-    drawbarOffset:   toFiniteNumber(raw.drawbarOffset ?? raw.loadDrawbarOffset ?? raw.unclampZOffset, 2),
-    drawbarFeedrate: toFiniteNumber(raw.drawbarFeedrate, 300),
 
     tlsSeekStartZ: toFiniteNumber(raw.tlsSeekStartZ, toFiniteNumber(raw.zSafe, -5)),
     seekDistance: toFiniteNumber(raw.seekDistance, 50),
@@ -1021,17 +997,13 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     `.trim();
   }
 
-  // Drawbar back-off during unclamp — mirror of buildLoadTool's seat.
-  // G1 retract from slot.z to slot.z + offset at drawbarFeedrate overlaps
-  // with the pneumatic push so the tool holder stays on the cup/fork lip
-  // while the drawbar pushes the tang down.
-  const drawbarOffset = settings.drawbarOffset;
-  const drawbarBackoff = drawbarOffset > 0
-    ? `
-      G53 G1 Z${settings.slot1.z + drawbarOffset} F${settings.drawbarFeedrate}`
-    : '';
-
   if (settings.rackHolding === 'Cup') {
+    // Cup unload uses the drawbar back-off (see DRAWBAR_OFFSET_MM
+    // comment at the top of this file): G1 retract from slot.z to
+    // slot.z + offset at DRAWBAR_FEEDRATE_MMPM overlaps with the
+    // pneumatic push so the holder stays on the cup lip.
+    const drawbarBackoff = `
+      G53 G1 Z${settings.slot1.z + DRAWBAR_OFFSET_MM} F${DRAWBAR_FEEDRATE_MMPM}`;
     return `
       ${cupEntrance(slotPos.engaged, origin, settings)}
       G53 G0 Z${settings.slot1.z}
@@ -1044,13 +1016,14 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     `.trim();
   }
 
+  // Fork: horizontal slide handles engagement — no drawbar compensation.
   const feed = slideFeedrate(settings);
   return `
     ${rackEntrance(slotPos.engaged, origin, settings)}
     G53 G0 Z${settings.slot1.z}
     G53 G1 X${slotPos.engaged.x} Y${slotPos.engaged.y} F${feed}
     G4 P0.5
-    ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
+    ${auxLineFor(settings, 'unclamp')}
     G4 P0.5
     ${pressureGuard(settings, 140)}
     G53 G0 Z${settings.zSafe}
@@ -1119,19 +1092,14 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       : `${rackEntrance(slotPos.engaged, { x: origin?.x ?? 0, y: origin?.y ?? 0 }, settings)}
         G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}`;
 
-  // Drawbar forward-seat during clamp — mirror of buildUnloadTool's
-  // back-off. G1 descend from slot.z + offset to slot.z at drawbarFeedrate
-  // overlaps with the pneumatic pull-up so the tool holder stays on the
-  // cup/fork lip while the drawbar pulls the tang up into the taper.
-  const offset = settings.drawbarOffset;
-  const approachZ = settings.slot1.z + offset;
-  const seatZ     = settings.slot1.z;
-  const drawbarSeat = offset > 0
-    ? `
-      G53 G1 Z${seatZ} F${settings.drawbarFeedrate}`
-    : '';
-
   if (settings.rackHolding === 'Cup') {
+    // Cup load uses the drawbar forward-seat (see DRAWBAR_OFFSET_MM
+    // comment at the top of this file): approach at slot.z + offset,
+    // clamp, then G1 descend to slot.z overlapping with the pneumatic
+    // pull-up so the holder stays on the cup lip.
+    const approachZ   = settings.slot1.z + DRAWBAR_OFFSET_MM;
+    const drawbarSeat = `
+      G53 G1 Z${settings.slot1.z} F${DRAWBAR_FEEDRATE_MMPM}`;
     return `
       ${approachToEngaged}${releaseFirst}
       G53 G0 Z${approachZ}
@@ -1144,12 +1112,13 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     `.trim();
   }
 
+  // Fork: horizontal slide handles engagement — no drawbar compensation.
   const feed = slideFeedrate(settings);
   return `
     ${approachToEngaged}${releaseFirst}
-    G53 G0 Z${approachZ}
+    G53 G0 Z${settings.slot1.z}
     G4 P0.5
-    ${auxLineFor(settings, 'clamp')}${drawbarSeat}
+    ${auxLineFor(settings, 'clamp')}
     G4 P0.5
     G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
     G53 G0 Z${settings.zSafe}

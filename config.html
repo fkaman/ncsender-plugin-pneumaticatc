@@ -505,13 +505,13 @@
     border-style: dashed;
     cursor: not-allowed;
   }
-  .pa-profile-note {
-    margin-top: 10px;
-    padding: 10px 12px;
-    border-radius: var(--radius-small);
-    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--color-accent) 25%, transparent);
-    color: var(--color-text-primary);
+  /* Segment (Orientation / Direction) locked by profile — swallow clicks
+     so the locked value can't be changed, and dim slightly for the
+     same "read-only kit setting" cue the pin selectors use. */
+  .pa-segment.pa-locked {
+    opacity: 0.85;
+    pointer-events: none;
+    filter: saturate(0.7);
   }
   .pa-card.pa-advanced-preview { opacity: 0.7; }
   .pa-card.pa-advanced-preview .pa-input,
@@ -629,13 +629,12 @@
     filter: none;
   }
   .pa-btn-danger {
-    background: transparent !important;
-    color: var(--color-danger, #e74c3c) !important;
-    border: 1px solid color-mix(in srgb, var(--color-danger, #e74c3c) 30%, transparent) !important;
+    background: var(--color-danger, #e74c3c) !important;
+    color: #fff !important;
+    border: none !important;
   }
   .pa-btn-danger:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--color-danger, #e74c3c) 12%, transparent) !important;
-    filter: none;
+    filter: brightness(1.08);
   }
 
   /* Segmented pill (Linear / Custom, Orientation, Direction) */
@@ -926,24 +925,69 @@
   .pa-import-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 12px 14px;
+    padding: 4px 0;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-small);
     background: var(--color-surface-muted);
-    font-size: 0.9rem;
+    font-size: 0.98rem;
+    overflow: hidden;
   }
   .pa-import-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
+    display: grid;
+    grid-template-columns: 22px 1fr auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-top: 1px solid transparent;
   }
-  .pa-import-row span:last-child {
+  .pa-import-row + .pa-import-row {
+    border-top-color: color-mix(in srgb, var(--color-border) 55%, transparent);
+  }
+  .pa-import-row__status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+    color: var(--color-accent);
+    font-size: 12px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .pa-import-row.pa-import-empty .pa-import-row__status {
+    background: color-mix(in srgb, var(--color-text-secondary) 15%, transparent);
+    color: var(--color-text-secondary);
+  }
+  .pa-import-row__label {
+    color: var(--color-text-primary);
+  }
+  .pa-import-row__label small {
+    color: var(--color-text-secondary);
+    font-weight: normal;
+    margin-left: 6px;
+    font-size: 0.85em;
+  }
+  .pa-import-row__value {
     font-family: 'JetBrains Mono', monospace;
     color: var(--color-accent);
+    font-weight: 600;
+    font-size: 0.92rem;
+    text-align: right;
+    white-space: nowrap;
   }
-  .pa-import-row.pa-import-empty span:last-child {
+  .pa-import-row.pa-import-empty .pa-import-row__value {
     color: var(--color-text-secondary);
+    font-style: italic;
+    font-weight: normal;
+    font-family: inherit;
+  }
+  .pa-import-summary {
+    margin: 12px 0 18px;
+    font-size: 0.82rem;
+    color: var(--color-text-secondary);
+    line-height: 1.45;
   }
 
   .pa-modal-actions {
@@ -1062,9 +1106,6 @@
             <option value="sienci">Sienci ATC</option>
             <option value="ncsender-wireless" disabled>ncSender Wireless ATC (maybe)</option>
           </select>
-          <p class="pa-card-help pa-profile-note" id="pa-profile-note" style="display: none;">
-            <strong>Sienci ATC selected.</strong> Clamp Aux Output and the sensor inputs on the Advanced tab are set to this kit's wiring and shown read-only.
-          </p>
         </div>
 
         <!-- Rack Settings — combined magazine + engage motion. Slide fields
@@ -1104,35 +1145,6 @@
                 <option value="Cup">Cup</option>
               </select>
             </div>
-          </div>
-
-          <div class="pa-field-inline">
-            <label id="pa-label-z-retract">Z-Retract (mm)</label>
-            <input class="pa-input" type="number" id="pa-z-retract" value="7" min="0" step="0.1">
-          </div>
-
-          <!-- Drawbar Offset. Pneumatic drawbar travel (~1–2 mm). Applied
-               to BOTH load and unload as a G1 move that overlaps with the
-               pneumatic clamp/unclamp, neutralising the drawbar's push/pull
-               against the tool holder so the holder stays stationary on
-               the cup/fork lip throughout the transition:
-                 * Load:   G0 approach at slot.z+offset → clamp → G1 seat
-                           down to slot.z at Drawbar Feedrate.
-                 * Unload: G0 descend to slot.z → unclamp → G1 back off up
-                           to slot.z+offset at Drawbar Feedrate.
-               Set to 0 to skip the G1 (both directions descend/retract
-               without compensation).
-               Drawbar Feedrate matches typical pneumatic actuation time —
-               300 mm/min = 200 ms for a 1 mm move, in the ballpark of a
-               150-300 ms solenoid response. Tune slower if pneumatic is
-               sluggish, faster if it snaps. -->
-          <div class="pa-field-inline">
-            <label id="pa-label-drawbar-offset">Drawbar Offset (mm)</label>
-            <input class="pa-input" type="number" id="pa-drawbar-offset" value="1" min="0" step="0.1">
-          </div>
-          <div class="pa-field-inline">
-            <label id="pa-label-drawbar-feedrate">Drawbar Feedrate (mm/min)</label>
-            <input class="pa-input" type="number" id="pa-drawbar-feedrate" value="300" min="1" step="1">
           </div>
 
           <!-- Fork-only motion params (shown when Rack Holding = Fork) -->
@@ -1463,16 +1475,6 @@
       </header>
 
       <div class="pa-panel">
-        <div class="pa-soon-banner" id="pa-adv-profile-note" style="display: none;">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="11" width="18" height="11" rx="2"/>
-            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-          </svg>
-          <div>
-            <strong>Sienci ATC profile — these pins are read-only.</strong>
-            The wiring on this kit is fixed, so the inputs below are set from it. Switch the profile to <em>Generic Pneumatic ATC</em> on the ATC/Rack Setup tab to edit them; the fields here are meant for builds that aren't a known kit.
-          </div>
-        </div>
         <div class="pa-soon-banner">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"/>
@@ -1552,14 +1554,12 @@
     <div class="pa-modal-card">
       <h3 class="pa-modal-title">Import positions from the controller?</h3>
       <p class="pa-modal-body">
-        The Sienci setup macros store these in work coordinate systems, so they can be read straight off the controller instead of typed in.
+        The Sienci setup macros store these in work coordinate systems. Read straight off the controller instead of typing coordinates by hand. Nothing moves — this only fills the form.
       </p>
       <div class="pa-import-list" id="pa-import-list"></div>
-      <p class="pa-modal-body" style="margin-top: 14px;">
-        Existing values in those fields are replaced. Nothing moves — this only fills the form.
-      </p>
+      <div class="pa-import-summary" id="pa-import-summary"></div>
       <div class="pa-modal-actions">
-        <button type="button" class="pa-btn pa-btn-ghost" id="pa-import-no">Skip</button>
+        <button type="button" class="pa-btn pa-btn-danger" id="pa-import-no">Skip</button>
         <button type="button" class="pa-btn" id="pa-import-yes">Import</button>
       </div>
     </div>
@@ -1750,6 +1750,30 @@
     // Fixed wiring on a known kit, so the fields are shown read-only.
     sienci: {
       clampOut: '1', pres: 2, tool: 0, holder: 0, locked: true,
+      // Physical rack geometry on the Sienci kit is also fixed: rack
+      // sits along +X with 90 mm between adjacent slots, holders sit
+      // in fork mounts (side-entry) rather than cup drops. Sienci
+      // ships two rack sizes — 6-slot and 12-slot — so the Number of
+      // Slots dropdown is restricted to those two values.
+      layout: 'linear',
+      orientation: 'X',
+      direction: 'Positive',
+      slotDistance: 90,
+      rackHolding: 'Fork',
+      slotsAllowed: [6, 12],
+      // Fork-slide motion + safety margin — same fixed geometry as the
+      // rack. Numbers here are the Sienci kit's published values.
+      slideDirection: 'Positive',
+      slideDistance: 40,
+      slideSpeed: 2000,
+      keepoutPadding: 60,
+      // Sienci ships the SLB-EXT board, which has Aux Out P1 for the
+      // drawbar solenoid. On boards that don't expose that pin (bench
+      // testing, alternate builds) we still want the label to read
+      // clean — the operator picking this profile is telling us this
+      // IS the right kit, so "not on this board" is misleading noise
+      // instead of useful feedback.
+      suppressMissingWarning: true,
       // Shown alongside the port on the locked fields. These are Sienci's
       // own names from P200.macro, deliberately used instead of whatever
       // the operator may have aliased that output to in Settings — on a
@@ -1795,13 +1819,87 @@
         var previewOnly = (id === 'pa-adv-input-tool' || id === 'pa-adv-input-holder');
         el.disabled = locked || previewOnly;
         el.classList.toggle('pa-locked', locked);
-        showPinAsLabel(id, locked, (p.names || {})[id]);
+        showPinAsLabel(id, locked, (p.names || {})[id], !!p.suppressMissingWarning);
       });
 
-    var rackNote = $('pa-profile-note');
-    if (rackNote) rackNote.style.display = locked ? '' : 'none';
-    var advNote = $('pa-adv-profile-note');
-    if (advNote) advNote.style.display = locked ? '' : 'none';
+    // Geometry + slide lock. Same reasoning as the pin lock above —
+    // a known kit's rack layout / orientation / direction / slot spacing
+    // / holder style / slide motion are fixed by the hardware, so the
+    // fields are set + made read-only. Only touched if the profile
+    // carries the field.
+    if (seedPins) {
+      if (p.layout && segLayout)           segLayout.set(p.layout);
+      if (p.orientation && segOrientation) segOrientation.set(p.orientation);
+      if (p.direction && segDirection)     segDirection.set(p.direction);
+      if (p.slideDirection && segSlideDir) segSlideDir.set(p.slideDirection);
+      if (Number.isFinite(p.slotDistance)) {
+        var sd = $('pa-slot-distance');
+        if (sd) sd.value = fmtCoord(p.slotDistance);
+      }
+      if (Number.isFinite(p.slideDistance)) {
+        var slideD = $('pa-slide-distance');
+        if (slideD) slideD.value = fmtCoord(p.slideDistance);
+      }
+      if (Number.isFinite(p.slideSpeed)) {
+        var slideS = $('pa-slide-speed');
+        if (slideS) slideS.value = String(p.slideSpeed);
+      }
+      if (Number.isFinite(p.keepoutPadding)) {
+        var kp = $('pa-keepout-padding');
+        if (kp) kp.value = fmtCoord(p.keepoutPadding);
+      }
+      if (p.rackHolding) {
+        var rh = $('pa-rack-holding');
+        if (rh) {
+          rh.value = p.rackHolding;
+          if (typeof updateRackHoldingVisibility === 'function') updateRackHoldingVisibility();
+        }
+      }
+    }
+    var segLay = $('pa-layout-mode');
+    if (segLay) segLay.classList.toggle('pa-locked', locked && !!p.layout);
+    var segOr = $('pa-orientation');
+    if (segOr) segOr.classList.toggle('pa-locked', locked && !!p.orientation);
+    var segDir = $('pa-direction');
+    if (segDir) segDir.classList.toggle('pa-locked', locked && !!p.direction);
+    var segSD = $('pa-slide-direction');
+    if (segSD) segSD.classList.toggle('pa-locked', locked && !!p.slideDirection);
+    function lockInput(id, isLocked) {
+      var el = $(id);
+      if (!el) return;
+      el.disabled = isLocked;
+      el.classList.toggle('pa-locked', isLocked);
+    }
+    lockInput('pa-slot-distance',    locked && Number.isFinite(p.slotDistance));
+    lockInput('pa-slide-distance',   locked && Number.isFinite(p.slideDistance));
+    lockInput('pa-slide-speed',      locked && Number.isFinite(p.slideSpeed));
+    lockInput('pa-keepout-padding',  locked && Number.isFinite(p.keepoutPadding));
+    var rhEl = $('pa-rack-holding');
+    if (rhEl) {
+      var rhLocked = locked && !!p.rackHolding;
+      rhEl.disabled = rhLocked;
+      rhEl.classList.toggle('pa-locked', rhLocked);
+    }
+
+    // Number of Slots — restrict the dropdown to profile-allowed values
+    // (e.g. Sienci ships only 6- and 12-slot racks). Hides + disables
+    // the other options so they can't be picked; snaps the current value
+    // to the closest allowed if it's out of range. Generic profile
+    // clears the restriction and shows every 1..32 option again.
+    var slotsEl = $('pa-slots');
+    if (slotsEl) {
+      var allowed = (locked && Array.isArray(p.slotsAllowed)) ? p.slotsAllowed : null;
+      Array.prototype.forEach.call(slotsEl.options, function(opt) {
+        var n = parseInt(opt.value, 10);
+        var ok = !allowed || allowed.indexOf(n) !== -1;
+        opt.hidden = !ok;
+        opt.disabled = !ok;
+      });
+      if (allowed) {
+        var cur = parseInt(slotsEl.value, 10);
+        if (allowed.indexOf(cur) === -1) slotsEl.value = String(allowed[0]);
+      }
+    }
 
     if (fromUser && typeof markDirty === 'function') markDirty();
   }
@@ -1829,7 +1927,7 @@
   // dropdown — a disabled select reads as "broken", and an empty-looking one
   // reads as "unset". The select stays in the DOM (hidden) so saving still
   // picks the value up.
-  function showPinAsLabel(id, asLabel, name) {
+  function showPinAsLabel(id, asLabel, name, suppressMissing) {
     var sel = $(id);
     if (!sel) return;
     var span = $(id + '-static');
@@ -1842,10 +1940,12 @@
     }
     var port = portTextFor(id, sel.value);
     var text = name ? (port + ' — ' + name) : port;
-    // The profile is fixed for the kit, so a pin this board doesn't have is
-    // worth saying out loud — otherwise a tester wires to a port that will
-    // never fire and has nothing to go on.
-    var missing = pinMissingOnBoard(id, sel.value);
+    // Missing-pin warning is useful for testers on unknown boards, but a
+    // profile pointing at a KNOWN kit (Sienci, etc.) can opt out with
+    // `suppressMissingWarning: true` — on a bench-test board the label
+    // then stays clean instead of nagging about a pin the operator has
+    // already told us this profile expects.
+    var missing = !suppressMissing && pinMissingOnBoard(id, sel.value);
     span.textContent = missing ? (text + ' · not on this board') : text;
     span.classList.toggle('pa-pin-missing', missing);
     span.style.display = asLabel ? '' : 'none';
@@ -1928,24 +2028,42 @@
     return new Promise(function(resolve) {
       var modal = $('pa-import-modal');
       var list = $('pa-import-list');
+      var summary = $('pa-import-summary');
       var yes = $('pa-import-yes');
       var no = $('pa-import-no');
       if (!modal || !list || !yes || !no) { resolve(false); return; }
 
       list.innerHTML = '';
-      importablePositions().forEach(function(row) {
+      var rows = importablePositions();
+      var ready = 0;
+      rows.forEach(function(row) {
+        var isSet = wcsIsSet(row.v);
+        if (isSet) ready += 1;
         var el = document.createElement('div');
-        el.className = 'pa-import-row' + (wcsIsSet(row.v) ? '' : ' pa-import-empty');
-        var name = document.createElement('span');
-        name.textContent = row.label + '  (' + row.key + ')';
+        el.className = 'pa-import-row' + (isSet ? '' : ' pa-import-empty');
+        var status = document.createElement('span');
+        status.className = 'pa-import-row__status';
+        status.textContent = isSet ? '✓' : '–';
+        var label = document.createElement('span');
+        label.className = 'pa-import-row__label';
+        label.innerHTML = row.label + ' <small>' + row.key + '</small>';
         var val = document.createElement('span');
-        val.textContent = wcsIsSet(row.v)
+        val.className = 'pa-import-row__value';
+        val.textContent = isSet
           ? (fmtCoord(row.v.x) + ', ' + fmtCoord(row.v.y) + (row.withZ ? ', ' + fmtCoord(row.v.z) : ''))
-          : 'not set — skipped';
-        el.appendChild(name);
+          : 'not set';
+        el.appendChild(status);
+        el.appendChild(label);
         el.appendChild(val);
         list.appendChild(el);
       });
+      if (summary) {
+        summary.textContent = ready === 0
+          ? 'No positions available yet — Import will close without changing the form.'
+          : ready === rows.length
+            ? 'All ' + rows.length + ' positions will replace the current values.'
+            : ready + ' of ' + rows.length + ' will be imported. Rows marked "not set" are skipped.';
+      }
 
       modal.classList.add('pa-open');
       function cleanup(v) {
@@ -1983,7 +2101,10 @@
   }
 
   function offerPositionImport() {
-    if (!importablePositions().some(function(r) { return wcsIsSet(r.v); })) return;
+    // Always open the dialog — even when the controller returned no
+    // positions (empty rows render as "not set — skipped"). Lets a user
+    // on a bench-test board see the preview and confirm the flow;
+    // applyImportedPositions is a no-op on the unset rows anyway.
     showImportConfirm().then(function(ok) { if (ok) applyImportedPositions(); });
   }
 
@@ -2388,9 +2509,6 @@
     $('pa-keepout-padding').value = fmtCoord(initialConfig.keepoutPadding ?? 60);
     $('pa-slide-speed').value    = String(initialConfig.slideSpeed ?? 500);
     $('pa-slot-distance').value  = fmtCoord(initialConfig.slotDistance ?? initialConfig.pocketDistance ?? 60);
-    $('pa-z-retract').value      = fmtCoord(initialConfig.zRetract ?? 7);
-    $('pa-drawbar-offset').value = fmtCoord(initialConfig.drawbarOffset ?? initialConfig.loadDrawbarOffset ?? initialConfig.unclampZOffset ?? 2);
-    $('pa-drawbar-feedrate').value = String(initialConfig.drawbarFeedrate ?? 300);
     $('pa-seek-start-z').value   = fmtCoord(initialConfig.tlsSeekStartZ ?? initialConfig.zSafe ?? -5);
     $('pa-seek-distance').value  = fmtCoord(initialConfig.seekDistance ?? 50);
     $('pa-seek-feedrate').value  = String(initialConfig.seekFeedrate ?? 500);
@@ -2438,9 +2556,6 @@
     $('pa-label-slide-distance').textContent = 'Slide Distance (' + u + ')';
     $('pa-label-slide-speed').textContent = 'Slide Speed (' + f + ')';
     $('pa-label-keepout-padding').textContent = 'Safety Margin (' + u + ')';
-    $('pa-label-z-retract').textContent = 'Z-Retract (' + u + ')';
-    $('pa-label-drawbar-offset').textContent = 'Drawbar Offset (' + u + ')';
-    $('pa-label-drawbar-feedrate').textContent = 'Drawbar Feedrate (' + f + ')';
     $('pa-label-seek-distance').textContent = 'Seek Distance (' + u + ')';
     $('pa-label-seek-feedrate').textContent = 'Seek Feedrate (' + f + ')';
   }
@@ -2502,9 +2617,6 @@
       slideDistance: toMetric(parseFloatOr($('pa-slide-distance').value, 40)),
       slideSpeed: parseFloatOr($('pa-slide-speed').value, 500),
       keepoutPadding: toMetric(parseFloatOr($('pa-keepout-padding').value, 60)),
-      zRetract: toMetric(parseFloatOr($('pa-z-retract').value, 7)),
-      drawbarOffset:   toMetric(parseFloatOr($('pa-drawbar-offset').value, 2)),
-      drawbarFeedrate: parseFloatOr($('pa-drawbar-feedrate').value, 300),
 
       tlsMode: tlsMode,
       performTlsOnToolChange: tlsMode === 'always',
