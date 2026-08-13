@@ -1,8 +1,11 @@
 name: Build and Release Plugin
 
 on:
+  # Tags only for pushes — release.sh pushes the release commit AND the
+  # v* tag together, which used to fire two runs for the same SHA (one
+  # per trigger). Only the tag run publishes anyway; the branch run
+  # just re-ran the tests wastefully. PRs still trigger tests.
   push:
-    branches: [main]
     tags:
       - 'v*'
   pull_request:
