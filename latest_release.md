@@ -1,5 +1,4 @@
 ## What's Changed
 
-### 🔧 Improvements
-- The Sienci ATC profile now uses locked full kit geometry, with unused settings removed for a cleaner setup
-- The sidebar entry is now labeled "ATC Setup" so it displays fully without being cut off
+### 🐛 Bug Fixes
+- Drawbar compensation is applied to Fork racks again, restoring the behavior from v0.1.23.
