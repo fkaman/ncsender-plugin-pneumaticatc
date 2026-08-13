@@ -997,13 +997,14 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     `.trim();
   }
 
-  if (settings.rackHolding === 'Cup') {
-    // Cup unload uses the drawbar back-off (see DRAWBAR_OFFSET_MM
-    // comment at the top of this file): G1 retract from slot.z to
-    // slot.z + offset at DRAWBAR_FEEDRATE_MMPM overlaps with the
-    // pneumatic push so the holder stays on the cup lip.
-    const drawbarBackoff = `
+  // Drawbar back-off during unclamp — G1 retract from slot.z to
+  // slot.z + DRAWBAR_OFFSET_MM at DRAWBAR_FEEDRATE_MMPM overlaps with
+  // the pneumatic push so the holder stays on the cup / fork lip while
+  // the drawbar pushes the tang down. Applies to both hold styles.
+  const drawbarBackoff = `
       G53 G1 Z${settings.slot1.z + DRAWBAR_OFFSET_MM} F${DRAWBAR_FEEDRATE_MMPM}`;
+
+  if (settings.rackHolding === 'Cup') {
     return `
       ${cupEntrance(slotPos.engaged, origin, settings)}
       G53 G0 Z${settings.slot1.z}
@@ -1016,14 +1017,13 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     `.trim();
   }
 
-  // Fork: horizontal slide handles engagement — no drawbar compensation.
   const feed = slideFeedrate(settings);
   return `
     ${rackEntrance(slotPos.engaged, origin, settings)}
     G53 G0 Z${settings.slot1.z}
     G53 G1 X${slotPos.engaged.x} Y${slotPos.engaged.y} F${feed}
     G4 P0.5
-    ${auxLineFor(settings, 'unclamp')}
+    ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
     ${pressureGuard(settings, 140)}
     G53 G0 Z${settings.zSafe}
@@ -1092,14 +1092,16 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       : `${rackEntrance(slotPos.engaged, { x: origin?.x ?? 0, y: origin?.y ?? 0 }, settings)}
         G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}`;
 
-  if (settings.rackHolding === 'Cup') {
-    // Cup load uses the drawbar forward-seat (see DRAWBAR_OFFSET_MM
-    // comment at the top of this file): approach at slot.z + offset,
-    // clamp, then G1 descend to slot.z overlapping with the pneumatic
-    // pull-up so the holder stays on the cup lip.
-    const approachZ   = settings.slot1.z + DRAWBAR_OFFSET_MM;
-    const drawbarSeat = `
+  // Drawbar forward-seat during clamp — mirror of buildUnloadTool's
+  // back-off. Approach at slot.z + DRAWBAR_OFFSET_MM, clamp, then G1
+  // descend to slot.z at DRAWBAR_FEEDRATE_MMPM overlapping with the
+  // pneumatic pull-up so the holder stays on the cup / fork lip while
+  // the drawbar pulls the tang up. Applies to both hold styles.
+  const approachZ   = settings.slot1.z + DRAWBAR_OFFSET_MM;
+  const drawbarSeat = `
       G53 G1 Z${settings.slot1.z} F${DRAWBAR_FEEDRATE_MMPM}`;
+
+  if (settings.rackHolding === 'Cup') {
     return `
       ${approachToEngaged}${releaseFirst}
       G53 G0 Z${approachZ}
@@ -1112,13 +1114,12 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     `.trim();
   }
 
-  // Fork: horizontal slide handles engagement — no drawbar compensation.
   const feed = slideFeedrate(settings);
   return `
     ${approachToEngaged}${releaseFirst}
-    G53 G0 Z${settings.slot1.z}
+    G53 G0 Z${approachZ}
     G4 P0.5
-    ${auxLineFor(settings, 'clamp')}
+    ${auxLineFor(settings, 'clamp')}${drawbarSeat}
     G4 P0.5
     G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
     G53 G0 Z${settings.zSafe}

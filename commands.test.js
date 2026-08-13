@@ -1236,18 +1236,23 @@ describe('buildLoadTool — drawbar offset compensation (regression)', () => {
       `unclamp aux (M64 P2) must fire AFTER descent and BEFORE back-off — got unclampIdx=${unclampIdx}, descentIdx=${descentIdx}, backoffIdx=${backoffIdx}`);
   });
 
-  test('Fork racks emit no drawbar G1 compensation (horizontal slide handles engagement)', () => {
-    // Fork engages via horizontal slide, not a top-down cup drop, so the
-    // drawbar has no vertical push to neutralise. The compensation move
-    // should not appear in either direction for a Fork rack.
+  test('Fork racks also emit drawbar G1 compensation (drawbar push acts on the holder in either mount)', () => {
+    // The drawbar's actuation pushes/pulls the holder relative to the
+    // spindle nose regardless of what's holding the holder in place
+    // (cup lip or fork prongs). Same 1 mm / 300 mm/min G1 comp keeps
+    // the holder stationary while the drawbar completes its stroke.
     const FORK_RACK = { ...CUP_RACK, rackHolding: 'Fork' };
     const slotPos = calculateSlotPosition(FORK_RACK, 1);
-    const loadGcode   = buildLoadTool(FORK_RACK, 1, slotPos, '', false, { x: 60, y: 120 }, false);
-    const unloadGcode = buildUnloadTool(FORK_RACK, 1, slotPos, { x: 60, y: 120 });
-    assert.ok(!motionLines(loadGcode).some(l => /^G53 G1 Z/.test(l)),
-      'Fork load must NOT emit a G1 Z seat move (Cup-only compensation)');
-    assert.ok(!motionLines(unloadGcode).some(l => /^G53 G1 Z/.test(l)),
-      'Fork unload must NOT emit a G1 Z back-off move (Cup-only compensation)');
+    const loadLines   = motionLines(buildLoadTool(FORK_RACK, 1, slotPos, '', false, { x: 60, y: 120 }, false));
+    const unloadLines = motionLines(buildUnloadTool(FORK_RACK, 1, slotPos, { x: 60, y: 120 }));
+    // Load: approach at slot.z + 1 → clamp → G1 seat down to slot.z.
+    assert.ok(loadLines.some(l => l === 'G53 G0 Z-99'),
+      'Fork load approach should be G0 to slot.z + DRAWBAR_OFFSET_MM (drawbar-open height)');
+    assert.ok(loadLines.some(l => l === 'G53 G1 Z-100 F300'),
+      'Fork load should G1 seat down to slot.z at DRAWBAR_FEEDRATE_MMPM after clamp');
+    // Unload: descend to slot.z → unclamp → G1 back off to slot.z + 1.
+    assert.ok(unloadLines.some(l => l === 'G53 G1 Z-99 F300'),
+      'Fork unload should G1 back off to slot.z + DRAWBAR_OFFSET_MM at DRAWBAR_FEEDRATE_MMPM after unclamp');
   });
 });
 
