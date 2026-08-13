@@ -1236,31 +1236,18 @@ describe('buildLoadTool — drawbar offset compensation (regression)', () => {
       `unclamp aux (M64 P2) must fire AFTER descent and BEFORE back-off — got unclampIdx=${unclampIdx}, descentIdx=${descentIdx}, backoffIdx=${backoffIdx}`);
   });
 
-  test('offset=0 in both directions: no G1 compensation moves at all', () => {
-    const NO_OFFSET = { ...CUP_RACK, drawbarOffset: 0 };
-    const slotPos = calculateSlotPosition(NO_OFFSET, 1);
-    const loadGcode = buildLoadTool(NO_OFFSET, 1, slotPos, '', false, { x: 60, y: 120 }, false);
-    const unloadGcode = buildUnloadTool(NO_OFFSET, 1, slotPos, { x: 60, y: 120 });
-    // No G1 Z moves emitted for load or unload — the compensation is skipped.
+  test('Fork racks emit no drawbar G1 compensation (horizontal slide handles engagement)', () => {
+    // Fork engages via horizontal slide, not a top-down cup drop, so the
+    // drawbar has no vertical push to neutralise. The compensation move
+    // should not appear in either direction for a Fork rack.
+    const FORK_RACK = { ...CUP_RACK, rackHolding: 'Fork' };
+    const slotPos = calculateSlotPosition(FORK_RACK, 1);
+    const loadGcode   = buildLoadTool(FORK_RACK, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    const unloadGcode = buildUnloadTool(FORK_RACK, 1, slotPos, { x: 60, y: 120 });
     assert.ok(!motionLines(loadGcode).some(l => /^G53 G1 Z/.test(l)),
-      'load with offset=0 must NOT emit a G1 Z seat move');
+      'Fork load must NOT emit a G1 Z seat move (Cup-only compensation)');
     assert.ok(!motionLines(unloadGcode).some(l => /^G53 G1 Z/.test(l)),
-      'unload with offset=0 must NOT emit a G1 Z back-off move');
-  });
-
-  test('drawbarOffset reaches emitted G-code (non-default value proof, both directions)', () => {
-    const NON_DEFAULT = { ...CUP_RACK, drawbarOffset: 1.5 };
-    const slotPos = calculateSlotPosition(NON_DEFAULT, 1);
-    // Load-side: approach at slot.z + 1.5 = -98.5, seat back at slot.z.
-    const loadGcode = buildLoadTool(NON_DEFAULT, 1, slotPos, '', false, { x: 60, y: 120 }, false);
-    assert.ok(motionLines(loadGcode).some(l => l === 'G53 G0 Z-98.5'),
-      'load approach must use slot.z + drawbarOffset = -98.5');
-    assert.ok(motionLines(loadGcode).some(l => l === 'G53 G1 Z-100 F300'),
-      'load seat must G1 to slot.z at drawbarFeedrate');
-    // Unload-side: descend to slot.z, G1 back off to slot.z + 1.5 = -98.5.
-    const unloadGcode = buildUnloadTool(NON_DEFAULT, 1, slotPos, { x: 60, y: 120 });
-    assert.ok(motionLines(unloadGcode).some(l => l === 'G53 G1 Z-98.5 F300'),
-      'unload back-off must use slot.z + drawbarOffset = -98.5 at drawbarFeedrate');
+      'Fork unload must NOT emit a G1 Z back-off move (Cup-only compensation)');
   });
 });
 
