@@ -1,5 +1,5 @@
 ## What's Changed
 
-### ✨ New Features
-- Added an air pressure safety check that verifies pressure before and during operation, with automatic retry support while streaming a job
-- Added a Sienci ATC profile
+### 🔧 Improvements
+- The Sienci ATC profile now uses locked full kit geometry, with unused settings removed for a cleaner setup
+- The sidebar entry is now labeled "ATC Setup" so it displays fully without being cut off
