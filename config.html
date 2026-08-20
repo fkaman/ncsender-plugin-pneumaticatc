@@ -1490,7 +1490,7 @@
         <div class="pa-card">
           <h3 class="pa-card-title">Air Pressure Sensor</h3>
           <p class="pa-card-help">
-            grblHAL aux input the pressure switch is wired to. The list is read from the controller, so it only offers inputs this board actually has. Pick <em>N/A</em> if you don't have one. Pressure is read as <b>OK when the input is LOW</b> (same wiring convention Sienci's macros assume) — invert the port with <code>$370</code> if your switch reads the other way round. Checked once before the tool change starts, and again after each drawbar release: a fault pauses the job with a dialog offering Re-check or Abort.
+            grblHAL aux input the pressure switch is wired to. The list is read from the controller, so it only offers inputs this board actually has. Pick <em>N/A</em> if you don't have one. Pressure is read as <b>OK when the input is LOW</b> by default (same wiring convention Sienci's macros assume) — turn on <b>Invert</b> below if your switch reads the other way round. Checked once before the tool change starts, and again after each drawbar release: a fault pauses the job with a dialog offering Re-check or Abort.
           </p>
 
           <div class="pa-form-row">
@@ -1505,6 +1505,16 @@
             <select id="pa-adv-input-pres" class="pa-select pa-adv-pin">
               <option value="">N/A</option>
             </select>
+          </div>
+          <div class="pa-field-inline" style="margin-top: 12px;">
+            <label for="pa-adv-pres-invert">
+              Invert (pressure OK = HIGH)
+              <span class="pa-help-tip" title="Default reads pressure OK when the input is LOW. Enable this if your switch is wired the other way round, so OK reads HIGH instead. Same effect as inverting the port with $370, but scoped to this plugin's check instead of the controller-wide setting.">?</span>
+            </label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-adv-pres-invert">
+              <span class="pa-toggle-slider"></span>
+            </label>
           </div>
         </div>
 
@@ -1739,7 +1749,7 @@
     // No pressure pin by default: a fresh install must not arm a safety check
     // against a sensor that may not exist, or every tool change stops at a
     // dialog the operator never asked for. Pick the pin to turn it on.
-    generic: { clampOut: null, pres: '', tool: 0, holder: 0, locked: false },
+    generic: { clampOut: null, pres: '', presInverted: false, tool: 0, holder: 0, locked: false },
     // Sienci ATC, from their P200.macro:
     //   _tc_output_db  = 1  (drawbar solenoid — our clamp aux output)
     //   _tc_input_db   = 0  (drawbar sensor)
@@ -1749,7 +1759,7 @@
     //   _tc_input_pres = 2  (air pressure)
     // Fixed wiring on a known kit, so the fields are shown read-only.
     sienci: {
-      clampOut: '1', pres: 2, tool: 0, holder: 0, locked: true,
+      clampOut: '1', pres: 2, presInverted: false, tool: 0, holder: 0, locked: true,
       // Physical rack geometry on the Sienci kit is also fixed: rack
       // sits along +X with 90 mm between adjacent slots, holders sit
       // in fork mounts (side-entry) rather than cup drops. Sienci
@@ -1807,9 +1817,13 @@
       setAdvPin('pa-adv-input-tool', p.tool);
       setAdvPin('pa-adv-input-holder', p.holder);
       if (p.clampOut !== null) setClampAux(p.clampOut);
+      var invertEl = $('pa-adv-pres-invert');
+      if (invertEl) invertEl.checked = !!p.presInverted;
     }
 
     var locked = !!p.locked;
+    var presInvertEl = $('pa-adv-pres-invert');
+    if (presInvertEl) presInvertEl.disabled = locked;
     ['pa-adv-input-pres', 'pa-adv-input-tool', 'pa-adv-input-holder', 'pa-clamp-aux']
       .forEach(function(id) {
         var el = $(id);
@@ -2496,6 +2510,7 @@
     // Air-pressure sensor input (-1 / missing = no sensor = blank field).
     var savedPres = initialConfig.pressureInput;
     setPressurePin((typeof savedPres === 'number' && savedPres >= 0) ? savedPres : '');
+    $('pa-adv-pres-invert').checked = !!initialConfig.pressureInputInverted;
 
     // Profile last, so it can lock/overwrite the pin fields it owns. Silent:
     // restoring saved state isn't a user edit.
@@ -2600,6 +2615,7 @@
         var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
+      pressureInputInverted: $('pa-adv-pres-invert').checked,
       rackHolding: $('pa-rack-holding').value || 'Fork',
 
       orientation: segOrientation ? segOrientation.get() : 'Y',
