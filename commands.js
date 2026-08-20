@@ -358,6 +358,8 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
   const gcode = `
     G53 G0 Z${settings.zSafe}
     ${tlsApproach}
+    (Select toolsetter probe input for the measurement below)
+    G65 P5 Q1
     ${approach}
     ${preTls}
     G43.1 Z0
@@ -368,6 +370,8 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     G91 G1 Z1 F25
     G91 G0 Z5
     G90
+    (Restore primary probe input)
+    G65 P5 Q0
     ${postTls}
     #<_ofs_idx> = [#5220 * 20 + 5203]
     #<_cur_wcs_z_ofs> = #[#<_ofs_idx>]
