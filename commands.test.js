@@ -1495,6 +1495,55 @@ describe('buildToolChangeProgram — tool-seated pre-check skips unload when spi
   });
 });
 
+// Startup / stale-state scenario: software believes the spindle is empty
+// (currentTool=0 — e.g. a fresh controller boot with a tool physically
+// left loaded from before) but the tool-seated sensor disagrees. None of
+// the currentTool>0 guards above apply here, since there's nothing on
+// record to unload — this has to be caught separately, before ANY
+// unload/load motion, or the macro would auto-release the drawbar and
+// route a new rack tool into an already-occupied spindle.
+describe('buildToolChangeProgram — unexpected-tool guard catches a stale T0 belief at the start', () => {
+  const STARTUP_SETTINGS = {
+    ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1,
+    toolSeatedSensorInput: 5, toolsetter: { x: 0, y: 0 },
+    manualTool: { x: 321, y: -966 }
+  };
+
+  test('currentTool=0, sensor configured: guard runs BEFORE any unload/load motion', () => {
+    const program = motionLines(buildToolChangeProgram(STARTUP_SETTINGS, 0, 1).join('\n'));
+    const readIdx = program.indexOf('M66 P5 L0 Q0');
+    const ifIdx = program.indexOf('o205 if [#5399 EQ 1]');
+    const endIdx = program.indexOf('o205 endif');
+    const parkIdx = program.indexOf('G53 G0 X321 Y-966');
+    const unclampIdx = program.indexOf('M64 P2');
+    assert.ok(readIdx !== -1 && ifIdx !== -1 && endIdx !== -1 && parkIdx !== -1 && unclampIdx !== -1,
+      'read, if/endif wrapper, park-at-manual move and unclamp must all be present');
+    assert.ok(readIdx < ifIdx && ifIdx < parkIdx && parkIdx < unclampIdx && unclampIdx < endIdx,
+      'guard must run start-to-finish before anything else in the macro');
+    // Nothing from the rack-load sequence (routing into slot 1) should
+    // appear before the guard closes.
+    const targetSlotPos = calculateSlotPosition(STARTUP_SETTINGS, 1);
+    const firstLoadRoutingLine = motionLines(cupEntrance(targetSlotPos.engaged, { x: 0, y: 0 }, STARTUP_SETTINGS))[0];
+    const entryIdx = program.indexOf(firstLoadRoutingLine);
+    assert.ok(entryIdx === -1 || entryIdx > endIdx,
+      'rack routing for the requested load must not start until after the guard resolves');
+    assert.ok(program.join('\n').includes('UNEXPECTED_TOOL_DETECTED'), 'dialog message must be present');
+  });
+
+  test('currentTool=0, sensor unconfigured: no guard at all — byte-identical to before this feature existed', () => {
+    const NO_SENSOR = { ...STARTUP_SETTINGS, toolSeatedSensorInput: -1 };
+    const program = buildToolChangeProgram(NO_SENSOR, 0, 1).join('\n');
+    assert.ok(!program.includes('L0 Q0'), 'no immediate read when the sensor is unconfigured');
+    assert.ok(!program.includes('UNEXPECTED_TOOL_DETECTED'), 'no dialog when the sensor is unconfigured');
+  });
+
+  test('currentTool>0 (software already believes a rack tool is loaded): guard does not run — that case is covered by the other guards', () => {
+    const program = motionLines(buildToolChangeProgram(STARTUP_SETTINGS, 1, 2).join('\n'));
+    assert.ok(!program.includes('o205 if [#5399 EQ 1]'),
+      'unexpected-tool guard only applies to a T0 belief; currentTool>0 is handled by seatedPrecheckActive instead');
+  });
+});
+
 // $slotN manual navigation. Before the fix this emitted a direct
 // `G0 Z-safe / G0 X Y` pair with no keepout awareness, so a jog from an
 // origin on the wrong side of the rack would cut a diagonal straight

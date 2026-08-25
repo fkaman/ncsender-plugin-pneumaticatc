@@ -1259,6 +1259,32 @@ function wrapUnloadWithSeatedCheck(settings, unloadSection, oNum) {
   `.trim();
 }
 
+// Software may believe the spindle is empty (T0) when a tool is
+// actually still seated — most commonly a fresh controller boot with a
+// tool left loaded from before power-off. Proceeding as if empty would
+// auto-release the drawbar and route a NEW tool into an already-occupied
+// spindle. Catch it before any unload/load motion: if the sensor
+// disagrees with the T0 belief, park at the manual station and make the
+// operator clear it by hand — the software has no idea what tool this
+// is, so an automated rack return isn't safe. Independent of target
+// (rack or manual) since the mismatch has to be resolved before
+// anything else can safely happen.
+function guardUnexpectedTool(settings, oNum) {
+  if (!(settings.toolSeatedSensorInput >= 0)) return '';
+  const seatedValue = settings.toolSeatedSensorInputInverted ? 0 : 1;
+  return `
+    M66 P${settings.toolSeatedSensorInput} L0 Q0
+    o${oNum} if [#5399 EQ ${seatedValue}]
+      G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
+      G4 P0
+      (MSG, PLUGIN_PNEUMATICATC:UNEXPECTED_TOOL_DETECTED)
+      M0
+      ${auxLineFor(settings, 'unclamp')}
+      M0
+    o${oNum} endif
+  `.trim();
+}
+
 function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets = { x: 0, y: 0 }, storedTlo = 0, origin = { x: 0, y: 0 }) {
   const sourceSlot = calculateSlotPosition(settings, currentTool);
   const targetSlot = calculateSlotPosition(settings, toolNumber);
@@ -1420,6 +1446,14 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
       : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, origin, settings);
   }
 
+  // currentTool===0 means software believes the spindle is already
+  // empty — nothing above (seatedPrecheckActive et al.) checks this case
+  // since there's nothing on record to unload. Catch a stale/wrong T0
+  // belief here, before any unload/load motion below runs.
+  const unexpectedToolGuard = currentTool === 0
+    ? guardUnexpectedTool(settings, 205)
+    : '';
+
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
 
@@ -1431,6 +1465,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     M5
     ${pressureGuard(settings, 120)}
     G53 G0 Z${settings.zSafe}
+    ${unexpectedToolGuard}
     ${guardedUnloadSection}
     ${bareUnloadStatusFix}
     ${loadSection}

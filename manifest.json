@@ -60,6 +60,19 @@
       "message": "The tool-seated sensor has been re-checked twice and still isn't reporting seated.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The tool change will carry on without confirming the tool is properly seated, which risks the tool coming loose or falling during the job.<br><br>Click <em>\"Abort\"</em> to stop the tool change, which is the safe choice.",
       "continueLabel": "Continue anyway"
     },
+    "UNEXPECTED_TOOL_DETECTED": {
+      "title": "Unexpected Tool Detected",
+      "message": "The spindle sensor is reporting a tool present, but the software believes the spindle is empty — most likely a fresh controller boot with a tool still loaded from before power-off. Click <em>\"Release\"</em> to open the drawbar, remove the tool by hand, then click <em>\"Continue\"</em> to proceed with the tool change.",
+      "continueLabel": "Continue",
+      "buttons": [
+        {
+          "label": "Release",
+          "gcode": [
+            "~"
+          ]
+        }
+      ]
+    },
     "FAILED_UNLOAD_TOOL": {
       "title": "Unload Failed",
       "message": "Failed to unload {toolNumber}. Please manually remove the bit, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
