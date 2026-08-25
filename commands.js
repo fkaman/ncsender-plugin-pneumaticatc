@@ -197,6 +197,22 @@ const buildInitialConfig = (raw = {}) => {
     // Flips the M66 wait mode (L3 vs L4) for switches wired opposite the
     // documented LOW-is-OK convention. No effect when pressureInput is -1.
     pressureInputInverted: !!raw.pressureInputInverted,
+    // grblHAL aux INPUT reporting the drawbar's released state, read right
+    // after the collet unclamps. -1 = no sensor wired, which disables the
+    // check. Independent of toolSeatedSensorInput below — separate
+    // physical sensors, separately configurable.
+    drawbarSensorInput: sanitizeAuxInput(raw.drawbarSensorInput),
+    // Flips the M66 wait mode (L3 vs L4) for the drawbar sensor. Default
+    // convention is HIGH-is-OK (released). No effect when
+    // drawbarSensorInput is -1.
+    drawbarSensorInputInverted: !!raw.drawbarSensorInputInverted,
+    // grblHAL aux INPUT reporting the tool-seated state, read right after
+    // the collet clamps. -1 = no sensor wired, which disables the check.
+    toolSeatedSensorInput: sanitizeAuxInput(raw.toolSeatedSensorInput),
+    // Flips the M66 wait mode (L3 vs L4) for the tool-seated sensor.
+    // Default convention is HIGH-is-OK (seated). No effect when
+    // toolSeatedSensorInput is -1.
+    toolSeatedSensorInputInverted: !!raw.toolSeatedSensorInputInverted,
 
     dialogBehavior: {
       countdownSec: toFiniteNumber(raw.dialogBehavior?.countdownSec, 5),
@@ -939,37 +955,33 @@ function auxLineFor(settings, action) {
 
 // === Safety sensors ===
 //
-// Air pressure. The read itself mirrors Sienci's P501 helper:
-// `M66 P<n> L4 Q0.01` waits for the pressure input to read LOW with a 10ms
-// timeout, and a timeout (#5399 == -1) is the fault — pressure OK is the LOW
-// state on their wiring. `pressureInputInverted` flips the wait mode to L3
-// (WAIT_MODE_HIGH) for switches wired the other way round, so the operator
-// doesn't have to touch the controller's own port-invert mask ($370) to
-// match this plugin's convention.
+// Shared shape for every M66-based sensor check below (pressure, drawbar
+// released, tool seated). The read itself mirrors Sienci's P501 helper:
+// `M66 P<n> L<mode> Q0.01` waits (10ms timeout) for the input to reach the
+// wait mode's state, and a timeout (#5399 == -1) is the fault.
 //
-// P501 parks in a `while` loop until pressure returns, and that's the one
-// thing we can't copy: grblHAL only allows o-word flow control when the
+// P501 parks in a `while` loop until the condition clears, and that's the
+// one thing we can't copy: grblHAL only allows o-word flow control when the
 // program is read from a file on its own filesystem. Theirs is invoked as
 // G65 P501 from the SD card; ours is streamed line by line, where a `while`
 // answers error:80 ("Flow statement only allowed in filesystem macro") and
 // takes the rest of the block down with it. Plain IF is fine streamed.
 //
 // So the retry is unrolled instead: read, and if it faults show the dialog
-// and M0. The operator fixes the air and hits Re-check, which resumes into
-// another read — a genuine re-verification, not an override. Three passes,
-// and if pressure still hasn't returned the last dialog says plainly that
+// and M0. The operator fixes the problem and hits Re-check, which resumes
+// into another read — a genuine re-verification, not an override. Three
+// passes, and if it still hasn't cleared the last dialog says plainly that
 // continuing proceeds unverified, so nobody clicks through it believing the
 // check passed.
 //
-// `oNum` is the base for this guard's o-word blocks; each guard site needs
-// its own base, spaced far enough apart not to collide.
-function pressureGuard(settings, oNum) {
-  if (settings.pressureInput < 0) return '';
-  const waitMode = settings.pressureInputInverted ? 3 : 4; // L3=wait-HIGH, L4=wait-LOW
-  const read = `M66 P${settings.pressureInput} L${waitMode} Q0.01\n    G4 P0.1`;
+// `oNum` is the base for this guard's o-word blocks; each call site needs
+// its own base, spaced far enough apart not to collide within one macro.
+function sensorGuard(input, waitMode, faultMsg, unverifiedMsg, oNum) {
+  if (!(input >= 0)) return ''; // covers -1 (no sensor) and undefined/NaN alike
+  const read = `M66 P${input} L${waitMode} Q0.01\n    G4 P0.1`;
   const retry = (n) => `
     o${n} if [#5399 EQ -1]
-      (MSG, PLUGIN_PNEUMATICATC:PRESSURE_FAULT)
+      (MSG, PLUGIN_PNEUMATICATC:${faultMsg})
       M0
       ${read}
     o${n} endif`;
@@ -978,10 +990,40 @@ function pressureGuard(settings, oNum) {
     ${retry(oNum).trim()}
     ${retry(oNum + 1).trim()}
     o${oNum + 2} if [#5399 EQ -1]
-      (MSG, PLUGIN_PNEUMATICATC:PRESSURE_FAULT_UNVERIFIED)
+      (MSG, PLUGIN_PNEUMATICATC:${unverifiedMsg})
       M0
     o${oNum + 2} endif
   `.trim();
+}
+
+// Air pressure OK is the LOW state on Sienci's wiring convention.
+// `pressureInputInverted` flips the wait mode to L3 (WAIT_MODE_HIGH) for
+// switches wired the other way round, so the operator doesn't have to
+// touch the controller's own port-invert mask ($370) to match this
+// plugin's convention.
+function pressureGuard(settings, oNum) {
+  const waitMode = settings.pressureInputInverted ? 3 : 4; // L3=wait-HIGH, L4=wait-LOW
+  return sensorGuard(settings.pressureInput, waitMode, 'PRESSURE_FAULT', 'PRESSURE_FAULT_UNVERIFIED', oNum);
+}
+
+// Drawbar sensor at the spindle, read right after the collet unclamps.
+// OK (released) is the HIGH state by default; drawbarSensorInputInverted
+// flips the wait mode to L4 (WAIT_MODE_LOW) for switches wired the other
+// way round. Independent pin from the tool-seated sensor below — on kits
+// where it's physically the same sensor, both settings just get pointed
+// at the same pin.
+function drawbarReleasedGuard(settings, oNum) {
+  const waitMode = settings.drawbarSensorInputInverted ? 4 : 3; // L3=wait-HIGH, L4=wait-LOW
+  return sensorGuard(settings.drawbarSensorInput, waitMode, 'DRAWBAR_FAULT', 'DRAWBAR_FAULT_UNVERIFIED', oNum);
+}
+
+// Tool-seated sensor at the spindle, read right after the collet clamps.
+// OK (seated) is the HIGH state by default; toolSeatedSensorInputInverted
+// flips the wait mode to L4 (WAIT_MODE_LOW) for switches wired the other
+// way round.
+function toolSeatedGuard(settings, oNum) {
+  const waitMode = settings.toolSeatedSensorInputInverted ? 4 : 3; // L3=wait-HIGH, L4=wait-LOW
+  return sensorGuard(settings.toolSeatedSensorInput, waitMode, 'TOOL_FAULT', 'TOOL_FAULT_UNVERIFIED', oNum);
 }
 
 function slideFeedrate(settings) {
@@ -1022,6 +1064,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
       ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
       ${pressureGuard(settings, 130)}
+      ${drawbarReleasedGuard(settings, 160)}
       G53 G0 Z${settings.zSafe}
       M61 Q0
     `.trim();
@@ -1036,8 +1079,45 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
     ${pressureGuard(settings, 140)}
+    ${drawbarReleasedGuard(settings, 170)}
     G53 G0 Z${settings.zSafe}
     M61 Q0
+  `.trim();
+}
+
+// After a load's clamp step, verify what actually ended up in the
+// spindle before telling the host it succeeded. Two sensing modes:
+//   * 'guard' — reuse toolSeatedGuard's own trailing #5399 (the final
+//     read after its retries/dialog settled: the confirmed value on
+//     success, -1 if the operator continued past an unresolved fault).
+//     No extra read needed — used for the fully-automated rack loads.
+//   * 'immediate' — a fresh, non-blocking M66 L0 read with no dialog of
+//     its own. Used for manual loads: the operator already confirms
+//     physically via the Clamp/Continue buttons, so this only corrects
+//     the reported status rather than adding a second pause.
+// Tool number == slot number in this plugin's model, so `M61 Q0` here is
+// also the correction for slot occupancy — the tool never actually left
+// its slot if the sensor couldn't confirm it landed in the spindle.
+// tlsRoutine is gated the same way: probing the toolsetter with nothing
+// in the spindle produces a meaningless (or actively wrong) TLO.
+// No-op (plain, unconditional M61 + tlsRoutine, exactly as before this
+// feature existed) when toolSeatedSensorInput isn't configured.
+function reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum, mode) {
+  if (settings.toolSeatedSensorInput < 0) {
+    return `M61 Q${toolNumber}\n    ${tlsRoutine}`.trim();
+  }
+  const seatedValue = settings.toolSeatedSensorInputInverted ? 0 : 1;
+  const openCondition = mode === 'immediate'
+    ? `M66 P${settings.toolSeatedSensorInput} L0 Q0\n    o${oNum} if [#5399 EQ ${seatedValue}]`
+    : `o${oNum} if [#5399 NE -1]`;
+  return `
+    ${openCondition}
+      M61 Q${toolNumber}
+      ${tlsRoutine}
+    o${oNum} else
+      (Tool not confirmed seated - reporting spindle empty)
+      M61 Q0
+    o${oNum} endif
   `.trim();
 }
 
@@ -1068,8 +1148,7 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       M0
       ${auxLineFor(settings, 'clamp')}
       M0
-      M61 Q${toolNumber}
-      ${tlsRoutine}
+      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 210, 'immediate')}
     `.trim();
   }
 
@@ -1082,7 +1161,8 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}
       G4 P0.5
-      ${pressureGuard(settings, 150)}`;
+      ${pressureGuard(settings, 150)}
+      ${drawbarReleasedGuard(settings, 155)}`;
 
   // Approach-to-engaged sequence differs by chain context AND hold style:
   //   * chainedFromRack=true (Tm→Tn swap, fork or cup): machine is already
@@ -1118,9 +1198,9 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G4 P0.5
       ${auxLineFor(settings, 'clamp')}${drawbarSeat}
       G4 P0.5
+      ${toolSeatedGuard(settings, 180)}
       G53 G0 Z${settings.zSafe}
-      M61 Q${toolNumber}
-      ${tlsRoutine}
+      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 185, 'guard')}
     `.trim();
   }
 
@@ -1131,10 +1211,10 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     G4 P0.5
     ${auxLineFor(settings, 'clamp')}${drawbarSeat}
     G4 P0.5
+    ${toolSeatedGuard(settings, 190)}
     G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
     G53 G0 Z${settings.zSafe}
-    M61 Q${toolNumber}
-    ${tlsRoutine}
+    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 195, 'guard')}
   `.trim();
 }
 
@@ -1151,8 +1231,27 @@ function buildManualSwap(settings, toolNumber, tlsRoutine) {
     M0
     ${auxLineFor(settings, 'clamp')}
     M0
-    M61 Q${toolNumber}
-    ${tlsRoutine}
+    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 215, 'immediate')}
+  `.trim();
+}
+
+// Skip the unload motion entirely when the tool-seated sensor shows the
+// spindle is already empty — e.g. the operator pulled the tool by hand,
+// or a previous swap left it empty despite the software's currentTool
+// state. Reads the sensor once, immediately (L0 — raw pin value into
+// #5399, no wait, no fault semantics; this is a state query, not a
+// pass/fail check like the other guards), then wraps the whole unload
+// block in a runtime IF so nothing moves toward a slot that has no tool
+// to drop. `oNum` must not collide with any other guard's o-word base
+// used within the same macro.
+function wrapUnloadWithSeatedCheck(settings, unloadSection, oNum) {
+  if (!unloadSection) return unloadSection;
+  const seatedValue = settings.toolSeatedSensorInputInverted ? 0 : 1; // HIGH(1)=seated by default
+  return `
+    M66 P${settings.toolSeatedSensorInput} L0 Q0
+    o${oNum} if [#5399 EQ ${seatedValue}]
+      ${unloadSection}
+    o${oNum} endif
   `.trim();
 }
 
@@ -1213,7 +1312,26 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // Otherwise: any unload path — rack or manual — leaves the drawbar
   // released, and a manual load that follows uses the CLAMP dialog.
   const isManualToManual = currentTool > settings.slots && toolNumber > settings.slots;
-  const drawbarAlreadyReleased = currentTool > 0;
+
+  // Whether the unload below might get skipped at RUNTIME by the
+  // tool-seated pre-check (see wrapUnloadWithSeatedCheck). Only meaningful
+  // for a real rack-tool unload feeding a real load — a bare unload
+  // (toolNumber===0) or a manual source isn't in scope here.
+  const seatedPrecheckActive = !isManualToManual
+    && currentTool > 0 && currentTool <= settings.slots
+    && toolNumber > 0
+    && settings.toolSeatedSensorInput >= 0;
+
+  // Both of these are baked into the STATIC gcode below, but the unload
+  // they describe may not actually run at runtime when the pre-check is
+  // active — so neither assumption is safe to make in that case. Forcing
+  // both off makes load always take the fully-routed entrance and always
+  // do its own release-first, which is correct whichever way the runtime
+  // branch goes (a few extra moves + a release dwell when the tool WAS
+  // there, in exchange for not crashing when it wasn't). Every install
+  // without this sensor configured is unaffected — seatedPrecheckActive
+  // is false and both keep their original values.
+  const drawbarAlreadyReleased = currentTool > 0 && !seatedPrecheckActive;
   const unloadSection = isManualToManual
     ? ''
     : buildUnloadTool(settings, currentTool, sourceSlot, origin);
@@ -1227,11 +1345,16 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // machine at slot engaged, Z-safe, after unload.
   const chainedFromRack = !isManualToManual
     && currentTool > 0
-    && currentTool <= settings.slots;
+    && currentTool <= settings.slots
+    && !seatedPrecheckActive;
 
   const loadSection = isManualToManual
     ? buildManualSwap(settings, toolNumber, tlsRoutine)
     : buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased, origin, chainedFromRack);
+
+  const guardedUnloadSection = seatedPrecheckActive
+    ? wrapUnloadWithSeatedCheck(settings, unloadSection, 200)
+    : unloadSection;
 
   // Tx → T0 leaves the drawbar released after the unload (there is no
   // load section to re-clamp). Restore the fail-safe clamped state so
@@ -1274,7 +1397,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     M5
     ${pressureGuard(settings, 120)}
     G53 G0 Z${settings.zSafe}
-    ${unloadSection}
+    ${guardedUnloadSection}
     ${loadSection}
     G53 G0 Z${settings.zSafe}
     ${finalizeUnclamped}
@@ -1504,6 +1627,7 @@ export {
   rackEntrance, rackExit, cupEntrance, cupExit, tlsEntrance, tlsExit,
   computeKeepoutZone, slotEntryPoint, slotApproachPoint,
   buildLoadTool, buildUnloadTool, buildSlotNav, calculateSlotPosition,
+  buildToolChangeProgram,
   gateSpindleUnclamp,
   createToolLengthSetRoutine, createToolLengthSetProgram,
   routePoint, pickEntryEdge,

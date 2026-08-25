@@ -39,6 +39,7 @@ import {
   buildUnloadTool,
   buildSlotNav,
   calculateSlotPosition,
+  buildToolChangeProgram,
   gateSpindleUnclamp,
   createToolLengthSetRoutine,
   createToolLengthSetProgram,
@@ -1256,6 +1257,187 @@ describe('buildLoadTool — drawbar offset compensation (regression)', () => {
   });
 });
 
+// Drawbar / tool-seated sensor checks. Two independent physical sensors
+// (unlike pressure, which shares one pin across all its checks): the
+// drawbar sensor is read right after the collet unclamps (must report
+// released), the tool-seated sensor right after it clamps (must report
+// seated). Each has its own pin and its own invert toggle — a kit that
+// happens to wire both to the same physical sensor just points both
+// settings at that pin. Both default to OK=HIGH; each is skipped
+// independently when its own input is unset (-1), same as pressure — an
+// install without either sensor wired must see byte-identical output to
+// before this feature existed.
+describe('drawbar / tool-seated sensor guards', () => {
+  const SENSORS = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: 3, toolSeatedSensorInput: 5 };
+  const FORK_SENSORS = { ...CUP_RACK, rackHolding: 'Fork', pressureInput: -1, drawbarSensorInput: 3, toolSeatedSensorInput: 5 };
+
+  test('neither sensor configured (-1): unload and load emit no M66 lines at all', () => {
+    const NONE = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: -1 };
+    const slotPos = calculateSlotPosition(NONE, 1);
+    const unload = buildUnloadTool(NONE, 1, slotPos, { x: 60, y: 120 });
+    const load = buildLoadTool(NONE, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    assert.ok(!unload.includes('M66'), 'unload must not reference M66 when drawbarSensorInput is unset');
+    assert.ok(!load.includes('M66'), 'load must not reference M66 when neither sensor is set');
+  });
+
+  test('only drawbar sensor configured: unload checks it, load never mentions TOOL_FAULT', () => {
+    const ONLY_DRAWBAR = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: 3, toolSeatedSensorInput: -1 };
+    const slotPos = calculateSlotPosition(ONLY_DRAWBAR, 1);
+    const unload = buildUnloadTool(ONLY_DRAWBAR, 1, slotPos, { x: 60, y: 120 });
+    const load = buildLoadTool(ONLY_DRAWBAR, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    assert.ok(unload.includes('DRAWBAR_FAULT'), 'unload should still verify the drawbar sensor');
+    assert.ok(!load.includes('TOOL_FAULT'), 'tool-seated check must stay off when its own input is unconfigured');
+  });
+
+  test('only tool-seated sensor configured: load checks it, unload never mentions DRAWBAR_FAULT', () => {
+    const ONLY_SEATED = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5 };
+    const slotPos = calculateSlotPosition(ONLY_SEATED, 1);
+    const unload = buildUnloadTool(ONLY_SEATED, 1, slotPos, { x: 60, y: 120 });
+    const load = buildLoadTool(ONLY_SEATED, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    assert.ok(!unload.includes('DRAWBAR_FAULT'), 'drawbar check must stay off when its own input is unconfigured');
+    assert.ok(load.includes('TOOL_FAULT'), 'load should still verify the tool-seated sensor');
+  });
+
+  test('Cup unload: drawbar check (M66 P3 L3, wait-HIGH by default) fires after unclamp, before Z-safe retract', () => {
+    const slotPos = calculateSlotPosition(SENSORS, 1);
+    const gcode = buildUnloadTool(SENSORS, 1, slotPos, { x: 60, y: 120 });
+    const lines = motionLines(gcode);
+    const unclampIdx = lines.indexOf('M64 P2');
+    const readIdx = lines.indexOf('M66 P3 L3 Q0.01');
+    const retractIdx = lines.indexOf(`G53 G0 Z${SENSORS.zSafe}`);
+    assert.ok(unclampIdx !== -1 && readIdx !== -1 && retractIdx !== -1, 'unclamp, sensor read and retract must all be present');
+    assert.ok(readIdx > unclampIdx && readIdx < retractIdx,
+      `drawbar read must fire after unclamp and before Z-safe retract — got unclampIdx=${unclampIdx}, readIdx=${readIdx}, retractIdx=${retractIdx}`);
+    assert.ok(gcode.includes('(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAULT)'), 'fault dialog message must be present');
+    assert.ok(gcode.includes('(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAULT_UNVERIFIED)'), 'unverified dialog message must be present');
+  });
+
+  test('Fork unload: same drawbar check fires after unclamp, before Z-safe retract', () => {
+    const slotPos = calculateSlotPosition(FORK_SENSORS, 1);
+    const gcode = buildUnloadTool(FORK_SENSORS, 1, slotPos, { x: 60, y: 120 });
+    const lines = motionLines(gcode);
+    const unclampIdx = lines.indexOf('M64 P2');
+    const readIdx = lines.indexOf('M66 P3 L3 Q0.01');
+    const retractIdx = lines.indexOf(`G53 G0 Z${FORK_SENSORS.zSafe}`);
+    assert.ok(unclampIdx !== -1 && readIdx !== -1 && retractIdx !== -1, 'unclamp, sensor read and retract must all be present');
+    assert.ok(readIdx > unclampIdx && readIdx < retractIdx, 'drawbar read must fire after unclamp and before Z-safe retract');
+  });
+
+  test('Cup load: tool-seated check (M66 P5 L3, wait-HIGH by default) fires after clamp, before Z-safe retract', () => {
+    const slotPos = calculateSlotPosition(SENSORS, 1);
+    const gcode = buildLoadTool(SENSORS, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    const lines = motionLines(gcode);
+    const clampIdx = lines.indexOf('M65 P2');
+    const readIdx = lines.indexOf('M66 P5 L3 Q0.01');
+    const retractIdx = lines.indexOf(`G53 G0 Z${SENSORS.zSafe}`);
+    assert.ok(clampIdx !== -1 && readIdx !== -1 && retractIdx !== -1, 'clamp, sensor read and retract must all be present');
+    assert.ok(readIdx > clampIdx && readIdx < retractIdx,
+      `tool-seated read must fire after clamp and before Z-safe retract — got clampIdx=${clampIdx}, readIdx=${readIdx}, retractIdx=${retractIdx}`);
+    assert.ok(gcode.includes('(MSG, PLUGIN_PNEUMATICATC:TOOL_FAULT)'), 'fault dialog message must be present');
+    assert.ok(gcode.includes('(MSG, PLUGIN_PNEUMATICATC:TOOL_FAULT_UNVERIFIED)'), 'unverified dialog message must be present');
+  });
+
+  test('Fork load: tool-seated check fires after clamp, before the slide-out G1', () => {
+    const slotPos = calculateSlotPosition(FORK_SENSORS, 1);
+    const gcode = buildLoadTool(FORK_SENSORS, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    const lines = motionLines(gcode);
+    const clampIdx = lines.indexOf('M65 P2');
+    const readIdx = lines.indexOf('M66 P5 L3 Q0.01');
+    const slideIdx = lines.findIndex(l => /^G53 G1 X/.test(l));
+    assert.ok(clampIdx !== -1 && readIdx !== -1 && slideIdx !== -1, 'clamp, sensor read and slide-out must all be present');
+    assert.ok(readIdx > clampIdx && readIdx < slideIdx,
+      `tool-seated read must fire after clamp and before the slide-out — got clampIdx=${clampIdx}, readIdx=${readIdx}, slideIdx=${slideIdx}`);
+  });
+
+  test('invert toggles are independent: drawbar can flip to L4 while tool-seated stays L3', () => {
+    const MIXED = { ...SENSORS, drawbarSensorInputInverted: true };
+    const slotPos = calculateSlotPosition(MIXED, 1);
+    const unload = buildUnloadTool(MIXED, 1, slotPos, { x: 60, y: 120 });
+    // drawbarAlreadyReleased=true isolates the tool-seated read from
+    // releaseFirst's own drawbar read in the load half.
+    const load = buildLoadTool(MIXED, 1, slotPos, '', /* drawbarAlreadyReleased */ true, { x: 60, y: 120 }, false);
+    assert.ok(unload.includes('M66 P3 L4 Q0.01'), 'drawbarSensorInputInverted should flip the drawbar check to wait-LOW (L4)');
+    assert.ok(!unload.includes('M66 P3 L3 Q0.01'), 'drawbar check should no longer wait-HIGH (L3)');
+    assert.ok(load.includes('M66 P5 L3 Q0.01'), 'tool-seated check should stay wait-HIGH (L3) — unaffected by the drawbar toggle');
+  });
+
+  test('T0 → T1 (empty spindle): releaseFirst also runs the drawbar check', () => {
+    // drawbarAlreadyReleased=false forces buildLoadTool's own unclamp
+    // before descending onto the shank — that unclamp deserves the same
+    // verification as the one in buildUnloadTool.
+    const slotPos = calculateSlotPosition(SENSORS, 1);
+    const gcode = buildLoadTool(SENSORS, 1, slotPos, '', /* drawbarAlreadyReleased */ false, { x: 60, y: 120 }, false);
+    assert.ok(gcode.includes('(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAULT)'),
+      'T0 -> T1 load must verify the drawbar released before descending onto the shank');
+  });
+
+  test('chained Tm -> Tn swap (drawbarAlreadyReleased=true): load does NOT re-run the drawbar check', () => {
+    // The unload half of the swap already verified released; re-verifying
+    // in the load half would just be checking the same physical state twice.
+    const slotPos = calculateSlotPosition(SENSORS, 2);
+    const gcode = buildLoadTool(SENSORS, 2, slotPos, '', /* drawbarAlreadyReleased */ true, { x: 60, y: 120 }, true);
+    assert.ok(!gcode.includes('DRAWBAR_FAULT'), 'chained load must not duplicate the unload half\'s drawbar check');
+    assert.ok(gcode.includes('TOOL_FAULT'), 'chained load must still verify the new tool seated after clamping');
+  });
+});
+
+// Tool-seated pre-check: when the sensor shows the spindle is already
+// empty (operator pulled the tool by hand, or a prior swap left it empty
+// despite currentTool>0 in software), skip the unload motion entirely at
+// runtime rather than routing into a slot to drop a tool that isn't
+// there. Only engages for a real rack-tool -> real-tool swap when
+// toolSeatedSensorInput is configured — every other case (sensor unset,
+// bare unload, manual source) must see unchanged output.
+describe('buildToolChangeProgram — tool-seated pre-check skips unload when spindle already empty', () => {
+  const PROGRAM_SETTINGS = {
+    ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1,
+    toolSeatedSensorInput: 5, toolsetter: { x: 0, y: 0 }
+  };
+
+  test('no toolSeatedSensorInput configured: normal Tm -> Tn swap keeps the chained par-walk shortcut, no immediate read', () => {
+    const NO_SENSOR = { ...PROGRAM_SETTINGS, toolSeatedSensorInput: -1 };
+    const program = motionLines(buildToolChangeProgram(NO_SENSOR, 1, 2).join('\n'));
+    assert.ok(!program.some(l => l.includes('L0 Q0')), 'no immediate read should appear when the sensor is unconfigured');
+    assert.ok(program.includes('G53 G0 X-115 Y120'), 'chained par-walk to slot 2 engaged should still be the shortcut used');
+  });
+
+  test('sensor configured: Tm -> Tn swap wraps unload in an immediate-read runtime IF (o200)', () => {
+    const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 1, 2).join('\n'));
+    const readIdx = program.indexOf('M66 P5 L0 Q0');
+    const ifIdx = program.indexOf('o200 if [#5399 EQ 1]');
+    const endIdx = program.indexOf('o200 endif');
+    const unclampIdx = program.indexOf('M64 P2');
+    assert.ok(readIdx !== -1 && ifIdx !== -1 && endIdx !== -1 && unclampIdx !== -1,
+      'immediate read, if/endif wrapper and the unload unclamp must all be present');
+    assert.ok(readIdx < ifIdx, 'the sensor read must happen before the if that branches on it');
+    assert.ok(ifIdx < unclampIdx && unclampIdx < endIdx,
+      `unload's unclamp must sit inside the o200 if/endif wrapper — got ifIdx=${ifIdx}, unclampIdx=${unclampIdx}, endIdx=${endIdx}`);
+  });
+
+  test('sensor configured: load no longer takes the chained par-walk shortcut (falls back to the safe routed entrance)', () => {
+    const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 1, 2).join('\n'));
+    assert.ok(!program.includes('G53 G0 X-115 Y120'),
+      'the one-move par-walk shortcut must not appear — load cannot assume the unload above actually ran at runtime');
+  });
+
+  test('sensor configured: load runs its own release-first (two independent unclamp fires, not one)', () => {
+    const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 1, 2).join('\n'));
+    const unclampCount = program.filter(l => l === 'M64 P2').length;
+    assert.equal(unclampCount, 2,
+      'expected one unclamp inside the guarded unload plus a second, independent one from load\'s own release-first');
+  });
+
+  test('sensor configured but toolNumber=0 (bare unload, nothing to load): pre-check stays inactive', () => {
+    const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 1, 0).join('\n'));
+    assert.ok(!program.some(l => l.includes('L0 Q0')), 'pre-check only makes sense when a load will follow the unload');
+  });
+
+  test('sensor configured but currentTool=0 (nothing to unload): pre-check stays inactive', () => {
+    const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 0, 2).join('\n'));
+    assert.ok(!program.some(l => l.includes('L0 Q0')), 'pre-check only makes sense when there is an unload to guard');
+  });
+});
+
 // $slotN manual navigation. Before the fix this emitted a direct
 // `G0 Z-safe / G0 X Y` pair with no keepout awareness, so a jog from an
 // origin on the wrong side of the rack would cut a diagonal straight
@@ -1457,6 +1639,84 @@ describe('buildLoadTool — T0 → manual tool auto-releases drawbar (no Release
     assert.equal(unclampCount, 0,
       'drawbar already open — must NOT emit another unclamp before the dialog');
     assert.ok(gcode.includes('MANUAL_CLAMP_TOOL'), 'dialog is still MANUAL_CLAMP_TOOL');
+  });
+});
+
+// reportLoadOutcome: after a load's clamp step, don't blindly tell the
+// host the load succeeded. Tool number == slot number in this plugin's
+// model, so a corrected M61 is also the correction for slot occupancy —
+// the tool never left its slot if the sensor never confirmed it landed
+// in the spindle. Rack loads reuse toolSeatedGuard's own trailing
+// #5399 (no extra read); manual loads get a fresh, non-blocking
+// immediate read since the operator already supervises via Clamp/Continue.
+describe('reportLoadOutcome — corrects M61 (and gates TLS) when the tool-seated sensor disagrees', () => {
+  const CUP_OUTCOME = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5 };
+  const FORK_OUTCOME = { ...CUP_RACK, rackHolding: 'Fork', pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5 };
+  const SAMPLE_TLS = '(sample tls routine)';
+
+  test('Cup rack load, sensor unconfigured: plain M61 + tlsRoutine, no runtime branch', () => {
+    const NO_SENSOR = { ...CUP_OUTCOME, toolSeatedSensorInput: -1 };
+    const slotPos = calculateSlotPosition(NO_SENSOR, 1);
+    const gcode = buildLoadTool(NO_SENSOR, 1, slotPos, SAMPLE_TLS, false, { x: 60, y: 120 }, false);
+    assert.ok(gcode.includes('M61 Q1'), 'must still report the loaded tool number');
+    assert.ok(gcode.includes(SAMPLE_TLS), 'tlsRoutine must still run');
+    assert.ok(!/o\d+ if/.test(gcode), 'no runtime branch should appear when the sensor is unconfigured');
+  });
+
+  test('Cup rack load, sensor configured: wraps M61 + tlsRoutine in an o185 if/else keyed on the guard\'s final read', () => {
+    const slotPos = calculateSlotPosition(CUP_OUTCOME, 1);
+    const gcode = buildLoadTool(CUP_OUTCOME, 1, slotPos, SAMPLE_TLS, false, { x: 60, y: 120 }, false);
+    const lines = motionLines(gcode);
+    const ifIdx = lines.indexOf('o185 if [#5399 NE -1]');
+    const elseIdx = lines.indexOf('o185 else');
+    const endIdx = lines.indexOf('o185 endif');
+    const successM61 = lines.indexOf('M61 Q1');
+    const failM61 = lines.indexOf('M61 Q0');
+    assert.ok(ifIdx !== -1 && elseIdx !== -1 && endIdx !== -1, 'if/else/endif must all be present');
+    assert.ok(ifIdx < successM61 && successM61 < elseIdx, 'M61 Q<toolNumber> must sit in the success (if) branch');
+    assert.ok(elseIdx < failM61 && failM61 < endIdx, 'M61 Q0 must sit in the failure (else) branch');
+    const tlsPos = gcode.indexOf(SAMPLE_TLS);
+    const elseCommentPos = gcode.indexOf('(Tool not confirmed seated');
+    assert.ok(tlsPos !== -1 && elseCommentPos !== -1 && tlsPos < elseCommentPos,
+      'tlsRoutine must be positioned inside the success branch, before the failure branch starts');
+  });
+
+  test('Fork rack load, sensor configured: same wrapper at o195', () => {
+    const slotPos = calculateSlotPosition(FORK_OUTCOME, 1);
+    const gcode = buildLoadTool(FORK_OUTCOME, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    assert.ok(gcode.includes('o195 if [#5399 NE -1]'));
+    assert.ok(gcode.includes('o195 else'));
+    assert.ok(gcode.includes('o195 endif'));
+  });
+
+  test('manual load (toolNumber > slots), sensor configured: immediate read + o210 if/else, no extra dialog', () => {
+    const MANUAL = { ...CUP_OUTCOME, manualTool: { x: 321, y: -966 } };
+    const slotPos = calculateSlotPosition(MANUAL, 4);
+    const gcode = buildLoadTool(MANUAL, 4, slotPos, '', false, { x: 0, y: 0 }, false);
+    assert.ok(gcode.includes('M66 P5 L0 Q0'), 'manual load must do its own immediate (non-blocking) read');
+    assert.ok(gcode.includes('o210 if [#5399 EQ 1]'));
+    assert.ok(gcode.includes('M61 Q4'));
+    assert.ok(gcode.includes('M61 Q0'));
+    const msgCount = (gcode.match(/\(MSG,/g) || []).length;
+    assert.equal(msgCount, 1, 'manual load should not gain a second blocking dialog for this check');
+  });
+
+  test('manual load, sensor unconfigured: unchanged, no immediate read', () => {
+    const MANUAL_NO_SENSOR = { ...CUP_OUTCOME, toolSeatedSensorInput: -1, manualTool: { x: 321, y: -966 } };
+    const slotPos = calculateSlotPosition(MANUAL_NO_SENSOR, 4);
+    const gcode = buildLoadTool(MANUAL_NO_SENSOR, 4, slotPos, '', false, { x: 0, y: 0 }, false);
+    assert.ok(!gcode.includes('L0 Q0'), 'no immediate read when the sensor is unconfigured');
+    assert.ok(gcode.includes('M61 Q4'));
+  });
+
+  test('manual -> manual swap, sensor configured: same immediate-read pattern at o215', () => {
+    const MANUAL_SWAP_SETTINGS = {
+      ...CUP_OUTCOME, manualTool: { x: 321, y: -966 }, toolsetter: { x: 0, y: 0 }
+    };
+    const program = buildToolChangeProgram(MANUAL_SWAP_SETTINGS, 4, 5).join('\n');
+    assert.ok(program.includes('o215 if [#5399 EQ 1]'));
+    assert.ok(program.includes('M61 Q5'));
+    assert.ok(program.includes('M61 Q0'));
   });
 });
 

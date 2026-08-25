@@ -1482,8 +1482,8 @@
             <path d="M12 16h.01"/>
           </svg>
           <div>
-            <strong>Air Pressure is live. The tool sensors are still a preview.</strong>
-            The pressure input is read with <code>M66</code> before the tool change starts and again after every drawbar release — a fault pauses the job with a dialog instead of moving on. Tool Sensor and Tool Holder are recorded here but nothing reads them yet.
+            <strong>Air Pressure, Drawbar Sensor and Tool Seated Sensor are live. Tool Holder is still a preview.</strong>
+            Each sensor is read with <code>M66</code> at its own point in the sequence — pressure before the tool change starts and after every drawbar release, the drawbar sensor right after the collet unclamps, the tool-seated sensor right after it clamps. A fault on any of them pauses the job with a dialog instead of moving on. Tool Holder is recorded here but nothing reads it yet.
           </div>
         </div>
 
@@ -1518,26 +1518,70 @@
           </div>
         </div>
 
-        <div class="pa-card pa-advanced-preview" id="pa-adv-sensors">
-          <h3 class="pa-card-title">Tool Sensors<sup class="pa-title-sup">Coming soon</sup></h3>
+        <div class="pa-card" id="pa-adv-drawbar-card">
+          <h3 class="pa-card-title">Drawbar Sensor</h3>
           <p class="pa-card-help">
-            Inputs the tool-change sequence will read once these checks ship. Nothing reads them yet — the pins are recorded now so the wiring can be set up ahead of time.
+            grblHAL aux input reporting the drawbar's released state at the spindle. Read right after the collet unclamps — a fault pauses the job with a dialog offering Re-check or Abort, same as Air Pressure. Independent of the Tool Seated sensor below; point both at the same pin if your kit uses one physical sensor for both.
           </p>
 
           <div class="pa-form-row">
-            <label class="pa-form-label" for="pa-adv-input-tool">
-              Tool Sensor
-              <span class="pa-help-tip" title="Reports drawbar / tool state at the spindle. On the Sienci kit this is the spindle proximity sensor, aux input P0.">?</span>
+            <label class="pa-form-label" for="pa-adv-input-drawbar">
+              Drawbar Sensor
+              <span class="pa-help-tip" title="Reports the drawbar's released state at the spindle. On the Sienci kit this is the spindle proximity sensor, aux input P0.">?</span>
             </label>
-            <select id="pa-adv-input-tool" class="pa-select pa-adv-pin" disabled>
+            <select id="pa-adv-input-drawbar" class="pa-select pa-adv-pin">
               <option value="">N/A</option>
             </select>
           </div>
+          <div class="pa-field-inline" style="margin-top: 12px;">
+            <label for="pa-adv-drawbar-invert">
+              Invert (released = LOW)
+              <span class="pa-help-tip" title="Default reads released (OK) when the input is HIGH. Enable this if your sensor is wired the other way round, so released reads LOW instead.">?</span>
+            </label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-adv-drawbar-invert">
+              <span class="pa-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="pa-card" id="pa-adv-toolseated-card">
+          <h3 class="pa-card-title">Tool Seated Sensor</h3>
+          <p class="pa-card-help">
+            grblHAL aux input reporting whether the tool is seated in the spindle. Read right after the collet clamps — a fault pauses the job with a dialog offering Re-check or Abort, same as Air Pressure. Independent of the Drawbar sensor above; point both at the same pin if your kit uses one physical sensor for both.
+          </p>
+
+          <div class="pa-form-row">
+            <label class="pa-form-label" for="pa-adv-input-toolseated">
+              Tool Seated Sensor
+              <span class="pa-help-tip" title="Reports whether the tool is seated in the spindle after the collet clamps.">?</span>
+            </label>
+            <select id="pa-adv-input-toolseated" class="pa-select pa-adv-pin">
+              <option value="">N/A</option>
+            </select>
+          </div>
+          <div class="pa-field-inline" style="margin-top: 12px;">
+            <label for="pa-adv-toolseated-invert">
+              Invert (seated = LOW)
+              <span class="pa-help-tip" title="Default reads seated (OK) when the input is HIGH. Enable this if your sensor is wired the other way round, so seated reads LOW instead.">?</span>
+            </label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-adv-toolseated-invert">
+              <span class="pa-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="pa-card pa-advanced-preview" id="pa-adv-sensors">
+          <h3 class="pa-card-title">Tool Holder<sup class="pa-title-sup">Coming soon</sup></h3>
+          <p class="pa-card-help">
+            Input the tool-change sequence will read once this check ships. Nothing reads it yet — the pin is recorded now so the wiring can be set up ahead of time.
+          </p>
 
           <div class="pa-form-row">
             <label class="pa-form-label" for="pa-adv-input-holder">
               Tool Holder
-              <span class="pa-help-tip" title="Detects the tip of the ISO20 holder in a rack slot, so the sequence can tell an occupied slot from an empty one before putting a tool away. Sienci ties this to the same pin as the tool sensor and reads it during a slow descent over the slot.">?</span>
+              <span class="pa-help-tip" title="Detects the tip of the ISO20 holder in a rack slot, so the sequence can tell an occupied slot from an empty one before putting a tool away. Sienci ties this to the same pin as the drawbar sensor and reads it during a slow descent over the slot.">?</span>
             </label>
             <select id="pa-adv-input-holder" class="pa-select pa-adv-pin" disabled>
               <option value="">N/A</option>
@@ -1656,7 +1700,7 @@
   var AUX_INPUT_FALLBACK = 8;
   var auxInputCount = null;
   var auxOutputCount = null;
-  var PIN_SELECT_IDS = ['pa-adv-input-pres', 'pa-adv-input-tool', 'pa-adv-input-holder'];
+  var PIN_SELECT_IDS = ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolseated', 'pa-adv-input-holder'];
 
   function pinOptionExists(sel, value) {
     return qsa('option', sel).some(function(o) { return o.value === String(value); });
@@ -1749,17 +1793,26 @@
     // No pressure pin by default: a fresh install must not arm a safety check
     // against a sensor that may not exist, or every tool change stops at a
     // dialog the operator never asked for. Pick the pin to turn it on.
-    generic: { clampOut: null, pres: '', presInverted: false, tool: 0, holder: 0, locked: false },
+    generic: {
+      clampOut: null, pres: '', presInverted: false,
+      drawbar: '', drawbarInverted: false,
+      toolSeated: '', toolSeatedInverted: false,
+      holder: 0, locked: false
+    },
     // Sienci ATC, from their P200.macro:
     //   _tc_output_db  = 1  (drawbar solenoid — our clamp aux output)
-    //   _tc_input_db   = 0  (drawbar sensor)
+    //   _tc_input_db   = 0  (drawbar sensor — also stands in for tool-seated;
+    //                        one physical sensor on this kit)
     //   _tc_input_th   = _tc_input_db  (tool holder — same pin, read during a
     //                                   descent over the slot to tell an
     //                                   occupied slot from an empty one)
     //   _tc_input_pres = 2  (air pressure)
     // Fixed wiring on a known kit, so the fields are shown read-only.
     sienci: {
-      clampOut: '1', pres: 2, presInverted: false, tool: 0, holder: 0, locked: true,
+      clampOut: '1', pres: 2, presInverted: false,
+      drawbar: 0, drawbarInverted: false,
+      toolSeated: 0, toolSeatedInverted: false,
+      holder: 0, locked: true,
       // Physical rack geometry on the Sienci kit is also fixed: rack
       // sits along +X with 90 mm between adjacent slots, holders sit
       // in fork mounts (side-entry) rather than cup drops. Sienci
@@ -1791,7 +1844,8 @@
       names: {
         'pa-clamp-aux': 'Drawbar',
         'pa-adv-input-pres': 'Pressure',
-        'pa-adv-input-tool': 'Drawbar',
+        'pa-adv-input-drawbar': 'Drawbar',
+        'pa-adv-input-toolseated': 'Tool seated',
         'pa-adv-input-holder': 'Tool holder'
       }
     }
@@ -1814,23 +1868,30 @@
     var seedPins = fromUser || p.locked;
     if (seedPins) {
       setPressurePin(p.pres);
-      setAdvPin('pa-adv-input-tool', p.tool);
+      setAdvPin('pa-adv-input-drawbar', p.drawbar);
+      setAdvPin('pa-adv-input-toolseated', p.toolSeated);
       setAdvPin('pa-adv-input-holder', p.holder);
       if (p.clampOut !== null) setClampAux(p.clampOut);
       var invertEl = $('pa-adv-pres-invert');
       if (invertEl) invertEl.checked = !!p.presInverted;
+      var drawbarInvertEl = $('pa-adv-drawbar-invert');
+      if (drawbarInvertEl) drawbarInvertEl.checked = !!p.drawbarInverted;
+      var toolSeatedInvertEl = $('pa-adv-toolseated-invert');
+      if (toolSeatedInvertEl) toolSeatedInvertEl.checked = !!p.toolSeatedInverted;
     }
 
     var locked = !!p.locked;
-    var presInvertEl = $('pa-adv-pres-invert');
-    if (presInvertEl) presInvertEl.disabled = locked;
-    ['pa-adv-input-pres', 'pa-adv-input-tool', 'pa-adv-input-holder', 'pa-clamp-aux']
+    ['pa-adv-pres-invert', 'pa-adv-drawbar-invert', 'pa-adv-toolseated-invert'].forEach(function(id) {
+      var el = $(id);
+      if (el) el.disabled = locked;
+    });
+    ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolseated', 'pa-adv-input-holder', 'pa-clamp-aux']
       .forEach(function(id) {
         var el = $(id);
         if (!el) return;
-        // Tool Sensor / Tool Holder aren't implemented yet, so they stay
-        // disabled regardless; the profile only decides the other two.
-        var previewOnly = (id === 'pa-adv-input-tool' || id === 'pa-adv-input-holder');
+        // Tool Holder isn't implemented yet, so it stays disabled
+        // regardless; the profile only decides the other fields.
+        var previewOnly = (id === 'pa-adv-input-holder');
         el.disabled = locked || previewOnly;
         el.classList.toggle('pa-locked', locked);
         showPinAsLabel(id, locked, (p.names || {})[id], !!p.suppressMissingWarning);
@@ -2512,6 +2573,14 @@
     setPressurePin((typeof savedPres === 'number' && savedPres >= 0) ? savedPres : '');
     $('pa-adv-pres-invert').checked = !!initialConfig.pressureInputInverted;
 
+    // Drawbar / tool-seated sensor inputs — same -1/missing = blank convention.
+    var savedDrawbar = initialConfig.drawbarSensorInput;
+    setAdvPin('pa-adv-input-drawbar', (typeof savedDrawbar === 'number' && savedDrawbar >= 0) ? savedDrawbar : '');
+    $('pa-adv-drawbar-invert').checked = !!initialConfig.drawbarSensorInputInverted;
+    var savedToolSeated = initialConfig.toolSeatedSensorInput;
+    setAdvPin('pa-adv-input-toolseated', (typeof savedToolSeated === 'number' && savedToolSeated >= 0) ? savedToolSeated : '');
+    $('pa-adv-toolseated-invert').checked = !!initialConfig.toolSeatedSensorInputInverted;
+
     // Profile last, so it can lock/overwrite the pin fields it owns. Silent:
     // restoring saved state isn't a user edit.
     var profSel = $('pa-adv-profile');
@@ -2616,6 +2685,21 @@
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
       pressureInputInverted: $('pa-adv-pres-invert').checked,
+      // Drawbar / tool-seated sensor aux inputs. Empty field = no sensor
+      // = -1, which switches that check off in the generated macro.
+      // Independent of each other and of pressureInput.
+      drawbarSensorInput: (function() {
+        var sel = $('pa-adv-input-drawbar');
+        var n = Number.parseInt(sel ? sel.value : '', 10);
+        return Number.isFinite(n) && n >= 0 ? n : -1;
+      })(),
+      drawbarSensorInputInverted: $('pa-adv-drawbar-invert').checked,
+      toolSeatedSensorInput: (function() {
+        var sel = $('pa-adv-input-toolseated');
+        var n = Number.parseInt(sel ? sel.value : '', 10);
+        return Number.isFinite(n) && n >= 0 ? n : -1;
+      })(),
+      toolSeatedSensorInputInverted: $('pa-adv-toolseated-invert').checked,
       rackHolding: $('pa-rack-holding').value || 'Fork',
 
       orientation: segOrientation ? segOrientation.get() : 'Y',
