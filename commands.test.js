@@ -1427,14 +1427,71 @@ describe('buildToolChangeProgram — tool-seated pre-check skips unload when spi
       'expected one unclamp inside the guarded unload plus a second, independent one from load\'s own release-first');
   });
 
-  test('sensor configured but toolNumber=0 (bare unload, nothing to load): pre-check stays inactive', () => {
-    const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 1, 0).join('\n'));
-    assert.ok(!program.some(l => l.includes('L0 Q0')), 'pre-check only makes sense when a load will follow the unload');
-  });
-
   test('sensor configured but currentTool=0 (nothing to unload): pre-check stays inactive', () => {
     const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 0, 2).join('\n'));
     assert.ok(!program.some(l => l.includes('L0 Q0')), 'pre-check only makes sense when there is an unload to guard');
+  });
+
+  test('rack source -> manual target: pre-check still applies (broadened condition covers every target, not just rack targets)', () => {
+    const MANUAL_TARGET = { ...PROGRAM_SETTINGS, manualTool: { x: 321, y: -966 } };
+    const program = motionLines(buildToolChangeProgram(MANUAL_TARGET, 1, 4).join('\n'));
+    assert.ok(program.some(l => l.includes('M66 P5 L0 Q0')), 'rack -> manual must still trigger the unload pre-check');
+    assert.ok(program.includes('o200 if [#5399 EQ 1]'));
+  });
+
+  // Tn -> T0 (bare unload, nothing loading next). Before this broadening
+  // the pre-check required toolNumber > 0 and simply didn't apply here —
+  // now it does, which exposes two things that only worked before because
+  // a load always followed the unload: the return-to-origin exit move
+  // assumes the machine physically reached the source slot, and nothing
+  // downstream corrects the host's tool belief if the guard turns out
+  // empty (no reportLoadOutcome call exists for a bare unload).
+  describe('Tn -> T0 (bare unload): the exit move and the M61 report both need their own fix', () => {
+    test('exit-to-origin move is folded INSIDE the o200 guard, not appended unconditionally after it', () => {
+      const sourceSlotPos = calculateSlotPosition(PROGRAM_SETTINGS, 1);
+      const expectedExitLines = motionLines(cupExit(sourceSlotPos.engaged, { x: 0, y: 0 }, PROGRAM_SETTINGS));
+      const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 1, 0).join('\n'));
+      const ifIdx = program.indexOf('o200 if [#5399 EQ 1]');
+      const endIdx = program.indexOf('o200 endif');
+      assert.ok(ifIdx !== -1 && endIdx !== -1, 'guard must be present');
+      expectedExitLines.forEach((line) => {
+        const idx = program.indexOf(line);
+        assert.ok(idx > ifIdx && idx < endIdx,
+          `expected exit line "${line}" to sit inside the o200 guard — ifIdx=${ifIdx}, foundAt=${idx}, endIdx=${endIdx}`);
+      });
+    });
+
+    test('exit-to-origin move does not also appear a second time outside the guard (no duplicate from the old unconditional branch)', () => {
+      const sourceSlotPos = calculateSlotPosition(PROGRAM_SETTINGS, 1);
+      const expectedExitLines = motionLines(cupExit(sourceSlotPos.engaged, { x: 0, y: 0 }, PROGRAM_SETTINGS));
+      const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 1, 0).join('\n'));
+      const occurrences = program.filter((l) => expectedExitLines.includes(l)).length;
+      assert.equal(occurrences, expectedExitLines.length,
+        'each exit line should appear exactly once (inside the guard), not duplicated by the old exitSection branch');
+    });
+
+    test('M61 Q0 fires unconditionally once AFTER the guard closes, regardless of which branch ran', () => {
+      const program = motionLines(buildToolChangeProgram(PROGRAM_SETTINGS, 1, 0).join('\n'));
+      const endIdx = program.indexOf('o200 endif');
+      assert.ok(endIdx !== -1, 'guard must be present');
+      const afterGuard = program.slice(endIdx + 1);
+      assert.ok(afterGuard.includes('M61 Q0'),
+        'M61 Q0 must fire unconditionally after the guard closes — Tn -> T0 always resolves to T0 either way');
+    });
+
+    test('unconfigured: unaffected — plain unconditional exit-to-origin, no guard, no extra M61', () => {
+      const NO_SENSOR = { ...PROGRAM_SETTINGS, toolSeatedSensorInput: -1 };
+      const sourceSlotPos = calculateSlotPosition(NO_SENSOR, 1);
+      const expectedExitLines = motionLines(cupExit(sourceSlotPos.engaged, { x: 0, y: 0 }, NO_SENSOR));
+      const program = motionLines(buildToolChangeProgram(NO_SENSOR, 1, 0).join('\n'));
+      assert.ok(!program.some((l) => l.includes('L0 Q0')), 'no immediate read when the sensor is unconfigured');
+      assert.ok(!/o\d+ if/.test(program.join('\n')), 'no runtime branch when the sensor is unconfigured');
+      expectedExitLines.forEach((line) => {
+        assert.ok(program.includes(line), `expected unchanged exit line "${line}" to still be present`);
+      });
+      const m61Count = program.filter((l) => l === 'M61 Q0').length;
+      assert.equal(m61Count, 1, 'exactly one M61 Q0 (unload\'s own) — no added unconditional one when unconfigured');
+    });
   });
 });
 

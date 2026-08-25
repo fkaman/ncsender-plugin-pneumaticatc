@@ -1245,7 +1245,11 @@ function buildManualSwap(settings, toolNumber, tlsRoutine) {
 // to drop. `oNum` must not collide with any other guard's o-word base
 // used within the same macro.
 function wrapUnloadWithSeatedCheck(settings, unloadSection, oNum) {
-  if (!unloadSection) return unloadSection;
+  // Self-guards on the sensor input rather than trusting the caller's
+  // own gate (seatedPrecheckActive) alone — safe to call from anywhere.
+  // !(x >= 0) (not `x < 0`) so undefined/NaN are also treated as
+  // "not configured" instead of slipping through to build `M66 Pundefined`.
+  if (!unloadSection || !(settings.toolSeatedSensorInput >= 0)) return unloadSection;
   const seatedValue = settings.toolSeatedSensorInputInverted ? 0 : 1; // HIGH(1)=seated by default
   return `
     M66 P${settings.toolSeatedSensorInput} L0 Q0
@@ -1314,12 +1318,13 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   const isManualToManual = currentTool > settings.slots && toolNumber > settings.slots;
 
   // Whether the unload below might get skipped at RUNTIME by the
-  // tool-seated pre-check (see wrapUnloadWithSeatedCheck). Only meaningful
-  // for a real rack-tool unload feeding a real load — a bare unload
-  // (toolNumber===0) or a manual source isn't in scope here.
+  // tool-seated pre-check (see wrapUnloadWithSeatedCheck). Applies to any
+  // command that believes a rack tool is in the spindle, regardless of
+  // what's loading next (a real tool, nothing at all, or a manual tool) —
+  // a manual SOURCE isn't in scope since currentTool > settings.slots
+  // already fails the range check below.
   const seatedPrecheckActive = !isManualToManual
     && currentTool > 0 && currentTool <= settings.slots
-    && toolNumber > 0
     && settings.toolSeatedSensorInput >= 0;
 
   // Both of these are baked into the STATIC gcode below, but the unload
@@ -1352,13 +1357,41 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ? buildManualSwap(settings, toolNumber, tlsRoutine)
     : buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased, origin, chainedFromRack);
 
-  const guardedUnloadSection = seatedPrecheckActive
-    ? wrapUnloadWithSeatedCheck(settings, unloadSection, 200)
+  const isCup = settings.rackHolding === 'Cup';
+  const isBareUnload = toolNumber === 0 && currentTool > 0 && currentTool <= settings.slots;
+
+  // Bare unload (Tn → T0, nothing loading next): the return-to-origin
+  // exit move assumes the machine physically went to sourceSlot — true
+  // only on the branch where the pre-check found a tool and unload
+  // actually ran. Fold it into the SAME guarded block as the unload
+  // instead of appending it unconditionally afterward, so it's skipped
+  // right along with the unload it depends on.
+  const bareUnloadExit = isBareUnload
+    ? (isCup
+        ? cupExit(sourceSlot.engaged, origin, settings)
+        : rackExitToOrigin(sourceSlot.engaged, /* isEmpty */ true, origin, settings))
+    : '';
+  const unloadPlusExit = (seatedPrecheckActive && isBareUnload)
+    ? `${unloadSection}\n    ${bareUnloadExit}`
     : unloadSection;
+
+  const guardedUnloadSection = seatedPrecheckActive
+    ? wrapUnloadWithSeatedCheck(settings, unloadPlusExit, 200)
+    : unloadSection;
+
+  // Tn → T0 resolves to T0 whichever branch the guard above takes — the
+  // tool either got dropped off (unloadSection's own M61 Q0 fires inside
+  // the guard) or was never there to begin with (nothing fires). Either
+  // way Q0 is the correct report, so say so once, unconditionally, right
+  // after the guarded block — harmless to repeat if the guard's own
+  // M61 Q0 already fired.
+  const bareUnloadStatusFix = (seatedPrecheckActive && isBareUnload) ? 'M61 Q0' : '';
 
   // Tx → T0 leaves the drawbar released after the unload (there is no
   // load section to re-clamp). Restore the fail-safe clamped state so
-  // the spindle isn't sitting with the collet open at rest.
+  // the spindle isn't sitting with the collet open at rest. Safe to
+  // leave unconditional even when the pre-check skips the unload above —
+  // re-clamping an already-clamped drawbar is a no-op.
   const finalizeUnclamped = (toolNumber === 0 && unloadSection)
     ? `G4 P0.5\n    ${auxLineFor(settings, 'clamp')}\n    G4 P0.5`
     : '';
@@ -1370,13 +1403,14 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // detour geometry are the same regardless of hold style.
   //   * Probed a rack tool → spindle is at the toolsetter; tlsExit.
   //   * Unloaded to T0 (any rack slot) → spindle empty at source approach; direct diagonal.
+  //     Skipped here when the pre-check is active — bareUnloadExit above
+  //     already folded this into the guarded block instead.
   //   * Loaded a rack tool without probing → spindle loaded at target approach; runtime-branched exit.
   //   * Otherwise (manual / T0→T0) → leave as-is; existing sequence handles it.
   let exitSection = '';
-  const isCup = settings.rackHolding === 'Cup';
   if (isRackSlot && shouldProbe) {
     exitSection = tlsExit(tlsX, tlsY, origin, settings);
-  } else if (toolNumber === 0 && currentTool > 0 && currentTool <= settings.slots) {
+  } else if (isBareUnload && !seatedPrecheckActive) {
     exitSection = isCup
       ? cupExit(sourceSlot.engaged, origin, settings)
       : rackExitToOrigin(sourceSlot.engaged, /* isEmpty */ true, origin, settings);
@@ -1398,6 +1432,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${pressureGuard(settings, 120)}
     G53 G0 Z${settings.zSafe}
     ${guardedUnloadSection}
+    ${bareUnloadStatusFix}
     ${loadSection}
     G53 G0 Z${settings.zSafe}
     ${finalizeUnclamped}
