@@ -1261,12 +1261,13 @@ describe('buildLoadTool — drawbar offset compensation (regression)', () => {
 // (unlike pressure, which shares one pin across all its checks): the
 // drawbar sensor is read right after the collet unclamps (must report
 // released), the tool-seated sensor right after it clamps (must report
-// seated). Each has its own pin and its own invert toggle — a kit that
-// happens to wire both to the same physical sensor just points both
-// settings at that pin. Both default to OK=HIGH; each is skipped
-// independently when its own input is unset (-1), same as pressure — an
-// install without either sensor wired must see byte-identical output to
-// before this feature existed.
+// seated). Each has its own pin — a kit that happens to wire both to the
+// same physical sensor just points both settings at that pin. Both are
+// read as OK=HIGH (invert the port in firmware, $370, for a switch wired
+// the other way round); each is skipped independently when its own
+// input is unset (-1), same as pressure — an install without either
+// sensor wired must see byte-identical output to before this feature
+// existed.
 describe('drawbar / tool-seated sensor guards', () => {
   const SENSORS = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: 3, toolSeatedSensorInput: 5 };
   const FORK_SENSORS = { ...CUP_RACK, rackHolding: 'Fork', pressureInput: -1, drawbarSensorInput: 3, toolSeatedSensorInput: 5 };
@@ -1347,18 +1348,6 @@ describe('drawbar / tool-seated sensor guards', () => {
     assert.ok(clampIdx !== -1 && readIdx !== -1 && slideIdx !== -1, 'clamp, sensor read and slide-out must all be present');
     assert.ok(readIdx > clampIdx && readIdx < slideIdx,
       `tool-seated read must fire after clamp and before the slide-out — got clampIdx=${clampIdx}, readIdx=${readIdx}, slideIdx=${slideIdx}`);
-  });
-
-  test('invert toggles are independent: drawbar can flip to L4 while tool-seated stays L3', () => {
-    const MIXED = { ...SENSORS, drawbarSensorInputInverted: true };
-    const slotPos = calculateSlotPosition(MIXED, 1);
-    const unload = buildUnloadTool(MIXED, 1, slotPos, { x: 60, y: 120 });
-    // drawbarAlreadyReleased=true isolates the tool-seated read from
-    // releaseFirst's own drawbar read in the load half.
-    const load = buildLoadTool(MIXED, 1, slotPos, '', /* drawbarAlreadyReleased */ true, { x: 60, y: 120 }, false);
-    assert.ok(unload.includes('M66 P3 L4 Q0.01'), 'drawbarSensorInputInverted should flip the drawbar check to wait-LOW (L4)');
-    assert.ok(!unload.includes('M66 P3 L3 Q0.01'), 'drawbar check should no longer wait-HIGH (L3)');
-    assert.ok(load.includes('M66 P5 L3 Q0.01'), 'tool-seated check should stay wait-HIGH (L3) — unaffected by the drawbar toggle');
   });
 
   test('T0 → T1 (empty spindle): releaseFirst also runs the drawbar check', () => {

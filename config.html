@@ -1490,7 +1490,7 @@
         <div class="pa-card">
           <h3 class="pa-card-title">Air Pressure Sensor</h3>
           <p class="pa-card-help">
-            grblHAL aux input the pressure switch is wired to. The list is read from the controller, so it only offers inputs this board actually has. Pick <em>N/A</em> if you don't have one. Pressure is read as <b>OK when the input is LOW</b> by default (same wiring convention Sienci's macros assume) — turn on <b>Invert</b> below if your switch reads the other way round. Checked once before the tool change starts, and again after each drawbar release: a fault pauses the job with a dialog offering Re-check or Abort.
+            grblHAL aux input the pressure switch is wired to. The list is read from the controller, so it only offers inputs this board actually has. Pick <em>N/A</em> if you don't have one. Pressure is read as <b>OK when the input is LOW</b> (same wiring convention Sienci's macros assume) — invert the port in firmware (<code>$370</code>) if your switch reads the other way round. Checked once before the tool change starts, and again after each drawbar release: a fault pauses the job with a dialog offering Re-check or Abort.
           </p>
 
           <div class="pa-form-row">
@@ -1506,22 +1506,12 @@
               <option value="">N/A</option>
             </select>
           </div>
-          <div class="pa-field-inline" style="margin-top: 12px;">
-            <label for="pa-adv-pres-invert">
-              Invert (pressure OK = HIGH)
-              <span class="pa-help-tip" title="Default reads pressure OK when the input is LOW. Enable this if your switch is wired the other way round, so OK reads HIGH instead. Same effect as inverting the port with $370, but scoped to this plugin's check instead of the controller-wide setting.">?</span>
-            </label>
-            <label class="pa-toggle">
-              <input type="checkbox" id="pa-adv-pres-invert">
-              <span class="pa-toggle-slider"></span>
-            </label>
-          </div>
         </div>
 
         <div class="pa-card" id="pa-adv-drawbar-card">
           <h3 class="pa-card-title">Drawbar Sensor</h3>
           <p class="pa-card-help">
-            grblHAL aux input reporting the drawbar's released state at the spindle. Read right after the collet unclamps — a fault pauses the job with a dialog offering Re-check or Abort, same as Air Pressure. Independent of the Tool Seated sensor below; point both at the same pin if your kit uses one physical sensor for both.
+            grblHAL aux input reporting the drawbar's released state at the spindle. Read as <b>released when the input is HIGH</b> — invert the port in firmware (<code>$370</code>) if wired the other way round. Read right after the collet unclamps — a fault pauses the job with a dialog offering Re-check or Abort, same as Air Pressure. Independent of the Tool Seated sensor below; point both at the same pin if your kit uses one physical sensor for both.
           </p>
 
           <div class="pa-form-row">
@@ -1533,22 +1523,12 @@
               <option value="">N/A</option>
             </select>
           </div>
-          <div class="pa-field-inline" style="margin-top: 12px;">
-            <label for="pa-adv-drawbar-invert">
-              Invert (released = LOW)
-              <span class="pa-help-tip" title="Default reads released (OK) when the input is HIGH. Enable this if your sensor is wired the other way round, so released reads LOW instead.">?</span>
-            </label>
-            <label class="pa-toggle">
-              <input type="checkbox" id="pa-adv-drawbar-invert">
-              <span class="pa-toggle-slider"></span>
-            </label>
-          </div>
         </div>
 
         <div class="pa-card" id="pa-adv-toolseated-card">
           <h3 class="pa-card-title">Tool Seated Sensor</h3>
           <p class="pa-card-help">
-            grblHAL aux input reporting whether the tool is seated in the spindle. Read right after the collet clamps — a fault pauses the job with a dialog offering Re-check or Abort, same as Air Pressure. Independent of the Drawbar sensor above; point both at the same pin if your kit uses one physical sensor for both.
+            grblHAL aux input reporting whether the tool is seated in the spindle. Read as <b>seated when the input is HIGH</b> — invert the port in firmware (<code>$370</code>) if wired the other way round. Read right after the collet clamps — a fault pauses the job with a dialog offering Re-check or Abort, same as Air Pressure. Independent of the Drawbar sensor above; point both at the same pin if your kit uses one physical sensor for both.
           </p>
 
           <div class="pa-form-row">
@@ -1559,16 +1539,6 @@
             <select id="pa-adv-input-toolseated" class="pa-select pa-adv-pin">
               <option value="">N/A</option>
             </select>
-          </div>
-          <div class="pa-field-inline" style="margin-top: 12px;">
-            <label for="pa-adv-toolseated-invert">
-              Invert (seated = LOW)
-              <span class="pa-help-tip" title="Default reads seated (OK) when the input is HIGH. Enable this if your sensor is wired the other way round, so seated reads LOW instead.">?</span>
-            </label>
-            <label class="pa-toggle">
-              <input type="checkbox" id="pa-adv-toolseated-invert">
-              <span class="pa-toggle-slider"></span>
-            </label>
           </div>
         </div>
 
@@ -1794,9 +1764,9 @@
     // against a sensor that may not exist, or every tool change stops at a
     // dialog the operator never asked for. Pick the pin to turn it on.
     generic: {
-      clampOut: null, pres: '', presInverted: false,
-      drawbar: '', drawbarInverted: false,
-      toolSeated: '', toolSeatedInverted: false,
+      clampOut: null, pres: '',
+      drawbar: '',
+      toolSeated: '',
       holder: 0, locked: false
     },
     // Sienci ATC, from their P200.macro:
@@ -1809,9 +1779,9 @@
     //   _tc_input_pres = 2  (air pressure)
     // Fixed wiring on a known kit, so the fields are shown read-only.
     sienci: {
-      clampOut: '1', pres: 2, presInverted: false,
-      drawbar: 0, drawbarInverted: false,
-      toolSeated: 0, toolSeatedInverted: false,
+      clampOut: '1', pres: 2,
+      drawbar: 0,
+      toolSeated: 0,
       holder: 0, locked: true,
       // Physical rack geometry on the Sienci kit is also fixed: rack
       // sits along +X with 90 mm between adjacent slots, holders sit
@@ -1872,19 +1842,9 @@
       setAdvPin('pa-adv-input-toolseated', p.toolSeated);
       setAdvPin('pa-adv-input-holder', p.holder);
       if (p.clampOut !== null) setClampAux(p.clampOut);
-      var invertEl = $('pa-adv-pres-invert');
-      if (invertEl) invertEl.checked = !!p.presInverted;
-      var drawbarInvertEl = $('pa-adv-drawbar-invert');
-      if (drawbarInvertEl) drawbarInvertEl.checked = !!p.drawbarInverted;
-      var toolSeatedInvertEl = $('pa-adv-toolseated-invert');
-      if (toolSeatedInvertEl) toolSeatedInvertEl.checked = !!p.toolSeatedInverted;
     }
 
     var locked = !!p.locked;
-    ['pa-adv-pres-invert', 'pa-adv-drawbar-invert', 'pa-adv-toolseated-invert'].forEach(function(id) {
-      var el = $(id);
-      if (el) el.disabled = locked;
-    });
     ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolseated', 'pa-adv-input-holder', 'pa-clamp-aux']
       .forEach(function(id) {
         var el = $(id);
@@ -2571,15 +2531,12 @@
     // Air-pressure sensor input (-1 / missing = no sensor = blank field).
     var savedPres = initialConfig.pressureInput;
     setPressurePin((typeof savedPres === 'number' && savedPres >= 0) ? savedPres : '');
-    $('pa-adv-pres-invert').checked = !!initialConfig.pressureInputInverted;
 
     // Drawbar / tool-seated sensor inputs — same -1/missing = blank convention.
     var savedDrawbar = initialConfig.drawbarSensorInput;
     setAdvPin('pa-adv-input-drawbar', (typeof savedDrawbar === 'number' && savedDrawbar >= 0) ? savedDrawbar : '');
-    $('pa-adv-drawbar-invert').checked = !!initialConfig.drawbarSensorInputInverted;
     var savedToolSeated = initialConfig.toolSeatedSensorInput;
     setAdvPin('pa-adv-input-toolseated', (typeof savedToolSeated === 'number' && savedToolSeated >= 0) ? savedToolSeated : '');
-    $('pa-adv-toolseated-invert').checked = !!initialConfig.toolSeatedSensorInputInverted;
 
     // Profile last, so it can lock/overwrite the pin fields it owns. Silent:
     // restoring saved state isn't a user edit.
@@ -2684,7 +2641,6 @@
         var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
-      pressureInputInverted: $('pa-adv-pres-invert').checked,
       // Drawbar / tool-seated sensor aux inputs. Empty field = no sensor
       // = -1, which switches that check off in the generated macro.
       // Independent of each other and of pressureInput.
@@ -2693,13 +2649,11 @@
         var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
-      drawbarSensorInputInverted: $('pa-adv-drawbar-invert').checked,
       toolSeatedSensorInput: (function() {
         var sel = $('pa-adv-input-toolseated');
         var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
-      toolSeatedSensorInputInverted: $('pa-adv-toolseated-invert').checked,
       rackHolding: $('pa-rack-holding').value || 'Fork',
 
       orientation: segOrientation ? segOrientation.get() : 'Y',

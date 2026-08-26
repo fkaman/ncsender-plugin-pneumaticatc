@@ -192,27 +192,21 @@ const buildInitialConfig = (raw = {}) => {
     postTlsGcode: raw.postTlsGcode ?? migrateLegacyTlsAux(raw.tlsAuxOutput, 'off'),
     clampAuxOutput: sanitizeAuxOutput(raw.clampAuxOutput),
     // grblHAL aux INPUT carrying the air-pressure switch. -1 = no sensor
-    // wired, which disables every pressure check.
+    // wired, which disables every pressure check. Read as OK-when-LOW;
+    // if wired the other way round, invert the port in firmware ($370)
+    // rather than in this plugin.
     pressureInput: sanitizeAuxInput(raw.pressureInput),
-    // Flips the M66 wait mode (L3 vs L4) for switches wired opposite the
-    // documented LOW-is-OK convention. No effect when pressureInput is -1.
-    pressureInputInverted: !!raw.pressureInputInverted,
     // grblHAL aux INPUT reporting the drawbar's released state, read right
     // after the collet unclamps. -1 = no sensor wired, which disables the
     // check. Independent of toolSeatedSensorInput below — separate
-    // physical sensors, separately configurable.
+    // physical sensors, separately configurable. Read as released-when-
+    // HIGH; invert via $370 if wired the other way round.
     drawbarSensorInput: sanitizeAuxInput(raw.drawbarSensorInput),
-    // Flips the M66 wait mode (L3 vs L4) for the drawbar sensor. Default
-    // convention is HIGH-is-OK (released). No effect when
-    // drawbarSensorInput is -1.
-    drawbarSensorInputInverted: !!raw.drawbarSensorInputInverted,
     // grblHAL aux INPUT reporting the tool-seated state, read right after
     // the collet clamps. -1 = no sensor wired, which disables the check.
+    // Read as seated-when-HIGH; invert via $370 if wired the other way
+    // round.
     toolSeatedSensorInput: sanitizeAuxInput(raw.toolSeatedSensorInput),
-    // Flips the M66 wait mode (L3 vs L4) for the tool-seated sensor.
-    // Default convention is HIGH-is-OK (seated). No effect when
-    // toolSeatedSensorInput is -1.
-    toolSeatedSensorInputInverted: !!raw.toolSeatedSensorInputInverted,
 
     dialogBehavior: {
       countdownSec: toFiniteNumber(raw.dialogBehavior?.countdownSec, 5),
@@ -996,34 +990,28 @@ function sensorGuard(input, waitMode, faultMsg, unverifiedMsg, oNum) {
   `.trim();
 }
 
-// Air pressure OK is the LOW state on Sienci's wiring convention.
-// `pressureInputInverted` flips the wait mode to L3 (WAIT_MODE_HIGH) for
-// switches wired the other way round, so the operator doesn't have to
-// touch the controller's own port-invert mask ($370) to match this
-// plugin's convention.
+// Air pressure OK is the LOW state on Sienci's wiring convention. A
+// switch wired the other way round is fixed with the controller's own
+// port-invert mask ($370), not a plugin-level toggle — one source of
+// truth for polarity instead of two that can disagree.
 function pressureGuard(settings, oNum) {
-  const waitMode = settings.pressureInputInverted ? 3 : 4; // L3=wait-HIGH, L4=wait-LOW
-  return sensorGuard(settings.pressureInput, waitMode, 'PRESSURE_FAULT', 'PRESSURE_FAULT_UNVERIFIED', oNum);
+  return sensorGuard(settings.pressureInput, 4, 'PRESSURE_FAULT', 'PRESSURE_FAULT_UNVERIFIED', oNum); // L4=wait-LOW
 }
 
 // Drawbar sensor at the spindle, read right after the collet unclamps.
-// OK (released) is the HIGH state by default; drawbarSensorInputInverted
-// flips the wait mode to L4 (WAIT_MODE_LOW) for switches wired the other
-// way round. Independent pin from the tool-seated sensor below — on kits
-// where it's physically the same sensor, both settings just get pointed
-// at the same pin.
+// OK (released) is the HIGH state. Independent pin from the tool-seated
+// sensor below — on kits where it's physically the same sensor, both
+// settings just get pointed at the same pin. Invert via $370 if wired
+// the other way round.
 function drawbarReleasedGuard(settings, oNum) {
-  const waitMode = settings.drawbarSensorInputInverted ? 4 : 3; // L3=wait-HIGH, L4=wait-LOW
-  return sensorGuard(settings.drawbarSensorInput, waitMode, 'DRAWBAR_FAULT', 'DRAWBAR_FAULT_UNVERIFIED', oNum);
+  return sensorGuard(settings.drawbarSensorInput, 3, 'DRAWBAR_FAULT', 'DRAWBAR_FAULT_UNVERIFIED', oNum); // L3=wait-HIGH
 }
 
 // Tool-seated sensor at the spindle, read right after the collet clamps.
-// OK (seated) is the HIGH state by default; toolSeatedSensorInputInverted
-// flips the wait mode to L4 (WAIT_MODE_LOW) for switches wired the other
-// way round.
+// OK (seated) is the HIGH state. Invert via $370 if wired the other way
+// round.
 function toolSeatedGuard(settings, oNum) {
-  const waitMode = settings.toolSeatedSensorInputInverted ? 4 : 3; // L3=wait-HIGH, L4=wait-LOW
-  return sensorGuard(settings.toolSeatedSensorInput, waitMode, 'TOOL_FAULT', 'TOOL_FAULT_UNVERIFIED', oNum);
+  return sensorGuard(settings.toolSeatedSensorInput, 3, 'TOOL_FAULT', 'TOOL_FAULT_UNVERIFIED', oNum); // L3=wait-HIGH
 }
 
 function slideFeedrate(settings) {
@@ -1254,10 +1242,10 @@ function wrapUnloadWithSeatedCheck(settings, unloadSection, oNum) {
   // !(x >= 0) (not `x < 0`) so undefined/NaN are also treated as
   // "not configured" instead of slipping through to build `M66 Pundefined`.
   if (!unloadSection || !(settings.toolSeatedSensorInput >= 0)) return unloadSection;
-  const seatedValue = settings.toolSeatedSensorInputInverted ? 0 : 1; // HIGH(1)=seated by default
+  // Seated (tool present) reads HIGH (1); invert via $370 if wired the other way round.
   return `
     M66 P${settings.toolSeatedSensorInput} L0 Q0
-    o${oNum} if [#5399 EQ ${seatedValue}]
+    o${oNum} if [#5399 EQ 1]
       ${unloadSection}
     o${oNum} endif
   `.trim();
@@ -1275,10 +1263,10 @@ function wrapUnloadWithSeatedCheck(settings, unloadSection, oNum) {
 // anything else can safely happen.
 function guardUnexpectedTool(settings, oNum) {
   if (!(settings.toolSeatedSensorInput >= 0)) return '';
-  const seatedValue = settings.toolSeatedSensorInputInverted ? 0 : 1;
+  // Seated (tool present) reads HIGH (1); invert via $370 if wired the other way round.
   return `
     M66 P${settings.toolSeatedSensorInput} L0 Q0
-    o${oNum} if [#5399 EQ ${seatedValue}]
+    o${oNum} if [#5399 EQ 1]
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
       G4 P0
       (MSG, PLUGIN_PNEUMATICATC:UNEXPECTED_TOOL_DETECTED)
