@@ -32,37 +32,37 @@
   "messages": {
     "PRESSURE_FAULT": {
       "title": "Air Pressure Low",
-      "message": "The air-pressure sensor is not reporting enough pressure to work the drawbar, so the tool change cannot safely continue.<br><br>Check that the compressor is running and up to pressure, the regulator is set correctly, and no line is kinked or disconnected. Once pressure is restored, click <em>\"Re-check\"</em> — the macro reads the sensor again and only carries on if it now reads good. Click <em>\"Abort\"</em> to stop the tool change.",
+      "message": "Air pressure is too low for the drawbar. Fix the air supply, then Re-check or Abort.",
       "continueLabel": "Re-check"
     },
     "PRESSURE_FAULT_UNVERIFIED": {
       "title": "Air Pressure Still Low",
-      "message": "Pressure has been re-checked twice and is still below what the drawbar needs.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The tool change will carry on without confirmed air pressure, which risks the drawbar not opening or closing fully — a tool can be left loose in the spindle or dropped. Only continue if you have a reason to believe the sensor is wrong rather than the air.<br><br>Click <em>\"Abort\"</em> to stop the tool change, which is the safe choice.",
+      "message": "Pressure still low after 2 rechecks. Continuing is unverified and risky. Abort is safest.",
       "continueLabel": "Continue anyway"
     },
     "DRAWBAR_FAULT": {
       "title": "Drawbar Not Released",
-      "message": "The drawbar sensor isn't reporting a released state after the collet was told to open, so the tool change cannot safely continue.<br><br>Check for debris or a sticking drawbar, and confirm the sensor is wired and configured correctly. Once clear, click <em>\"Re-check\"</em> — the macro reads the sensor again and only carries on if it now reads released. Click <em>\"Abort\"</em> to stop the tool change.",
+      "message": "Drawbar sensor doesn't show released. Clear any obstruction, then Re-check or Abort.",
       "continueLabel": "Re-check"
     },
     "DRAWBAR_FAULT_UNVERIFIED": {
       "title": "Drawbar Still Not Released",
-      "message": "The drawbar sensor has been re-checked twice and still isn't reporting released.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The tool change will carry on without confirming the drawbar opened, which risks damaging a tool still gripped in the collet. Only continue if you have a reason to believe the sensor is wrong rather than the drawbar.<br><br>Click <em>\"Abort\"</em> to stop the tool change, which is the safe choice.",
+      "message": "Drawbar still not released after 2 rechecks. Continuing is unverified and risky.",
       "continueLabel": "Continue anyway"
     },
     "TOOL_FAULT": {
       "title": "Tool Not Seated",
-      "message": "The tool-seated sensor isn't reporting a seated state after the collet was told to clamp, so the tool change cannot safely continue.<br><br>Check that the tool holder is properly seated in the spindle and that the sensor is wired and configured correctly. Once clear, click <em>\"Re-check\"</em> — the macro reads the sensor again and only carries on if it now reads seated. Click <em>\"Abort\"</em> to stop the tool change.",
+      "message": "Tool-seated sensor doesn't show seated. Check the tool, then Re-check or Abort.",
       "continueLabel": "Re-check"
     },
     "TOOL_FAULT_UNVERIFIED": {
       "title": "Tool Still Not Seated",
-      "message": "The tool-seated sensor has been re-checked twice and still isn't reporting seated.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The tool change will carry on without confirming the tool is properly seated, which risks the tool coming loose or falling during the job.<br><br>Click <em>\"Abort\"</em> to stop the tool change, which is the safe choice.",
+      "message": "Tool still not seated after 2 rechecks. Continuing is unverified and risky.",
       "continueLabel": "Continue anyway"
     },
     "UNEXPECTED_TOOL_DETECTED": {
       "title": "Unexpected Tool Detected",
-      "message": "The spindle sensor is reporting a tool present, but the software believes the spindle is empty — most likely a fresh controller boot with a tool still loaded from before power-off. Click <em>\"Release\"</em> to open the drawbar, remove the tool by hand, then click <em>\"Continue\"</em> to proceed with the tool change.",
+      "message": "A tool is unexpectedly seated. Click Release, remove it by hand, then Continue.",
       "continueLabel": "Continue",
       "buttons": [
         {
@@ -75,17 +75,17 @@
     },
     "FAILED_UNLOAD_TOOL": {
       "title": "Unload Failed",
-      "message": "Failed to unload {toolNumber}. Please manually remove the bit, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
+      "message": "Failed to unload {toolNumber}. Remove it by hand, then Continue or Abort.",
       "continueLabel": "Continue"
     },
     "FAILED_LOAD_TOOL": {
       "title": "Load Failed",
-      "message": "Failed to load {toolNumber}. Please manually install the bit, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",
+      "message": "Failed to load {toolNumber}. Install it by hand, then Continue or Abort.",
       "continueLabel": "Continue"
     },
     "MANUAL_UNLOAD_TOOL": {
       "title": "Manual Unload",
-      "message": "Click <em>Release</em> to open the drawbar. Remove tool {toolNumber}, then click <em>Continue</em>. Or click <em>Abort</em> to cancel.",
+      "message": "Click Release to open the drawbar, remove tool {toolNumber}, then Continue or Abort.",
       "continueLabel": "Continue",
       "buttons": [
         {
@@ -98,7 +98,7 @@
     },
     "MANUAL_LOAD_TOOL": {
       "title": "Manual Load",
-      "message": "Click <em>Release</em> to open the drawbar. Insert tool {toolNumber}, click <em>Clamp</em> to close it, then click <em>Continue</em>.",
+      "message": "Click Release, insert tool {toolNumber}, click Clamp, then Continue.",
       "continueLabel": "Continue",
       "buttons": [
         {
@@ -117,7 +117,7 @@
     },
     "MANUAL_CLAMP_TOOL": {
       "title": "Manual Load",
-      "message": "Insert tool {toolNumber}, click <em>Clamp</em> to close the drawbar, then click <em>Continue</em>.",
+      "message": "Insert tool {toolNumber}, click Clamp to close the drawbar, then Continue.",
       "continueLabel": "Continue",
       "buttons": [
         {
@@ -130,7 +130,7 @@
     },
     "MANUAL_SWAP_TOOL": {
       "title": "Manual Swap",
-      "message": "Click <em>Release</em> to open the drawbar. Remove the current tool, insert tool {toolNumber}, click <em>Clamp</em> to close the drawbar, then click <em>Continue</em>.",
+      "message": "Click Release, swap in tool {toolNumber}, click Clamp, then Continue.",
       "continueLabel": "Continue",
       "buttons": [
         {
