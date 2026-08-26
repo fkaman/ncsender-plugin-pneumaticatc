@@ -1086,32 +1086,29 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
 }
 
 // After a load's clamp step, verify what actually ended up in the
-// spindle before telling the host it succeeded. Two sensing modes:
-//   * 'guard' — reuse toolSeatedGuard's own trailing #5399 (the final
-//     read after its retries/dialog settled: the confirmed value on
-//     success, -1 if the operator continued past an unresolved fault).
-//     No extra read needed — used for the fully-automated rack loads.
-//   * 'immediate' — a fresh, non-blocking M66 L0 read with no dialog of
-//     its own. Used for manual loads: the operator already confirms
-//     physically via the Clamp/Continue buttons, so this only corrects
-//     the reported status rather than adding a second pause.
-// Tool number == slot number in this plugin's model, so `M61 Q0` here is
-// also the correction for slot occupancy — the tool never actually left
-// its slot if the sensor couldn't confirm it landed in the spindle.
-// tlsRoutine is gated the same way: probing the toolsetter with nothing
-// in the spindle produces a meaningless (or actively wrong) TLO.
-// No-op (plain, unconditional M61 + tlsRoutine, exactly as before this
-// feature existed) when toolSeatedSensorInput isn't configured.
-function reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum, mode) {
-  if (settings.toolSeatedSensorInput < 0) {
+// spindle before telling the host it succeeded. Reuses toolSeatedGuard's
+// own trailing #5399 — called separately, immediately before this, at
+// every call site (rack or manual) — so no extra read here: the
+// confirmed value on success, -1 if the operator continued past an
+// unresolved fault. Tool number == slot number in this plugin's model,
+// so `M61 Q0` here is also the correction for slot occupancy — the tool
+// never actually left its slot if the sensor couldn't confirm it landed
+// in the spindle. tlsRoutine is gated the same way: probing the
+// toolsetter with nothing in the spindle produces a meaningless (or
+// actively wrong) TLO. No-op (plain, unconditional M61 + tlsRoutine,
+// exactly as before this feature existed) when toolSeatedSensorInput
+// isn't configured.
+function reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum) {
+  // !(x >= 0), not `x < 0` — treats undefined/NaN as "not configured"
+  // too, same reasoning as sensorGuard. Matters now that every load path
+  // (including manual) reaches this unconditionally: without it, an
+  // unconfigured install would still emit the o-word wrapper and branch
+  // on whatever #5399 happens to hold from an unrelated earlier read.
+  if (!(settings.toolSeatedSensorInput >= 0)) {
     return `M61 Q${toolNumber}\n    ${tlsRoutine}`.trim();
   }
-  const seatedValue = settings.toolSeatedSensorInputInverted ? 0 : 1;
-  const openCondition = mode === 'immediate'
-    ? `M66 P${settings.toolSeatedSensorInput} L0 Q0\n    o${oNum} if [#5399 EQ ${seatedValue}]`
-    : `o${oNum} if [#5399 NE -1]`;
   return `
-    ${openCondition}
+    o${oNum} if [#5399 NE -1]
       M61 Q${toolNumber}
       ${tlsRoutine}
     o${oNum} else
@@ -1137,7 +1134,11 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     //     operator (with a short dwell for the pneumatics to actuate)
     //     and jump straight to the same insert-and-Clamp dialog.
     // Both paths converge on MANUAL_CLAMP_TOOL — operator just inserts
-    // the bit, hits Clamp, hits Continue.
+    // the bit, hits Clamp, hits Continue. Continue isn't the last word,
+    // though — toolSeatedGuard runs right after, same as an automated
+    // clamp. A tool inserted crooked or not fully seated gets the same
+    // TOOL_FAULT Re-check/Abort obligation instead of silently reporting
+    // Q0 and moving on.
     var autoRelease = drawbarAlreadyReleased ? '' : `
       ${auxLineFor(settings, 'unclamp')}
       G4 P0.5`;
@@ -1148,7 +1149,8 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       M0
       ${auxLineFor(settings, 'clamp')}
       M0
-      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 210, 'immediate')}
+      ${toolSeatedGuard(settings, 220)}
+      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 210)}
     `.trim();
   }
 
@@ -1200,7 +1202,7 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G4 P0.5
       ${toolSeatedGuard(settings, 180)}
       G53 G0 Z${settings.zSafe}
-      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 185, 'guard')}
+      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 185)}
     `.trim();
   }
 
@@ -1214,14 +1216,15 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     ${toolSeatedGuard(settings, 190)}
     G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
     G53 G0 Z${settings.zSafe}
-    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 195, 'guard')}
+    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 195)}
   `.trim();
 }
 
 function buildManualSwap(settings, toolNumber, tlsRoutine) {
   // Manual → Manual: one physical park, one dialog. Buttons Release
   // (aux OFF, opens drawbar) → user swaps bits → Clamp (aux ON, closes
-  // drawbar) → Continue advances past the final M0 to M61 + TLS.
+  // drawbar) → Continue advances past the final M0 into toolSeatedGuard,
+  // same Re-check/Abort obligation as an automated clamp before M61 + TLS.
   return `
     G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
     G4 P0
@@ -1231,7 +1234,8 @@ function buildManualSwap(settings, toolNumber, tlsRoutine) {
     M0
     ${auxLineFor(settings, 'clamp')}
     M0
-    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 215, 'immediate')}
+    ${toolSeatedGuard(settings, 230)}
+    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 215)}
   `.trim();
 }
 

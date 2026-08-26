@@ -1752,9 +1752,10 @@ describe('buildLoadTool — T0 → manual tool auto-releases drawbar (no Release
 // host the load succeeded. Tool number == slot number in this plugin's
 // model, so a corrected M61 is also the correction for slot occupancy —
 // the tool never left its slot if the sensor never confirmed it landed
-// in the spindle. Rack loads reuse toolSeatedGuard's own trailing
-// #5399 (no extra read); manual loads get a fresh, non-blocking
-// immediate read since the operator already supervises via Clamp/Continue.
+// in the spindle. Every call site — rack or manual — runs toolSeatedGuard
+// first and reportLoadOutcome reuses its trailing #5399 (no extra read).
+// A manual clamp that doesn't seat gets the same blocking Re-check/Abort
+// dialog an automated one does — there's no silent/non-blocking path.
 describe('reportLoadOutcome — corrects M61 (and gates TLS) when the tool-seated sensor disagrees', () => {
   const CUP_OUTCOME = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5 };
   const FORK_OUTCOME = { ...CUP_RACK, rackHolding: 'Fork', pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5 };
@@ -1795,32 +1796,42 @@ describe('reportLoadOutcome — corrects M61 (and gates TLS) when the tool-seate
     assert.ok(gcode.includes('o195 endif'));
   });
 
-  test('manual load (toolNumber > slots), sensor configured: immediate read + o210 if/else, no extra dialog', () => {
+  test('manual load (toolNumber > slots), sensor configured: runs toolSeatedGuard (o220) before reportLoadOutcome (o210) — same obligation as a rack load', () => {
     const MANUAL = { ...CUP_OUTCOME, manualTool: { x: 321, y: -966 } };
     const slotPos = calculateSlotPosition(MANUAL, 4);
     const gcode = buildLoadTool(MANUAL, 4, slotPos, '', false, { x: 0, y: 0 }, false);
-    assert.ok(gcode.includes('M66 P5 L0 Q0'), 'manual load must do its own immediate (non-blocking) read');
-    assert.ok(gcode.includes('o210 if [#5399 EQ 1]'));
+    const lines = motionLines(gcode);
+    const readIdx = lines.indexOf('M66 P5 L3 Q0.01');
+    const guardEndIdx = lines.indexOf('o222 endif');
+    const reportIfIdx = lines.indexOf('o210 if [#5399 NE -1]');
+    assert.ok(readIdx !== -1 && guardEndIdx !== -1 && reportIfIdx !== -1,
+      'toolSeatedGuard\'s read/retry chain and reportLoadOutcome\'s wrapper must all be present');
+    assert.ok(readIdx < guardEndIdx && guardEndIdx < reportIfIdx,
+      'toolSeatedGuard must fully resolve before reportLoadOutcome decides the M61 report');
+    assert.ok(gcode.includes('(MSG, PLUGIN_PNEUMATICATC:TOOL_FAULT)'),
+      'a manual clamp that does not seat must get the same blocking Re-check/Abort dialog as a rack load');
     assert.ok(gcode.includes('M61 Q4'));
     assert.ok(gcode.includes('M61 Q0'));
-    const msgCount = (gcode.match(/\(MSG,/g) || []).length;
-    assert.equal(msgCount, 1, 'manual load should not gain a second blocking dialog for this check');
   });
 
-  test('manual load, sensor unconfigured: unchanged, no immediate read', () => {
+  test('manual load, sensor unconfigured: unchanged, no guard and no runtime branch', () => {
     const MANUAL_NO_SENSOR = { ...CUP_OUTCOME, toolSeatedSensorInput: -1, manualTool: { x: 321, y: -966 } };
     const slotPos = calculateSlotPosition(MANUAL_NO_SENSOR, 4);
     const gcode = buildLoadTool(MANUAL_NO_SENSOR, 4, slotPos, '', false, { x: 0, y: 0 }, false);
-    assert.ok(!gcode.includes('L0 Q0'), 'no immediate read when the sensor is unconfigured');
+    assert.ok(!gcode.includes('M66'), 'no sensor read when unconfigured');
+    assert.ok(!/o\d+ if/.test(gcode), 'no runtime branch when unconfigured');
     assert.ok(gcode.includes('M61 Q4'));
   });
 
-  test('manual -> manual swap, sensor configured: same immediate-read pattern at o215', () => {
+  test('manual -> manual swap, sensor configured: same toolSeatedGuard (o230) + reportLoadOutcome (o215) pattern', () => {
     const MANUAL_SWAP_SETTINGS = {
       ...CUP_OUTCOME, manualTool: { x: 321, y: -966 }, toolsetter: { x: 0, y: 0 }
     };
     const program = buildToolChangeProgram(MANUAL_SWAP_SETTINGS, 4, 5).join('\n');
-    assert.ok(program.includes('o215 if [#5399 EQ 1]'));
+    assert.ok(program.includes('M66 P5 L3 Q0.01'));
+    assert.ok(program.includes('o232 endif'));
+    assert.ok(program.includes('o215 if [#5399 NE -1]'));
+    assert.ok(program.includes('(MSG, PLUGIN_PNEUMATICATC:TOOL_FAULT)'));
     assert.ok(program.includes('M61 Q5'));
     assert.ok(program.includes('M61 Q0'));
   });
