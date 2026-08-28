@@ -1106,31 +1106,36 @@ function reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum) {
   `.trim();
 }
 
-function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlreadyReleased = false, origin = { x: 0, y: 0 }, chainedFromRack = false) {
-  if (toolNumber === 0) return '';
-
-  if (toolNumber > settings.slots) {
-    // Manual load — dialog always shows the single-Clamp step
-    // (MANUAL_CLAMP_TOOL), regardless of prior state. Two paths to get
-    // there, differing only in whether we need to fire an auto-release
-    // before showing the dialog:
-    //   - drawbarAlreadyReleased=true — just unloaded a rack/manual tool,
-    //     drawbar is already open. Straight to the dialog.
-    //   - drawbarAlreadyReleased=false — coming from T0 (empty spindle,
-    //     drawbar is in its fail-safe clamped rest state). No tool is
-    //     in the spindle to drop, so auto-release the drawbar for the
-    //     operator (with a short dwell for the pneumatics to actuate)
-    //     and jump straight to the same insert-and-Clamp dialog.
-    // Both paths converge on MANUAL_CLAMP_TOOL — operator just inserts
-    // the bit, hits Clamp, hits Continue. Continue isn't the last word,
-    // though — toolSeatedGuard runs right after, same as an automated
-    // clamp. A tool inserted crooked or not fully seated gets the same
-    // TOOL_FAULT Re-check/Abort obligation instead of silently reporting
-    // Q0 and moving on.
-    var autoRelease = drawbarAlreadyReleased ? '' : `
+// Manual load — dialog always shows the single-Clamp step
+// (MANUAL_CLAMP_TOOL), regardless of prior state. Two paths to get
+// there, differing only in whether we need to fire an auto-release
+// before showing the dialog:
+//   - drawbarAlreadyReleased=true — just unloaded a rack/manual tool,
+//     drawbar is already open. Straight to the dialog.
+//   - drawbarAlreadyReleased=false — the spindle's drawbar is in its
+//     fail-safe clamped rest state (T0, or a rack clamp attempt that's
+//     bailing out via toolSeatedOrManualFallback below). No tool is
+//     confirmed in the spindle to drop, so auto-release the drawbar for
+//     the operator (with a short dwell for the pneumatics to actuate)
+//     and jump straight to the same insert-and-Clamp dialog.
+// Both paths converge on MANUAL_CLAMP_TOOL — operator just inserts
+// the bit, hits Clamp, hits Continue. Continue isn't the last word,
+// though — toolSeatedGuard runs right after, same as an automated
+// clamp. A tool inserted crooked or not fully seated gets the same
+// TOOL_FAULT Re-check/Abort obligation instead of silently reporting
+// Q0 and moving on.
+//
+// Shared by two callers: buildLoadTool's own toolNumber > settings.slots
+// branch (a genuinely out-of-rack tool number), and
+// toolSeatedOrManualFallback (a rack tool whose automated clamp attempt
+// never got confirmed seated, falling back to a manual clamp for the
+// SAME tool number — not renumbered to some out-of-range value, since
+// M61 has to report what's actually going into the spindle).
+function buildManualLoad(settings, toolNumber, tlsRoutine, drawbarAlreadyReleased) {
+  var autoRelease = drawbarAlreadyReleased ? '' : `
       ${auxLineFor(settings, 'unclamp')}
       G4 P0.5`;
-    return `
+  return `
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
       G4 P0${autoRelease}
       (MSG, PLUGIN_PNEUMATICATC:MANUAL_CLAMP_TOOL_${toolNumber})
@@ -1140,6 +1145,70 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       ${toolSeatedGuard(settings, 220)}
       ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 210)}
     `.trim();
+}
+
+// Verifies a rack load's clamp with a single read — no Re-check retries.
+// Retries used to show the same TOOL_FAULT dialog twice before falling
+// back, but that repeated-key-then-different-key dialog sequence was the
+// one thing in this plugin that reliably made the pendant UI drop the
+// dialog it was supposed to show next (the MANUAL_CLAMP_TOOL handoff),
+// while desktop stayed fine — a client-side rendering bug outside this
+// plugin's control, worked around here by never producing that sequence.
+// One read: if it's not seated, show RACK_SLOT_EMPTY once (a single
+// key, fired once — not the repeated-TOOL_FAULT-then-different-key shape
+// that broke the pendant), retract to Z-safe, and fall straight into
+// buildManualLoad for the SAME tool number — the identical
+// dialog/verification a genuinely out-of-rack tool number already gets,
+// not a separate copy of it. No operator choice to make at that point:
+// the automated attempt is simply abandoned in favor of a manual one,
+// RACK_SLOT_EMPTY is purely informational (bare Continue, no
+// Re-check/Abort).
+//
+// tlsRoutine is NOT passed through to the fallback: the routine built
+// for a rack load assumes it's chained immediately after a
+// cupExit/rackExitToTLS from the rack slot, which is the wrong starting
+// geometry once the spindle is at manualTool instead. manualTlsRoutine
+// is a separately-built routine anchored at manualTool's own position,
+// used here instead so TLS still runs (correctly routed) after a fallback.
+//
+// #<_manual_fallback> is set as a PLAIN line inside the fallback branch
+// (not injected via a dialog button's gcode) so buildToolChangeProgram
+// can gate the rack exit routing behind it afterward — a fallback leaves
+// the spindle at manualTool, not at the rack slot/toolsetter the normal
+// exit routing assumes.
+//
+// Every install without toolSeatedSensorInput configured gets back
+// exactly `postClampMotion` + a plain reportLoadOutcome, unchanged from
+// before this feature existed.
+function toolSeatedOrManualFallback(settings, toolNumber, tlsRoutine, postClampMotion, oNum, manualTlsRoutine) {
+  if (!(settings.toolSeatedSensorInput >= 0)) {
+    return `${postClampMotion}\n    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum)}`.trim();
+  }
+  const read = `M66 P${settings.toolSeatedSensorInput} L3 Q0.01\n    G4 P0.1`; // seated=HIGH
+  const fallback = `
+    (MSG, PLUGIN_PNEUMATICATC:RACK_SLOT_EMPTY_${toolNumber})
+    M0
+    G53 G0 Z${settings.zSafe}
+    ${buildManualLoad(settings, toolNumber, manualTlsRoutine, false)}
+  `.trim();
+  const normalContinuation = `${postClampMotion}\n      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum + 1)}`.trim();
+  return `
+    #<_manual_fallback> = 0
+    ${read}
+    o${oNum} if [#5399 EQ -1]
+      #<_manual_fallback> = 1
+      ${fallback}
+    o${oNum} else
+      ${normalContinuation}
+    o${oNum} endif
+  `.trim();
+}
+
+function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlreadyReleased = false, origin = { x: 0, y: 0 }, chainedFromRack = false, manualTlsRoutine = tlsRoutine) {
+  if (toolNumber === 0) return '';
+
+  if (toolNumber > settings.slots) {
+    return buildManualLoad(settings, toolNumber, manualTlsRoutine, drawbarAlreadyReleased);
   }
 
   // Loading from an empty spindle (T0 → Tn) leaves the drawbar in its
@@ -1182,29 +1251,29 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G53 G1 Z${settings.slot1.z} F${DRAWBAR_FEEDRATE_MMPM}`;
 
   if (settings.rackHolding === 'Cup') {
+    const cupPostClampMotion = `G53 G0 Z${settings.zSafe}`;
     return `
       ${approachToEngaged}${releaseFirst}
       G53 G0 Z${approachZ}
       G4 P0.5
       ${auxLineFor(settings, 'clamp')}${drawbarSeat}
       G4 P0.5
-      ${toolSeatedGuard(settings, 180)}
-      G53 G0 Z${settings.zSafe}
-      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 185)}
+      ${toolSeatedOrManualFallback(settings, toolNumber, tlsRoutine, cupPostClampMotion, 240, manualTlsRoutine)}
     `.trim();
   }
 
   const feed = slideFeedrate(settings);
+  const forkPostClampMotion = `
+    G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
+    G53 G0 Z${settings.zSafe}
+  `.trim();
   return `
     ${approachToEngaged}${releaseFirst}
     G53 G0 Z${approachZ}
     G4 P0.5
     ${auxLineFor(settings, 'clamp')}${drawbarSeat}
     G4 P0.5
-    ${toolSeatedGuard(settings, 190)}
-    G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
-    G53 G0 Z${settings.zSafe}
-    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, 195)}
+    ${toolSeatedOrManualFallback(settings, toolNumber, tlsRoutine, forkPostClampMotion, 300, manualTlsRoutine)}
   `.trim();
 }
 
@@ -1318,6 +1387,20 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
         : rackExitToTLS(targetSlot.engaged, tlsX, tlsY, settings)}\n${rawTlsRoutine}`
     : rawTlsRoutine;
 
+  // TLS routine for any path that parks the spindle at manualTool before
+  // reportLoadOutcome fires — a genuine out-of-rack load (buildManualLoad),
+  // a manual->manual swap (buildManualSwap), or a rack clamp that fell
+  // back to manual (toolSeatedOrManualFallback). rawTlsRoutine/tlsRoutine
+  // above are anchored at `origin` (the pre-M6 machine position) or
+  // chained off a rack exit — both wrong once the spindle has actually
+  // moved to manualTool, so this gets its own origin-correct routine
+  // instead of reusing either.
+  const manualTlsRoutine = shouldProbe
+    ? createToolLengthSetRoutine(settings, toolOffsets, { originMPos: settings.manualTool }).join('\n')
+    : (settings.tlsMode === 'library' && hasStoredTlo
+        ? `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`
+        : '');
+
   // Every time we probe (both modes), arm the writeback so the next
   // [TLO:xxx] response from the controller gets saved into the tool's
   // library entry. 'always' mode still probes on every M6 — the writeback
@@ -1372,8 +1455,8 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     && !seatedPrecheckActive;
 
   const loadSection = isManualToManual
-    ? buildManualSwap(settings, toolNumber, tlsRoutine)
-    : buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased, origin, chainedFromRack);
+    ? buildManualSwap(settings, toolNumber, manualTlsRoutine)
+    : buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased, origin, chainedFromRack, manualTlsRoutine);
 
   const isCup = settings.rackHolding === 'Cup';
   const isBareUnload = toolNumber === 0 && currentTool > 0 && currentTool <= settings.slots;
@@ -1438,6 +1521,20 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
       : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, origin, settings);
   }
 
+  // A rack load that fell back to buildManualLoad (see
+  // toolSeatedOrManualFallback) leaves the spindle parked at manualTool,
+  // not at the rack slot / toolsetter exitSection above assumes —
+  // routing "back from the rack" from a position the spindle never
+  // reached would be wrong. #<_manual_fallback> is only ever defined
+  // when toolSeatedOrManualFallback actually ran (isRackSlot with the
+  // sensor configured), so only gate exitSection in that same condition
+  // — checking it unconditionally would reference an undefined variable
+  // on every other path.
+  const rackFallbackActive = isRackSlot && settings.toolSeatedSensorInput >= 0;
+  const guardedExitSection = (rackFallbackActive && exitSection)
+    ? `o340 if [#<_manual_fallback> NE 1]\n      ${exitSection}\n    o340 endif`
+    : exitSection;
+
   // currentTool===0 means software believes the spindle is already
   // empty — nothing above (seatedPrecheckActive et al.) checks this case
   // since there's nothing on record to unload. Catch a stale/wrong T0
@@ -1463,7 +1560,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${loadSection}
     G53 G0 Z${settings.zSafe}
     ${finalizeUnclamped}
-    ${exitSection}
+    ${guardedExitSection}
     G4 P0
     G[#<return_units>]
     ${postCmd}

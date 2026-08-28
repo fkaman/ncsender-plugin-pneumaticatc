@@ -1269,8 +1269,14 @@ describe('buildLoadTool — drawbar offset compensation (regression)', () => {
 // sensor wired must see byte-identical output to before this feature
 // existed.
 describe('drawbar / tool-seated sensor guards', () => {
-  const SENSORS = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: 3, toolSeatedSensorInput: 5 };
-  const FORK_SENSORS = { ...CUP_RACK, rackHolding: 'Fork', pressureInput: -1, drawbarSensorInput: 3, toolSeatedSensorInput: 5 };
+  const SENSORS = {
+    ...CUP_RACK, pressureInput: -1, drawbarSensorInput: 3, toolSeatedSensorInput: 5,
+    manualTool: { x: 321, y: -966 }
+  };
+  const FORK_SENSORS = {
+    ...CUP_RACK, rackHolding: 'Fork', pressureInput: -1, drawbarSensorInput: 3, toolSeatedSensorInput: 5,
+    manualTool: { x: 321, y: -966 }
+  };
 
   test('neither sensor configured (-1): unload and load emit no M66 lines at all', () => {
     const NONE = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: -1 };
@@ -1746,8 +1752,14 @@ describe('buildLoadTool — T0 → manual tool auto-releases drawbar (no Release
 // A manual clamp that doesn't seat gets the same blocking Re-check/Abort
 // dialog an automated one does — there's no silent/non-blocking path.
 describe('reportLoadOutcome — corrects M61 (and gates TLS) when the tool-seated sensor disagrees', () => {
-  const CUP_OUTCOME = { ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5 };
-  const FORK_OUTCOME = { ...CUP_RACK, rackHolding: 'Fork', pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5 };
+  const CUP_OUTCOME = {
+    ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5,
+    manualTool: { x: 321, y: -966 }
+  };
+  const FORK_OUTCOME = {
+    ...CUP_RACK, rackHolding: 'Fork', pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5,
+    manualTool: { x: 321, y: -966 }
+  };
   const SAMPLE_TLS = '(sample tls routine)';
 
   test('Cup rack load, sensor unconfigured: plain M61 + tlsRoutine, no runtime branch', () => {
@@ -1759,30 +1771,26 @@ describe('reportLoadOutcome — corrects M61 (and gates TLS) when the tool-seate
     assert.ok(!/o\d+ if/.test(gcode), 'no runtime branch should appear when the sensor is unconfigured');
   });
 
-  test('Cup rack load, sensor configured: wraps M61 + tlsRoutine in an o185 if/else keyed on the guard\'s final read', () => {
+  test('Cup rack load, sensor configured: wraps M61 + tlsRoutine in an o241 if/else on the success path', () => {
     const slotPos = calculateSlotPosition(CUP_OUTCOME, 1);
     const gcode = buildLoadTool(CUP_OUTCOME, 1, slotPos, SAMPLE_TLS, false, { x: 60, y: 120 }, false);
     const lines = motionLines(gcode);
-    const ifIdx = lines.indexOf('o185 if [#5399 NE -1]');
-    const elseIdx = lines.indexOf('o185 else');
-    const endIdx = lines.indexOf('o185 endif');
+    const ifIdx = lines.indexOf('o241 if [#5399 NE -1]');
+    const elseIdx = lines.indexOf('o241 else');
+    const endIdx = lines.indexOf('o241 endif');
     const successM61 = lines.indexOf('M61 Q1');
-    const failM61 = lines.indexOf('M61 Q0');
     assert.ok(ifIdx !== -1 && elseIdx !== -1 && endIdx !== -1, 'if/else/endif must all be present');
     assert.ok(ifIdx < successM61 && successM61 < elseIdx, 'M61 Q<toolNumber> must sit in the success (if) branch');
-    assert.ok(elseIdx < failM61 && failM61 < endIdx, 'M61 Q0 must sit in the failure (else) branch');
     const tlsPos = gcode.indexOf(SAMPLE_TLS);
-    const elseCommentPos = gcode.indexOf('(Tool not confirmed seated');
-    assert.ok(tlsPos !== -1 && elseCommentPos !== -1 && tlsPos < elseCommentPos,
-      'tlsRoutine must be positioned inside the success branch, before the failure branch starts');
+    assert.ok(tlsPos !== -1 && tlsPos < elseIdx, 'tlsRoutine must be positioned inside the success branch');
   });
 
-  test('Fork rack load, sensor configured: same wrapper at o195', () => {
+  test('Fork rack load, sensor configured: same shape at o301', () => {
     const slotPos = calculateSlotPosition(FORK_OUTCOME, 1);
     const gcode = buildLoadTool(FORK_OUTCOME, 1, slotPos, '', false, { x: 60, y: 120 }, false);
-    assert.ok(gcode.includes('o195 if [#5399 NE -1]'));
-    assert.ok(gcode.includes('o195 else'));
-    assert.ok(gcode.includes('o195 endif'));
+    assert.ok(gcode.includes('o301 if [#5399 NE -1]'));
+    assert.ok(gcode.includes('o301 else'));
+    assert.ok(gcode.includes('o301 endif'));
   });
 
   test('manual load (toolNumber > slots), sensor configured: runs toolSeatedGuard (o220) before reportLoadOutcome (o210) — same obligation as a rack load', () => {
@@ -1823,6 +1831,161 @@ describe('reportLoadOutcome — corrects M61 (and gates TLS) when the tool-seate
     assert.ok(program.includes('(MSG, PLUGIN_PNEUMATICATC:TOOL_FAULT)'));
     assert.ok(program.includes('M61 Q5'));
     assert.ok(program.includes('M61 Q0'));
+  });
+});
+
+// toolSeatedOrManualFallback: when a rack load's clamp doesn't seat, one
+// sensor read decides it — no Re-check retries. An earlier version
+// retried twice with the same TOOL_FAULT dialog before falling back, but
+// that repeated-key-then-different-key sequence (TOOL_FAULT x2 handing
+// off to MANUAL_CLAMP_TOOL) was the one thing in this plugin that
+// reliably made the pendant UI drop the next dialog it was supposed to
+// show, while desktop stayed fine. Retries are gone entirely now: one
+// read, and if it's not seated the macro falls straight into
+// buildManualLoad — the SAME function a genuinely out-of-rack tool
+// number (e.g. a requested T99 with 3 configured slots) already uses,
+// addressed to the tool that was actually being rack-loaded (never
+// renumbered) so M61 reports the truth. No operator choice to make at
+// the fallback point — an earlier design offered "Re-check or Load
+// Manually" via a button that set a flag before resuming, and it
+// deadlocked on real hardware (the controller doesn't ack a queued line
+// while paused at M0, so the resume that would have followed it never
+// went out). This version never injects gcode from a button click.
+describe('toolSeatedOrManualFallback — single-read fallback to buildManualLoad, no retries', () => {
+  const FALLBACK_CUP = {
+    ...CUP_RACK, pressureInput: -1, drawbarSensorInput: -1, toolSeatedSensorInput: 5,
+    manualTool: { x: 321, y: -966 }, toolsetter: { x: 0, y: 0 }
+  };
+  const FALLBACK_FORK = { ...FALLBACK_CUP, rackHolding: 'Fork' };
+
+  test('Cup rack load: fallback addresses the SAME tool number (not renumbered), reachable after a single read', () => {
+    const slotPos = calculateSlotPosition(FALLBACK_CUP, 1);
+    const gcode = buildLoadTool(FALLBACK_CUP, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    const checkIdx = gcode.indexOf('o240 if');
+    const manualClampIdx = gcode.indexOf('MANUAL_CLAMP_TOOL_1');
+    assert.ok(checkIdx !== -1, 'the fault check must be present');
+    assert.ok(manualClampIdx !== -1 && manualClampIdx > checkIdx,
+      'the manual fallback dialog must be reachable from the fault check, and must address tool 1 — not 99 or any other renumbering');
+    assert.ok(!gcode.includes('MANUAL_CLAMP_TOOL_99'), 'must never renumber to an out-of-range tool number');
+    const beforeHandoff = gcode.slice(0, manualClampIdx);
+    assert.ok(!beforeHandoff.includes('TOOL_FAULT)'),
+      'no TOOL_FAULT dialog on the rack-clamp check itself — that repeated-then-different-key dialog sequence broke the pendant UI');
+  });
+
+  test('Fork rack load: fallback addresses the SAME tool number', () => {
+    const slotPos = calculateSlotPosition(FALLBACK_FORK, 2);
+    const gcode = buildLoadTool(FALLBACK_FORK, 2, slotPos, '', false, { x: 60, y: 120 }, false);
+    assert.ok(gcode.includes('MANUAL_CLAMP_TOOL_2'), 'manual-fallback dialog must address tool 2, not some other number');
+  });
+
+  test('fallback retracts to Z-safe before reusing buildManualLoad (spindle may still be at slot depth)', () => {
+    const slotPos = calculateSlotPosition(FALLBACK_CUP, 1);
+    const gcode = buildLoadTool(FALLBACK_CUP, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    const finalCheckIdx = gcode.indexOf('o240 if [#5399 EQ -1]');
+    const retractIdx = gcode.indexOf(`G53 G0 Z${FALLBACK_CUP.zSafe}`, finalCheckIdx);
+    const parkIdx = gcode.indexOf(`G53 G0 X${FALLBACK_CUP.manualTool.x}`, finalCheckIdx);
+    assert.ok(finalCheckIdx !== -1 && retractIdx !== -1 && parkIdx !== -1, 'final check, retract and park move must all be present');
+    assert.ok(retractIdx > finalCheckIdx && retractIdx < parkIdx, 'must retract to Z-safe before parking at the manual station');
+  });
+
+  test('fallback uses manualTlsRoutine (anchored at manualTool), not the rack-chained tlsRoutine', () => {
+    const CHAINED_TLS = '(this assumes it is chained from a rack exit — wrong for the fallback)';
+    const MANUAL_TLS = '(this is anchored at manualTool — correct for the fallback)';
+    const slotPos = calculateSlotPosition(FALLBACK_CUP, 1);
+    const gcode = buildLoadTool(FALLBACK_CUP, 1, slotPos, CHAINED_TLS, false, { x: 60, y: 120 }, false, MANUAL_TLS);
+    const finalCheckIdx = gcode.indexOf('o240 if [#5399 EQ -1]');
+    const fallbackText = gcode.slice(finalCheckIdx, gcode.indexOf('o240 else'));
+    assert.ok(!fallbackText.includes(CHAINED_TLS),
+      'the rack-chained tlsRoutine must not appear inside the fallback branch — wrong routing geometry from manualTool');
+    assert.ok(fallbackText.includes(MANUAL_TLS),
+      'manualTlsRoutine must run inside the fallback branch so TLS still probes, just correctly routed from manualTool');
+  });
+
+  test('without an explicit manualTlsRoutine, buildLoadTool falls back to tlsRoutine (default keeps older callers working)', () => {
+    const SAME_TLS = '(only one routine passed)';
+    const slotPos = calculateSlotPosition(FALLBACK_CUP, 1);
+    const gcode = buildLoadTool(FALLBACK_CUP, 1, slotPos, SAME_TLS, false, { x: 60, y: 120 }, false);
+    const finalCheckIdx = gcode.indexOf('o240 if [#5399 EQ -1]');
+    const fallbackText = gcode.slice(finalCheckIdx, gcode.indexOf('o240 else'));
+    assert.ok(fallbackText.includes(SAME_TLS), 'omitting manualTlsRoutine must default to tlsRoutine, not drop TLS entirely');
+  });
+
+  test('no button/flag choice: the flag is a plain line inside the fault branch, not injected from a dialog button', () => {
+    const slotPos = calculateSlotPosition(FALLBACK_CUP, 1);
+    const gcode = buildLoadTool(FALLBACK_CUP, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    assert.ok(!gcode.includes('TOOL_FAULT_RACK'), 'no rack-specific TOOL_FAULT variant');
+    const finalCheckIdx = gcode.indexOf('o240 if [#5399 EQ -1]');
+    const flagSetIdx = gcode.indexOf('#<_manual_fallback> = 1');
+    assert.ok(finalCheckIdx !== -1 && flagSetIdx !== -1 && flagSetIdx > finalCheckIdx,
+      'the flag must be set as a plain line inside the fault branch — not via any dialog button');
+  });
+
+  test('RACK_SLOT_EMPTY fires once (bare Continue, no retry) before the manual-load handoff, addressing the correct tool number', () => {
+    const slotPos = calculateSlotPosition(FALLBACK_CUP, 1);
+    const gcode = buildLoadTool(FALLBACK_CUP, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    const finalCheckIdx = gcode.indexOf('o240 if [#5399 EQ -1]');
+    const slotEmptyIdx = gcode.indexOf('(MSG, PLUGIN_PNEUMATICATC:RACK_SLOT_EMPTY_1)');
+    const manualClampIdx = gcode.indexOf('MANUAL_CLAMP_TOOL_1');
+    assert.ok(finalCheckIdx !== -1 && slotEmptyIdx !== -1 && manualClampIdx !== -1,
+      'the fault branch, RACK_SLOT_EMPTY dialog, and manual-load handoff must all be present');
+    assert.ok(finalCheckIdx < slotEmptyIdx && slotEmptyIdx < manualClampIdx,
+      'RACK_SLOT_EMPTY must fire once, inside the fault branch, before handing off to the manual-load dialog');
+    // Fires exactly once — a repeated key is what broke the pendant handoff before.
+    const occurrences = gcode.split('RACK_SLOT_EMPTY_1').length - 1;
+    assert.equal(occurrences, 1, 'RACK_SLOT_EMPTY must fire exactly once, never retried');
+    assert.ok(!gcode.includes('RACK_SLOT_EMPTY_99'), 'must address the actual tool number, not a renumbered one');
+  });
+
+  test('manual-context load (toolNumber > slots) is unaffected: no fallback flag at all', () => {
+    const slotPos = calculateSlotPosition(FALLBACK_CUP, 4);
+    const gcode = buildLoadTool(FALLBACK_CUP, 4, slotPos, '', false, { x: 0, y: 0 }, false);
+    assert.ok(!gcode.includes('#<_manual_fallback>'), 'an already-manual load has nothing to fall back to');
+  });
+
+  test('sensor unconfigured: no fallback machinery at all, load behaves exactly as before this feature existed', () => {
+    const NO_SENSOR = { ...FALLBACK_CUP, toolSeatedSensorInput: -1 };
+    const slotPos = calculateSlotPosition(NO_SENSOR, 1);
+    const gcode = buildLoadTool(NO_SENSOR, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+    assert.ok(!gcode.includes('#<_manual_fallback>'));
+    assert.ok(!gcode.includes('MANUAL_CLAMP_TOOL'));
+  });
+
+  test('exit routing is gated behind the fallback flag on a rack load (Tm -> Tn)', () => {
+    const program = buildToolChangeProgram(FALLBACK_CUP, 1, 2).join('\n');
+    assert.ok(program.includes('o340 if [#<_manual_fallback> NE 1]'));
+    assert.ok(program.includes('o340 endif'));
+  });
+
+  test('exit routing is gated on a probing rack load too (tlsMode=always)', () => {
+    const PROBING = { ...FALLBACK_CUP, tlsMode: 'always' };
+    const program = buildToolChangeProgram(PROBING, 1, 2).join('\n');
+    assert.ok(program.includes('o340 if [#<_manual_fallback> NE 1]'));
+  });
+
+  test('exit routing is NOT gated when the sensor is unconfigured (unchanged output)', () => {
+    const NO_SENSOR = { ...FALLBACK_CUP, toolSeatedSensorInput: -1 };
+    const program = buildToolChangeProgram(NO_SENSOR, 1, 2).join('\n');
+    assert.ok(!program.includes('o340'), 'no exit-guard wrapper when the sensor is unconfigured');
+  });
+
+  // Regression: buildToolChangeProgram itself must build the fallback's
+  // TLS routine anchored at manualTool, not reuse the rack-chained one
+  // (which assumes the spindle is still at the rack exit) or the pre-M6
+  // `origin` (which is wherever the spindle was BEFORE this tool change
+  // started — not where buildManualLoad actually parks it).
+  test('probing rack load (tlsMode=always): fallback branch runs TLS anchored at manualTool, distinct from the rack-chained routine', () => {
+    const PROBING = { ...FALLBACK_CUP, tlsMode: 'always' };
+    const preM6Origin = { x: 60, y: 120 }; // deliberately far from manualTool (321, -966)
+    const program = buildToolChangeProgram(PROBING, 1, 2, { x: 0, y: 0 }, 0, preM6Origin).join('\n');
+    const expectedManualTls = motionLines(
+      createToolLengthSetRoutine(PROBING, { x: 0, y: 0 }, { originMPos: PROBING.manualTool }).join('\n')
+    ).join('\n');
+    const finalCheckIdx = program.indexOf('o240 if [#5399 EQ -1]');
+    const elseIdx = program.indexOf('o240 else');
+    assert.ok(finalCheckIdx !== -1 && elseIdx !== -1, 'fallback branch must be present');
+    const fallbackLines = motionLines(program.slice(finalCheckIdx, elseIdx)).join('\n');
+    assert.ok(fallbackLines.includes(expectedManualTls),
+      'fallback branch must run a TLS routine anchored at manualTool so probing still happens after falling back');
   });
 });
 

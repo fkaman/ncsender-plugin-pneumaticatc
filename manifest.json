@@ -60,8 +60,13 @@
       "message": "Tool still not seated after 2 rechecks. Continuing is unverified and risky.",
       "continueLabel": "Continue anyway"
     },
+    "RACK_SLOT_EMPTY": {
+      "title": "Rack Slot Empty",
+      "message": "Rack slot for tool {toolNumber} appears empty. Switching to manual load.",
+      "continueLabel": "Continue"
+    },
     "UNEXPECTED_TOOL_DETECTED": {
-      "title": "Unexpected Tool Detected",
+      "title": "Unexpected Tool",
       "message": "A tool is unexpectedly seated. Click Release, remove it by hand, then Continue.",
       "continueLabel": "Continue",
       "buttons": [
