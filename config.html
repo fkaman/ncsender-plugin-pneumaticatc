@@ -80,6 +80,18 @@
     vertical-align: super;
     line-height: 1;
   }
+  .pa-units-badge {
+    align-self: flex-start;
+    margin-top: 8px;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    color: var(--color-accent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 25%, transparent);
+  }
   .pa-sidebar-nav {
     display: flex;
     flex-direction: column;
@@ -1004,6 +1016,7 @@
       <div class="pa-sidebar-header">
         <span class="pa-sidebar-eyebrow">ncSender</span>
         <span class="pa-sidebar-title">Pneumatic ATC <span class="pa-beta-badge">Beta</span></span>
+        <span class="pa-units-badge" id="pa-units-badge" style="display: none;"></span>
       </div>
       <nav class="pa-sidebar-nav">
         <button type="button" class="pa-nav-btn active" data-nav="rack">
@@ -1644,6 +1657,30 @@
   }
   function unitLabel() { return UNITS_PREFERENCE === 'imperial' ? 'in' : 'mm'; }
   function feedLabel() { return UNITS_PREFERENCE === 'imperial' ? 'in/min' : 'mm/min'; }
+
+  // Every numeric constraint in the markup is authored in mm, because mm is
+  // what gets stored. In imperial the displayed magnitudes shrink 25.4x, so
+  // those metric bounds turn hostile: min="1" on a feedrate becomes a 25.4
+  // in/min floor, and step="1" rejects the 19.685 in/min that 500 mm/min
+  // displays as. Rescale the bounds and drop to step="any" once we know the
+  // preference. Metric is left exactly as authored.
+  var UNIT_INPUT_IDS = [
+    'pa-slide-distance', 'pa-slide-speed', 'pa-keepout-padding', 'pa-slot-distance',
+    'pa-seek-start-z', 'pa-seek-distance', 'pa-seek-feedrate',
+    'pa-slot1-x', 'pa-slot1-y', 'pa-slot1-z', 'pa-slot1-z-custom',
+    'pa-toolsetter-x', 'pa-toolsetter-y', 'pa-manualtool-x', 'pa-manualtool-y'
+  ];
+  function relaxUnitInput(el) {
+    if (!el || UNITS_PREFERENCE !== 'imperial') return;
+    ['min', 'max'].forEach(function(attr) {
+      var v = Number.parseFloat(el.getAttribute(attr));
+      if (Number.isFinite(v)) el.setAttribute(attr, (v / MM_PER_INCH).toFixed(4));
+    });
+    el.setAttribute('step', 'any');
+  }
+  function applyUnitInputConstraints() {
+    UNIT_INPUT_IDS.forEach(function(id) { relaxUnitInput($(id)); });
+  }
 
   // ---------- Sidebar nav ----------
   qsa('.pa-nav-btn').forEach(function(btn) {
@@ -2293,6 +2330,7 @@
         + '</td>';
       body.appendChild(row);
     }
+    qsa('input[data-slot]', body).forEach(relaxUnitInput);
   }
 
   document.addEventListener('input', function(evt) {
@@ -2548,11 +2586,11 @@
 
     $('pa-slide-distance').value = fmtCoord(initialConfig.slideDistance ?? 40);
     $('pa-keepout-padding').value = fmtCoord(initialConfig.keepoutPadding ?? 60);
-    $('pa-slide-speed').value    = String(initialConfig.slideSpeed ?? 500);
+    $('pa-slide-speed').value    = fmtCoord(initialConfig.slideSpeed ?? 500);
     $('pa-slot-distance').value  = fmtCoord(initialConfig.slotDistance ?? initialConfig.pocketDistance ?? 60);
     $('pa-seek-start-z').value   = fmtCoord(initialConfig.tlsSeekStartZ ?? initialConfig.zSafe ?? -5);
     $('pa-seek-distance').value  = fmtCoord(initialConfig.seekDistance ?? 50);
-    $('pa-seek-feedrate').value  = String(initialConfig.seekFeedrate ?? 500);
+    $('pa-seek-feedrate').value  = fmtCoord(initialConfig.seekFeedrate ?? 500);
 
     var slot1 = initialConfig.slot1 || initialConfig.pocket1 || { x: 0, y: 0, z: -100 };
     $('pa-slot1-x').value = fmtCoord(slot1.x ?? 0);
@@ -2597,8 +2635,16 @@
     $('pa-label-slide-distance').textContent = 'Slide Distance (' + u + ')';
     $('pa-label-slide-speed').textContent = 'Slide Speed (' + f + ')';
     $('pa-label-keepout-padding').textContent = 'Safety Margin (' + u + ')';
+    $('pa-label-seek-start-z').textContent = 'Seek Start Z (' + u + ')';
     $('pa-label-seek-distance').textContent = 'Seek Distance (' + u + ')';
     $('pa-label-seek-feedrate').textContent = 'Seek Feedrate (' + f + ')';
+    // Sidebar badge — same affordance as the RapidChange ATC plugin, so the
+    // operator can tell at a glance which units every field on the page is in.
+    var badge = $('pa-units-badge');
+    if (badge) {
+      badge.textContent = UNITS_PREFERENCE === 'imperial' ? 'IMPERIAL' : 'METRIC';
+      badge.style.display = 'inline-block';
+    }
   }
 
   // ---------- Save ----------
@@ -2669,7 +2715,7 @@
 
       slideDirection: segSlideDir ? segSlideDir.get() : 'Negative',
       slideDistance: toMetric(parseFloatOr($('pa-slide-distance').value, 40)),
-      slideSpeed: parseFloatOr($('pa-slide-speed').value, 500),
+      slideSpeed: toMetric(parseFloatOr($('pa-slide-speed').value, 500)),
       keepoutPadding: toMetric(parseFloatOr($('pa-keepout-padding').value, 60)),
 
       tlsMode: tlsMode,
@@ -2681,7 +2727,7 @@
       },
       tlsSeekStartZ: toMetric(parseFloatOr($('pa-seek-start-z').value, -5)),
       seekDistance: toMetric(parseFloatOr($('pa-seek-distance').value, 50)),
-      seekFeedrate: parseFloatOr($('pa-seek-feedrate').value, 500),
+      seekFeedrate: toMetric(parseFloatOr($('pa-seek-feedrate').value, 500)),
 
       manualTool: {
         x: toMetric(parseFloatOr($('pa-manualtool-x').value, 0)),
@@ -2975,6 +3021,9 @@
     .then(function(s) { UNITS_PREFERENCE = s.unitsPreference || 'metric'; })
     .catch(function() {})
     .finally(function() {
+      // Constraints first: applyInitial() writes imperial values into fields
+      // whose min/step are still authored in mm.
+      applyUnitInputConstraints();
       applyInitial();
       updateLabelUnits();
       requestAuxIo();
