@@ -81,7 +81,7 @@ if [ "$GENERATE_NOTES" = false ]; then
 
         echo ""
         echo "✅ Successfully created and pushed $NEW_TAG"
-        echo "CI pipeline will build the release at: https://github.com/siganberg/ncsender-plugin-rapidchangeatc/actions"
+        echo "CI pipeline will build the release at: https://github.com/fkaman/ncsender-plugin-pneumaticatc/actions"
         exit 0
     fi
 
@@ -201,4 +201,4 @@ git push origin "$NEW_TAG"
 
 echo ""
 echo "✅ Successfully created and pushed $NEW_TAG"
-echo "CI pipeline will build the release at: https://github.com/siganberg/ncsender-plugin-rapidchangeatc/actions"
+echo "CI pipeline will build the release at: https://github.com/fkaman/ncsender-plugin-pneumaticatc/actions"
