@@ -1621,13 +1621,20 @@ function handleHomeCommand(commands, context, settings) {
 
   const currentTool = context.machineState?.tool ?? 0;
   const toolOffsets = getToolOffsets(currentTool, context.tools);
-  // After $H the spindle is at the home position (typically 0,0 with
-  // grblHAL "set machine origin to 0" bit). Passing that as origin
-  // lets Cup routing pick the correct edge.
-  const mpos = context.machineState?.mpos;
-  const originMPos = (mpos && typeof mpos.x === 'number' && typeof mpos.y === 'number')
-    ? { x: mpos.x, y: mpos.y }
-    : { x: 0, y: 0 };
+  // Machine origin, NOT the current position.
+  //
+  // This runs while the command is being expanded, which is *before* the $H
+  // below has executed — so context.machineState.mpos is wherever the spindle
+  // happens to be sitting now, in a coordinate frame homing is about to throw
+  // away. Anchoring the approach there produced absolute `G53 G0` waypoints
+  // computed in the old frame: harmless when the machine was already homed and
+  // near zero, a travel-limit error after a $REBOOT and a jog, where the
+  // pre-home reading can be anything at all.
+  //
+  // The routine runs after $H completes, when the spindle is at machine origin
+  // — which is what the rest of this program already assumes, ending as it does
+  // with `G53 G0 X0 Y0`.
+  const originMPos = { x: 0, y: 0 };
   const tlsRoutine = createToolLengthSetRoutine(settings, toolOffsets, { originMPos }).join('\n');
   const tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets, { originMPos });
   const preCmd = settings.preToolChangeGcode?.trim() || '';

@@ -26,6 +26,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  onBeforeCommand,
+  buildInitialConfig,
   computeKeepoutZone,
   slotEntryPoint,
   slotApproachPoint,
@@ -2200,5 +2202,55 @@ describe('routePoint — direct primitive scenarios', () => {
       { x: -55,  y: -20 },
       { x: 200,  y: 100 },
     ]);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// $H + performTlsAfterHome must anchor on machine origin, not on wherever the
+// spindle happened to be sitting when the command was expanded.
+//
+// Reported from the shop: $REBOOT, jog clear of the keepout, then $H with
+// "perform TLS after home" on. Homing succeeded, the TLS ran, and the machine
+// then threw a travel-limit error. Expansion happens BEFORE $H executes, so the
+// approach was being routed from the pre-home reading — a coordinate in a frame
+// homing was about to redefine — and the waypoints are emitted as absolute
+// `G53 G0` moves, so they landed outside travel. It only looked fine when the
+// machine was already homed and sitting near zero.
+// ---------------------------------------------------------------------------
+describe('$H + performTlsAfterHome — routed from machine origin', () => {
+  const SETTINGS = buildInitialConfig({
+    slots: 3,
+    orientation: 'Y',
+    direction: 'Positive',
+    slot1: { x: -115, y: 40 },
+    slotDistance: 80,
+    slideDirection: 'Positive',
+    performTlsAfterHome: true,
+    tls: { x: -115, y: 400 },
+  });
+
+  const expand = (mpos) => {
+    const commands = [{ isOriginal: true, command: '$H' }];
+    onBeforeCommand(commands, {
+      machineState: { tool: 1, mpos },
+      tools: [{ number: 1, tlsBias: 0 }],
+    }, { ...SETTINGS });
+    return commands.map((c) => c.command).join('\n');
+  };
+
+  test('a far pre-home position does not leak into the approach', () => {
+    // Same rack, two wildly different pre-home readings. If either leaks in,
+    // the emitted G53 targets differ — which is the bug.
+    const nearZero = expand({ x: 0, y: 0 });
+    const farAway  = expand({ x: -812.5, y: 1234.75 });
+    assert.equal(farAway, nearZero,
+      'approach must not depend on the pre-home machine position');
+  });
+
+  test('no waypoint references the stale coordinate', () => {
+    const gcode = expand({ x: -812.5, y: 1234.75 });
+    assert.ok(!gcode.includes('-812.5'), 'stale X leaked into the program');
+    assert.ok(!gcode.includes('1234.75'), 'stale Y leaked into the program');
   });
 });
