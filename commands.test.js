@@ -1534,6 +1534,26 @@ describe('buildToolChangeProgram — unexpected-tool guard catches a stale T0 be
     assert.ok(!program.includes('UNEXPECTED_TOOL_DETECTED'), 'no dialog when the sensor is unconfigured');
   });
 
+  test('release waits out a countdown after the operator clicks Release, before the drawbar actually opens — default 5s when unconfigured', () => {
+    // Raw (non-motionLines) text — the (MSG, ...) comment is the landmark
+    // here, and motionLines filters out every comment line.
+    const program = buildToolChangeProgram(STARTUP_SETTINGS, 0, 1).join('\n');
+    const dialogIdx = program.indexOf('(MSG, PLUGIN_PNEUMATICATC:UNEXPECTED_TOOL_DETECTED)');
+    const dwellIdx = program.indexOf('G4 P5', dialogIdx);
+    const unclampIdx = program.indexOf('M64 P2', dialogIdx);
+    assert.ok(dialogIdx !== -1 && dwellIdx !== -1 && unclampIdx !== -1,
+      'dialog, countdown dwell and unclamp must all be present');
+    assert.ok(dialogIdx < dwellIdx && dwellIdx < unclampIdx,
+      'the countdown must run after the Release click resumes and before the drawbar actually opens');
+  });
+
+  test('release countdown honors a configured dialogBehavior.countdownSec instead of the 5s default', () => {
+    const CUSTOM_COUNTDOWN = { ...STARTUP_SETTINGS, dialogBehavior: { countdownSec: 8 } };
+    const program = buildToolChangeProgram(CUSTOM_COUNTDOWN, 0, 1).join('\n');
+    assert.ok(program.includes('G4 P8'), 'must dwell for the configured countdown, not the hardcoded default');
+    assert.ok(!program.includes('G4 P5'), 'must not also emit the default duration');
+  });
+
   test('currentTool>0 (software already believes a rack tool is loaded): guard does not run — that case is covered by the other guards', () => {
     const program = motionLines(buildToolChangeProgram(STARTUP_SETTINGS, 1, 2).join('\n'));
     assert.ok(!program.includes('o205 if [#5399 EQ 1]'),

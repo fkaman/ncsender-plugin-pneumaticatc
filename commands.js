@@ -1330,6 +1330,12 @@ function wrapUnloadWithSeatedCheck(settings, unloadSection, oNum) {
 // anything else can safely happen.
 function guardUnexpectedTool(settings, oNum) {
   if (!(settings.toolSeatedSensorInput >= 0)) return '';
+  // Same countdown-before-release safety margin as a manual Release
+  // click elsewhere in the plugin — gives the operator time to clear the
+  // spindle before the drawbar actually lets go. Uses the configured
+  // dialogBehavior.countdownSec (default 5s) rather than a fixed value,
+  // so it stays in step with whatever the operator has that set to.
+  const countdown = toFiniteNumber(settings.dialogBehavior?.countdownSec, 5);
   // Seated (tool present) reads HIGH (1); invert via $370 if wired the other way round.
   return `
     M66 P${settings.toolSeatedSensorInput} L0 Q0
@@ -1338,6 +1344,7 @@ function guardUnexpectedTool(settings, oNum) {
       G4 P0
       (MSG, PLUGIN_PNEUMATICATC:UNEXPECTED_TOOL_DETECTED)
       M0
+      G4 P${countdown}
       ${auxLineFor(settings, 'unclamp')}
       M0
     o${oNum} endif
