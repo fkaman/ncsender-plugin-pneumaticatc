@@ -67,7 +67,7 @@
     },
     "UNEXPECTED_TOOL_DETECTED": {
       "title": "Unexpected Tool",
-      "message": "A tool is unexpectedly seated. Click Release, remove it by hand, then Continue.",
+      "message": "A tool is unexpectedly seated. Release opens after a delay. Remove it by hand, then Continue.",
       "continueLabel": "Continue",
       "buttons": [
         {
