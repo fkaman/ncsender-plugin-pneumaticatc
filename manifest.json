@@ -90,7 +90,7 @@
     },
     "MANUAL_UNLOAD_TOOL": {
       "title": "Manual Unload",
-      "message": "Click Release to open the drawbar, remove tool {toolNumber}, then Continue or Abort.",
+      "message": "Click Release (opens after a delay) to remove tool {toolNumber}, then Continue or Abort.",
       "continueLabel": "Continue",
       "buttons": [
         {
@@ -135,7 +135,7 @@
     },
     "MANUAL_SWAP_TOOL": {
       "title": "Manual Swap",
-      "message": "Click Release, swap in tool {toolNumber}, click Clamp, then Continue.",
+      "message": "Click Release (opens after a delay), swap in tool {toolNumber}, click Clamp, then Continue.",
       "continueLabel": "Continue",
       "buttons": [
         {

@@ -1709,6 +1709,67 @@ describe('gateSpindleUnclamp — safety block for M64 on clampAuxOutput while sp
   });
 });
 
+// Countdown-before-release dwell: guardUnexpectedTool's Release button
+// dwells for dialogBehavior.countdownSec before the drawbar actually
+// opens, giving the operator time to clear the spindle. The SAME
+// mandatory dwell belongs on every other Release button that fires an
+// unclamp straight off an operator's M0 click — buildUnloadTool's manual
+// unload and buildManualSwap's Release — otherwise "manual release"
+// still has no guaranteed delay unless the operator happens to hold the
+// button down (a separate, host-level opt-in gesture this plugin has no
+// visibility into or control over). Automated releases that aren't
+// gated behind a button click (rack unload, T0→Tn's pre-clamp release,
+// buildManualLoad's pre-dialog auto-release) are untouched — nobody is
+// standing there clicking a button for those.
+describe('countdown-before-release dwell on manual-release Release buttons', () => {
+  const DWELL_SETTINGS = {
+    ...CUP_RACK, slots: 3, manualTool: { x: 321, y: -966 }
+  };
+
+  test('buildUnloadTool manual unload: dwells for the default 5s between the Release M0 and the unclamp', () => {
+    const slotPos = calculateSlotPosition(DWELL_SETTINGS, 4);
+    const gcode = buildUnloadTool(DWELL_SETTINGS, 4, slotPos, { x: 0, y: 0 });
+    const lines = motionLines(gcode);
+    const m0Idx = lines.indexOf('M0');
+    const dwellIdx = lines.indexOf('G4 P5');
+    const unclampIdx = lines.indexOf('M64 P2');
+    assert.ok(m0Idx !== -1 && dwellIdx !== -1 && unclampIdx !== -1,
+      'the Release M0, countdown dwell and unclamp must all be present');
+    assert.ok(m0Idx < dwellIdx && dwellIdx < unclampIdx,
+      'the dwell must run after the Release click resumes and before the drawbar actually opens');
+  });
+
+  test('buildUnloadTool manual unload: honors a configured dialogBehavior.countdownSec', () => {
+    const CUSTOM = { ...DWELL_SETTINGS, dialogBehavior: { countdownSec: 8 } };
+    const slotPos = calculateSlotPosition(CUSTOM, 4);
+    const gcode = buildUnloadTool(CUSTOM, 4, slotPos, { x: 0, y: 0 });
+    assert.ok(gcode.includes('G4 P8'), 'must dwell for the configured countdown');
+    assert.ok(!gcode.includes('G4 P5'), 'must not also emit the default duration');
+  });
+
+  test('buildManualSwap: dwells between the Release M0 and the unclamp, before the Clamp step', () => {
+    const gcode = buildManualSwap(DWELL_SETTINGS, 5, '');
+    const lines = motionLines(gcode);
+    const m0Idx = lines.indexOf('M0');
+    const dwellIdx = lines.indexOf('G4 P5');
+    const unclampIdx = lines.indexOf('M64 P2');
+    const clampIdx = lines.indexOf('M65 P2');
+    assert.ok(m0Idx !== -1 && dwellIdx !== -1 && unclampIdx !== -1 && clampIdx !== -1,
+      'the Release M0, countdown dwell, unclamp and clamp must all be present');
+    assert.ok(m0Idx < dwellIdx && dwellIdx < unclampIdx && unclampIdx < clampIdx,
+      'the dwell must run after Release and before the drawbar opens, ahead of the later Clamp step');
+  });
+
+  test('automated releases untouched: T0→Tn pre-clamp release and buildManualLoad\'s pre-dialog auto-release get no dwell', () => {
+    const slotPos = calculateSlotPosition(DWELL_SETTINGS, 1);
+    const loadGcode = buildLoadTool(DWELL_SETTINGS, 1, slotPos, '', /* drawbarAlreadyReleased */ false, { x: 0, y: 0 }, false);
+    assert.ok(!loadGcode.includes('G4 P5'), 'no operator is clicking a button for the automated pre-clamp release');
+
+    const manualLoadGcode = buildLoadTool(DWELL_SETTINGS, 4, slotPos, '', false, { x: 0, y: 0 }, false);
+    assert.ok(!manualLoadGcode.includes('G4 P5'), 'buildManualLoad\'s auto-release runs before any dialog is shown, not off a button click');
+  });
+});
+
 // T0 → manual-tool UX: user shouldn't have to click "Release" when the
 // spindle is already empty. Plugin now auto-fires the unclamp and jumps
 // straight to the single-Clamp dialog (MANUAL_CLAMP_TOOL). The old

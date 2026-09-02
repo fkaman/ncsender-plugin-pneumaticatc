@@ -1023,12 +1023,15 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     // Manual unload: park at manual position → dialog with [Release]
     // [Continue] → each button click sends `~`, advancing one step.
     // Release advances to open the drawbar (aux OFF); Continue advances
-    // past the second M0 to run M61 Q0.
+    // past the second M0 to run M61 Q0. Same countdown-before-release
+    // dwell as guardUnexpectedTool's Release — gives the operator time
+    // to clear the spindle before the drawbar actually lets go.
     return `
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
       G4 P0
       (MSG, PLUGIN_PNEUMATICATC:MANUAL_UNLOAD_TOOL_${currentTool})
       M0
+      G4 P${toFiniteNumber(settings.dialogBehavior?.countdownSec, 5)}
       ${auxLineFor(settings, 'unclamp')}
       M0
       M61 Q0
@@ -1280,11 +1283,15 @@ function buildManualSwap(settings, toolNumber, tlsRoutine) {
   // (aux OFF, opens drawbar) → user swaps bits → Clamp (aux ON, closes
   // drawbar) → Continue advances past the final M0 into toolSeatedGuard,
   // same Re-check/Abort obligation as an automated clamp before M61 + TLS.
+  // Same countdown-before-release dwell as guardUnexpectedTool's Release
+  // — gives the operator time to clear the spindle before the drawbar
+  // actually lets go.
   return `
     G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
     G4 P0
     (MSG, PLUGIN_PNEUMATICATC:MANUAL_SWAP_TOOL_${toolNumber})
     M0
+    G4 P${toFiniteNumber(settings.dialogBehavior?.countdownSec, 5)}
     ${auxLineFor(settings, 'unclamp')}
     M0
     ${auxLineFor(settings, 'clamp')}
