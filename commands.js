@@ -668,14 +668,21 @@ function slotApproachPoint(slotNumber, settings) {
 // Cup:  origin/destination-side edge when the anchor is past a perp
 //       edge (shortest hop); workspace-side edge otherwise (matches
 //       cupEntrance's degenerate branch — inside-band anchor).
-function pickEntryEdge(settings, edgeAnchor) {
+//
+// `freeEdge` drops the Fork constraint and picks by geometry for any
+// holding style. For a path that never touches a slot — TLS back to the
+// origin — the fork's engagement side is irrelevant, and forcing it sent
+// the spindle to the far edge of the keepout, along its whole width, and
+// back down the other side when the destination sat just past the near
+// edge (reported on a 12-slot Sienci rack: ~240 mm of pointless travel).
+function pickEntryEdge(settings, edgeAnchor, freeEdge = false) {
   const orientationY = settings.orientation === 'Y';
   const pad = settings.keepoutPadding ?? settings.slideDistance ?? 0;
   const slot1Perp = orientationY ? settings.slot1.x : settings.slot1.y;
   const perpMin = slot1Perp - pad;
   const perpMax = slot1Perp + pad;
 
-  if (settings.rackHolding === 'Cup') {
+  if (freeEdge || settings.rackHolding === 'Cup') {
     if (edgeAnchor) {
       const anchorPerp = orientationY ? edgeAnchor.x : edgeAnchor.y;
       if (anchorPerp >= perpMax) return perpMax;
@@ -693,6 +700,8 @@ function pickEntryEdge(settings, edgeAnchor) {
 // options.edgeAnchor — point that anchors edge picking for Cup (default:
 //   `from`). Pass the destination for exit routes so the picked edge
 //   matches where the tool ends up.
+// options.freeEdge — pick the edge by geometry even on a Fork rack. Only
+//   for paths that don't touch a slot (see pickEntryEdge).
 // options.machineTravel — TODO (see routing section header).
 //
 // Returns waypoints excluding `from`, including `to`.
@@ -744,7 +753,7 @@ function routePoint(from, to, settings, options = {}) {
   }
 
   const edgeAnchor = options.edgeAnchor ?? from;
-  const entryPerp = pickEntryEdge(settings, edgeAnchor);
+  const entryPerp = pickEntryEdge(settings, edgeAnchor, !!options.freeEdge);
   // oppositePerp = the OTHER edge of the padded perp band.
   const oppositePerp = entryPerp === perpMax ? perpMin
                      : entryPerp === perpMin ? perpMax
@@ -912,9 +921,11 @@ function tlsEntrance(fromSlotXY, tlsX, tlsY, settings) {
 }
 
 // TLS → destination (usually origin). Direct routePoint call — TLS is
-// a standalone XY (not inside the rack), no ascent needed.
+// a standalone XY (not inside the rack), no ascent needed, and no slot is
+// touched, so the keepout edge is picked by geometry (nearest the
+// destination) rather than forced to the fork's sliding side.
 function tlsExit(tlsX, tlsY, origin, settings) {
-  const waypoints = routePoint({ x: tlsX, y: tlsY }, origin, settings, { edgeAnchor: origin });
+  const waypoints = routePoint({ x: tlsX, y: tlsY }, origin, settings, { edgeAnchor: origin, freeEdge: true });
   return `
     (tlsExit: routePoint TLS -> destination.)
     ${waypointsToGCode(waypoints)}

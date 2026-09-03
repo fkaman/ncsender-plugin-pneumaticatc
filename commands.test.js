@@ -2335,3 +2335,45 @@ describe('$H + performTlsAfterHome — routed from machine origin', () => {
     assert.ok(!gcode.includes('1234.75'), 'stale Y leaked into the program');
   });
 });
+
+// ---------------------------------------------------------------------------
+// tlsExit on a Fork rack: the TLS → origin path never touches a slot, so it
+// must not be forced onto the fork's sliding-side edge. Reported on a
+// 12-slot Sienci rack along X: TLS sits just past the rack's par-max end
+// inside the perp band, origin is far past the bottom (-Y) edge. The old
+// route went UP to the sliding edge (Y-7.244), along the rack's end, back
+// DOWN to the bottom edge, then out — three moves and ~240 mm extra. The
+// right route is the bottom-edge corner and out: two moves.
+// ---------------------------------------------------------------------------
+describe('tlsExit — Fork rack picks the keepout edge nearest the destination', () => {
+  const SIENCI_12 = {
+    slots: 12, orientation: 'X', direction: 'Positive',
+    slot1: { x: 128.671, y: -67.244 }, slotDistance: 90,
+    slideDirection: 'Negative', slideDistance: 40, keepoutPadding: 60,
+    rackHolding: 'Fork',
+  };
+
+  test('reported case: bottom-edge corner then straight out, not via the sliding edge', () => {
+    const gcode = tlsExit(1250.259, -54.661, { x: 406.3, y: -489.287 }, SIENCI_12);
+    assert.deepEqual(motionLines(gcode), [
+      'G53 G0 X1178.671 Y-127.244', // par-max corner on the edge nearest the origin
+      'G53 G0 X406.3 Y-489.287',    // out
+    ]);
+  });
+
+  test('destination past the sliding edge still exits via the sliding edge (nearest)', () => {
+    const gcode = tlsExit(1250.259, -54.661, { x: 406.3, y: 80 }, SIENCI_12);
+    assert.deepEqual(motionLines(gcode), [
+      'G53 G0 X1178.671 Y-7.244',
+      'G53 G0 X406.3 Y80',
+    ]);
+  });
+
+  test('slot exits on a Fork rack are unchanged: rackExit still uses the sliding side', () => {
+    // Slot 12 approach → origin below the rack. The fork must leave along the
+    // sliding side regardless of where the origin is.
+    const slot = calculateSlotPosition(SIENCI_12, 12);
+    const gcode = rackExit(slot.approach, { x: 406.3, y: -489.287 }, SIENCI_12);
+    assert.match(motionLines(gcode)[0], /Y-7\.244$/);
+  });
+});
