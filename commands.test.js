@@ -2136,6 +2136,27 @@ describe('toolSeatedOrManualFallback — single-read fallback to buildManualLoad
     assert.ok(retractIdx > finalCheckIdx && retractIdx < parkIdx, 'must retract to Z-safe before parking at the manual station');
   });
 
+  // Regression: the fallback used to hardcode a bare Z-safe retract
+  // regardless of rack style. On a Fork rack the tool is clamped and
+  // still sitting at the engaged position inside the fork — going
+  // straight up from there lifts the clamped tool through the fork's
+  // envelope instead of sliding it clear first, same as forkPostClampMotion
+  // already does on the success path. Reported on hardware as "the tool
+  // lifted straight and did not slide out sideways" with taper blow on,
+  // but the bug is in the fallback path itself, not taper blow's gcode.
+  test('Fork rack load: fallback slides out to slotPos.approach (same as the success path) before retracting to Z-safe', () => {
+    const slotPos = calculateSlotPosition(FALLBACK_FORK, 2);
+    const gcode = buildLoadTool(FALLBACK_FORK, 2, slotPos, '', false, { x: 60, y: 120 }, false);
+    const finalCheckIdx = gcode.indexOf('o240 if [#5399 EQ -1]');
+    const slideIdx = gcode.indexOf(`G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y}`, finalCheckIdx);
+    const retractIdx = gcode.indexOf(`G53 G0 Z${FALLBACK_FORK.zSafe}`, finalCheckIdx);
+    const parkIdx = gcode.indexOf(`G53 G0 X${FALLBACK_FORK.manualTool.x}`, finalCheckIdx);
+    assert.ok(finalCheckIdx !== -1 && slideIdx !== -1 && retractIdx !== -1 && parkIdx !== -1,
+      'final check, slide-out, Z-safe retract and park move must all be present');
+    assert.ok(finalCheckIdx < slideIdx && slideIdx < retractIdx && retractIdx < parkIdx,
+      'must slide clear of the fork sideways, THEN retract to Z-safe, before parking at the manual station');
+  });
+
   test('fallback uses manualTlsRoutine (anchored at manualTool), not the rack-chained tlsRoutine', () => {
     const CHAINED_TLS = '(this assumes it is chained from a rack exit — wrong for the fallback)';
     const MANUAL_TLS = '(this is anchored at manualTool — correct for the fallback)';

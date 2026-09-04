@@ -1235,10 +1235,18 @@ function toolSeatedOrManualFallback(settings, toolNumber, tlsRoutine, postClampM
     return `${postClampMotion}\n    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum)}`.trim();
   }
   const read = `M66 P${settings.toolSeatedSensorInput} L3 Q0.01\n    G4 P0.1`; // seated=HIGH
+  // Retreat via postClampMotion, NOT a bare Z retract — the tool is
+  // clamped and still sitting at the engaged position, so a Fork rack
+  // needs the same sideways slide-out to slotPos.approach that the
+  // success path already gets from forkPostClampMotion before it's
+  // safe to go vertical. A straight G53 G0 Z here would lift the
+  // clamped tool straight up while still inside the fork's envelope.
+  // Cup racks are unaffected — cupPostClampMotion already IS a bare Z
+  // retract, so this is a no-op change for them.
   const fallback = `
     (MSG, PLUGIN_PNEUMATICATC:RACK_SLOT_EMPTY_${toolNumber})
     M0
-    G53 G0 Z${settings.zSafe}
+    ${postClampMotion}
     ${buildManualLoad(settings, toolNumber, manualTlsRoutine, false)}
   `.trim();
   const normalContinuation = `${postClampMotion}\n      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum + 1)}`.trim();
