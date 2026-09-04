@@ -1259,6 +1259,170 @@ describe('buildLoadTool — drawbar offset compensation (regression)', () => {
   });
 });
 
+// Pressure read placement: checked ONCE, before the tool change starts,
+// and never again after a drawbar release. An earlier version also
+// re-checked after every release, and that produced a false "Air
+// Pressure Low" fault on real hardware — with the drawbar open the
+// pressure input can sit HIGH for a while even with a healthy supply, so
+// a read there doesn't mean what it's supposed to. Matches Sienci's own
+// TC.macro, which only ever calls its pressure helper once, before
+// anything moves.
+describe('pressure read — once before the change, never after a release', () => {
+  const PRESSURE_SETTINGS = { ...CUP_RACK, pressureInput: 2, drawbarSensorInput: -1, toolSeatedSensorInput: -1 };
+
+  test('the program reads pressure exactly once, before any unload/load motion', () => {
+    const lines = motionLines(buildToolChangeProgram(PRESSURE_SETTINGS, 0, 1).join('\n'));
+    const reads = lines.map((l, i) => [l, i]).filter(([l]) => /^M66 P2 L4/.test(l));
+    // Initial read + 2 retries inside the o-if wrapper — all from the
+    // single up-front guard, none from a second call site.
+    assert.equal(reads.length, 3, `expected 3 M66 lines from one guard, got ${reads.length}`);
+    const m61Idx = lines.indexOf('M61 Q1');
+    assert.ok(m61Idx !== -1 && reads.every(([, i]) => i < m61Idx),
+      'every pressure read must come before the tool change reports its outcome (M61) — i.e. before any unload/load motion');
+  });
+
+  test('no pressure read follows the drawbar release in unload (Cup or Fork)', () => {
+    const slotPos = calculateSlotPosition(PRESSURE_SETTINGS, 1);
+    const cupUnload = buildUnloadTool(PRESSURE_SETTINGS, 1, slotPos, { x: 60, y: 120 });
+    const forkUnload = buildUnloadTool({ ...PRESSURE_SETTINGS, rackHolding: 'Fork' }, 1, slotPos, { x: 60, y: 120 });
+    assert.ok(!cupUnload.includes('M66'), 'Cup unload must not read pressure after its own release');
+    assert.ok(!forkUnload.includes('M66'), 'Fork unload must not read pressure after its own release');
+  });
+
+  test('no pressure read follows the drawbar release in a T0 -> Tn load', () => {
+    const slotPos = calculateSlotPosition(PRESSURE_SETTINGS, 1);
+    const load = buildLoadTool(PRESSURE_SETTINGS, 1, slotPos, '', /* drawbarAlreadyReleased */ false, { x: 60, y: 120 }, false);
+    assert.ok(!load.includes('M66'), 'load must not read pressure after its own pre-clamp release');
+  });
+
+  test('no sensor configured: no M66 anywhere in the program', () => {
+    const NO_SENSOR = { ...CUP_RACK, pressureInput: -1 };
+    assert.ok(!buildToolChangeProgram(NO_SENSOR, 0, 1).join('\n').includes('M66'));
+  });
+});
+
+// Taper blow / cone clean. Sienci's blow port is teed off the drawbar valve,
+// so with `taperBlow` on the sequence matches TC.macro: close the drawbar
+// right after lifting off the unloaded holder, re-open it directly above the
+// next holder, vent 0.8 s, feed the last 20 mm down at 1500, settle 1 s
+// after the clamp. Off keeps the drawbar open across a chained swap.
+//
+// Uses motionLines() throughout (not raw split/trim) because a disabled
+// drawbarReleasedGuard call — same as every other guard call site in this
+// file — leaves a blank line where it would have gone; motionLines()
+// filters that out the same way the rest of this file's tests already do.
+describe('taperBlow — Sienci-style drawbar handling around the traverse', () => {
+  const base = { slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5, clampAuxOutput: 1 };
+  const on  = buildInitialConfig({ ...base, taperBlow: true });
+  const off = buildInitialConfig({ ...base });
+  const auxOf = (line) => (line.match(/^M6[45] P\d+/) || [])[0];
+
+  test('defaults off', () => {
+    assert.equal(off.taperBlow, false);
+  });
+
+  test('on: the unload closes the drawbar 20 mm above the holder, before leaving for Z-safe', () => {
+    const lines = motionLines(buildUnloadTool(on, 1, calculateSlotPosition(on, 1), { x: 0, y: 0 }));
+    const lift = lines.findIndex((l) => l === 'G53 G0 Z-80');
+    assert.ok(lift > 0, 'expected a lift to slot Z + 20');
+    assert.match(lines[lift + 1], /^M6[45] P1$/);
+    assert.notEqual(auxOf(lines[lift + 1]), auxOf(lines.find((l) => /^M6[45] P1$/.test(l))), 'the aux after lift-off must be the clamp, i.e. the opposite of the release');
+    const safe = lines.findIndex((l) => l === 'G53 G0 Z-5');
+    assert.ok(safe > lift + 1, 'the clamp happens before the rapid to Z-safe');
+  });
+
+  test('off: the unload leaves the drawbar open and goes straight to Z-safe', () => {
+    const g = buildUnloadTool(off, 1, calculateSlotPosition(off, 1), { x: 0, y: 0 });
+    assert.equal((motionLines(g).filter((l) => /^M6[45] P1$/.test(l))).length, 1, 'only the release, no re-clamp');
+    assert.doesNotMatch(g, /G53 G0 Z-80/);
+  });
+
+  test('on: the load re-opens above the holder, vents 0.8 s, feeds down at 1500 and settles 1 s after clamping', () => {
+    const lines = motionLines(buildLoadTool(on, 2, calculateSlotPosition(on, 2), '', /* alreadyReleased */ false, { x: 0, y: 0 }, /* chained */ true));
+    const i = lines.findIndex((l) => l === 'G53 G0 Z-80');
+    assert.ok(i > 0, 'expected a rapid to slot Z + 20 above the holder');
+    assert.equal(lines[i + 1], 'G4 P0.1');
+    assert.match(lines[i + 2], /^M6[45] P1$/, 'release directly above the holder');
+    assert.equal(lines[i + 3], 'G4 P0.8', 'vent / blow dwell');
+    assert.equal(lines[i + 4], 'G53 G1 Z-99 F1500', 'slow dedust feed to the approach height');
+    assert.ok(lines.includes('G4 P1'), '1 s settle after the clamp');
+  });
+
+  test('off: a chained load skips the release and rapids to the approach height', () => {
+    const g = buildLoadTool(off, 2, calculateSlotPosition(off, 2), '', true, { x: 0, y: 0 }, true);
+    assert.doesNotMatch(g, /G4 P0\.8/);
+    assert.doesNotMatch(g, /F1500/);
+    assert.equal((motionLines(g).filter((l) => /^M6[45] P1$/.test(l))).length, 1, 'only the clamp');
+  });
+
+  test('on: a full T1 -> T2 program has air off for the traverse between the slots', () => {
+    const lines = motionLines(buildToolChangeProgram(on, 1, 2).join('\n'));
+    const aux = lines.map((l, i) => [l, i]).filter(([l]) => /^M6[45] P1$/.test(l));
+    // release (unload) -> clamp (after lift-off) -> release (above slot 2) -> clamp (seat)
+    assert.equal(aux.length, 4, `expected 4 drawbar switches, got ${aux.length}: ${aux.map(([l]) => l).join(' ')}`);
+    assert.equal(aux[0][0], aux[2][0], 'first and third are releases');
+    assert.equal(aux[1][0], aux[3][0], 'second and fourth are clamps');
+    assert.notEqual(aux[0][0], aux[1][0]);
+    // The traverse (the par-walk to slot 2 engaged at Z-safe) sits between the
+    // first clamp and the second release.
+    const walk = lines.findIndex((l, i) => i > aux[1][1] && /^G53 G0 X/.test(l));
+    assert.ok(walk > aux[1][1] && walk < aux[2][1], 'the move to slot 2 happens with the drawbar closed');
+  });
+
+  test('on: T1 -> T0 does not double-clamp at the end', () => {
+    const lines = motionLines(buildToolChangeProgram(on, 1, 0).join('\n'));
+    const aux = lines.filter((l) => /^M6[45] P1$/.test(l));
+    assert.equal(aux.length, 2, 'release, then the single clamp after lift-off');
+  });
+
+  test('off: T1 -> T0 still clamps once at the end', () => {
+    const lines = motionLines(buildToolChangeProgram(off, 1, 0).join('\n'));
+    const aux = lines.filter((l) => /^M6[45] P1$/.test(l));
+    assert.equal(aux.length, 2, 'release, then the finalize clamp');
+  });
+
+  // Verification this session added beyond upstream: taper blow's load-path
+  // release happens directly above the holder, immediately followed by an
+  // unattended feed move onto it. Without drawbarReleasedGuard there, a
+  // failed release drives a closed collet into the holder at
+  // DEDUST_FEEDRATE_MMPM with nothing to stop it. Mirrors the same
+  // Re-check/Abort obligation the non-taper-blow releaseFirst path already
+  // has via drawbarReleasedGuard(155).
+  describe('load-path release is verified before the feed-down (crash-prevention addition)', () => {
+    const withSensor = buildInitialConfig({ ...base, taperBlow: true, drawbarSensorInput: 3 });
+
+    test('a failed release shows DRAWBAR_FAULT and blocks the feed-down until it clears', () => {
+      const gcode = buildLoadTool(withSensor, 2, calculateSlotPosition(withSensor, 2), '', false, { x: 0, y: 0 }, true);
+      const lines = motionLines(gcode);
+      const ventIdx = lines.indexOf('G4 P0.8');
+      const readIdx = lines.findIndex((l, i) => i > ventIdx && l.startsWith('M66 P3'));
+      const feedIdx = lines.indexOf('G53 G1 Z-99 F1500');
+      assert.ok(ventIdx !== -1 && readIdx !== -1 && feedIdx !== -1,
+        'vent dwell, drawbar-released read and feed-down must all be present');
+      assert.ok(ventIdx < readIdx && readIdx < feedIdx,
+        'the release must be verified after venting and before the feed-down onto the holder');
+      assert.ok(gcode.includes('DRAWBAR_FAULT'),
+        'a failed release must get the same Re-check/Abort dialog as the non-taper-blow path');
+    });
+
+    test('sensor unconfigured: no verification, feed-down runs unconditionally (unchanged from upstream)', () => {
+      const gcode = buildLoadTool(on, 2, calculateSlotPosition(on, 2), '', false, { x: 0, y: 0 }, true);
+      assert.ok(!gcode.includes('M66'), 'no read when the drawbar sensor is unconfigured');
+      assert.ok(!gcode.includes('DRAWBAR_FAULT'));
+    });
+  });
+
+  // Both compound overrides on drawbarAlreadyReleased/chainedFromRack active
+  // at once: a rack source with the tool-seated pre-check armed AND taper
+  // blow on. Neither override should cancel the other out.
+  test('seatedPrecheckActive + taperBlow together: the pre-check gate and the taper-blow reclamp both appear', () => {
+    const both = buildInitialConfig({ ...base, taperBlow: true, toolSeatedSensorInput: 5 });
+    const program = buildToolChangeProgram(both, 1, 2).join('\n');
+    assert.ok(program.includes('o200 if [#5399 EQ 1]'), 'seatedPrecheckActive must still gate the unload');
+    assert.ok(program.includes('G53 G0 Z-80'), 'taper-blow lift-and-reclamp must still be present in the unload');
+  });
+});
+
 // Drawbar / tool-seated sensor checks. Two independent physical sensors
 // (unlike pressure, which shares one pin across all its checks): the
 // drawbar sensor is read right after the collet unclamps (must report

@@ -525,6 +525,7 @@
     pointer-events: none;
     filter: saturate(0.7);
   }
+  .pa-toggle.pa-locked { opacity: 0.55; pointer-events: none; }
   .pa-card.pa-advanced-preview { opacity: 0.7; }
   .pa-card.pa-advanced-preview .pa-input,
   .pa-card.pa-advanced-preview .pa-select { cursor: not-allowed; }
@@ -1496,20 +1497,20 @@
           </svg>
           <div>
             <strong>Air Pressure, Drawbar Sensor and Tool Seated Sensor are live. Tool Holder is still a preview.</strong>
-            Each sensor is read with <code>M66</code> at its own point in the sequence — pressure before the tool change starts and after every drawbar release, the drawbar sensor right after the collet unclamps, the tool-seated sensor right after it clamps. A fault on any of them pauses the job with a dialog instead of moving on. Tool Holder is recorded here but nothing reads it yet.
+            Each sensor is read with <code>M66</code> at its own point in the sequence — pressure once before the tool change starts, the drawbar sensor right after the collet unclamps, the tool-seated sensor right after it clamps. A fault on any of them pauses the job with a dialog instead of moving on. Tool Holder is recorded here but nothing reads it yet.
           </div>
         </div>
 
         <div class="pa-card">
           <h3 class="pa-card-title">Air Pressure Sensor</h3>
           <p class="pa-card-help">
-            grblHAL aux input the pressure switch is wired to. The list is read from the controller, so it only offers inputs this board actually has. Pick <em>N/A</em> if you don't have one. Pressure is read as <b>OK when the input is LOW</b> (same wiring convention Sienci's macros assume) — invert the port in firmware (<code>$370</code>) if your switch reads the other way round. Checked once before the tool change starts, and again after each drawbar release: a fault pauses the job with a dialog offering Re-check or Abort.
+            grblHAL aux input the pressure switch is wired to. The list is read from the controller, so it only offers inputs this board actually has. Pick <em>N/A</em> if you don't have one. Pressure is read as <b>OK when the input is LOW</b> (same wiring convention Sienci's macros assume) — invert the port in firmware (<code>$370</code>) if your switch reads the other way round. Checked once, before the tool change starts and before anything moves (the same point Sienci's macros check it): a fault pauses the job with a dialog offering Re-check or Abort.
           </p>
 
           <div class="pa-form-row">
             <label class="pa-form-label" for="pa-adv-input-pres">
               Air Pressure
-              <span class="pa-help-tip" title="Pneumatic supply pressure adequate for the drawbar. Read with M66 before the tool change and after every release — a fault pauses the job rather than moving on with a drawbar that may not have opened.">?</span>
+              <span class="pa-help-tip" title="Pneumatic supply pressure adequate for the drawbar. Read with M66 once, before the tool change starts — a fault pauses the job rather than starting a change the drawbar may not be able to complete.">?</span>
             </label>
             <!-- Options come from the controller's [AUX IO:..] report so a
                  port the board doesn't have can't be picked: M66 with a wait
@@ -1552,6 +1553,23 @@
             <select id="pa-adv-input-toolseated" class="pa-select pa-adv-pin">
               <option value="">N/A</option>
             </select>
+          </div>
+        </div>
+
+        <div class="pa-card" id="pa-adv-taper-blow-card">
+          <h3 class="pa-card-title">Taper Blow / Cone Clean</h3>
+          <p class="pa-card-help">
+            Turn this on if the spindle's taper-blow port is plumbed off the drawbar valve, so air blasts through the collet whenever the drawbar is open (this is how the Sienci kit is plumbed). The sequence then closes the drawbar as soon as it lifts off an unloaded holder, so the blow isn't hissing across the whole traverse to the next slot, opens it again directly above the next holder, waits 0.8 s for the air to vent and blow the taper, and feeds the last 20 mm down slowly with the blow running to clear chips off the holder. Leave it off if nothing is connected to the blow port: the drawbar then stays open between slots, which costs nothing when no air is venting.
+          </p>
+          <div class="pa-field-inline">
+            <label for="pa-adv-taper-blow">
+              Taper blow / cone clean
+              <span class="pa-help-tip" title="On: close the drawbar after lifting off an unloaded holder, re-open it above the next holder, vent for 0.8 s, then feed the last 20 mm down at 1500 mm/min with the blow running. Fixed on for the Sienci ATC profile.">?</span>
+            </label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-adv-taper-blow">
+              <span class="pa-toggle-slider"></span>
+            </label>
           </div>
         </div>
 
@@ -1804,7 +1822,8 @@
       clampOut: null, pres: '',
       drawbar: '',
       toolSeated: '',
-      holder: 0, locked: false
+      holder: 0, locked: false,
+      taperBlow: false
     },
     // Sienci ATC, from their P200.macro:
     //   _tc_output_db  = 1  (drawbar solenoid — our clamp aux output)
@@ -1820,6 +1839,9 @@
       drawbar: 0,
       toolSeated: 0,
       holder: 0, locked: true,
+      // The kit's taper-blow port is teed off the drawbar valve, so the
+      // blow-aware sequence is the right one and stays on.
+      taperBlow: true,
       // Physical rack geometry on the Sienci kit is also fixed: rack
       // sits along +X with 90 mm between adjacent slots, holders sit
       // in fork mounts (side-entry) rather than cup drops. Sienci
@@ -1879,6 +1901,10 @@
       setAdvPin('pa-adv-input-toolseated', p.toolSeated);
       setAdvPin('pa-adv-input-holder', p.holder);
       if (p.clampOut !== null) setClampAux(p.clampOut);
+      if (typeof p.taperBlow === 'boolean') {
+        var tbInput = $('pa-adv-taper-blow');
+        if (tbInput) tbInput.checked = p.taperBlow;
+      }
     }
 
     var locked = !!p.locked;
@@ -1893,6 +1919,16 @@
         el.classList.toggle('pa-locked', locked);
         showPinAsLabel(id, locked, (p.names || {})[id], !!p.suppressMissingWarning);
       });
+
+    // Taper blow follows the profile lock like the pins do: a known kit's
+    // plumbing decides it, so it isn't editable there.
+    (function() {
+      var tb = $('pa-adv-taper-blow');
+      if (!tb) return;
+      tb.disabled = locked;
+      var wrap = tb.closest('.pa-toggle');
+      if (wrap) wrap.classList.toggle('pa-locked', locked);
+    })();
 
     // Geometry + slide lock. Same reasoning as the pin lock above —
     // a known kit's rack layout / orientation / direction / slot spacing
@@ -2576,6 +2612,9 @@
     var savedToolSeated = initialConfig.toolSeatedSensorInput;
     setAdvPin('pa-adv-input-toolseated', (typeof savedToolSeated === 'number' && savedToolSeated >= 0) ? savedToolSeated : '');
 
+    var taperBlowInput = $('pa-adv-taper-blow');
+    if (taperBlowInput) taperBlowInput.checked = !!initialConfig.taperBlow;
+
     // Profile last, so it can lock/overwrite the pin fields it owns. Silent:
     // restoring saved state isn't a user edit.
     var profSel = $('pa-adv-profile');
@@ -2700,6 +2739,8 @@
         var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
+      // Taper blow / cone clean plumbed off the drawbar valve.
+      taperBlow: $('pa-adv-taper-blow') ? $('pa-adv-taper-blow').checked : false,
       rackHolding: $('pa-rack-holding').value || 'Fork',
 
       orientation: segOrientation ? segOrientation.get() : 'Y',

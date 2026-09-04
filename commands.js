@@ -34,6 +34,23 @@ const MAX_SLOTS = 32;
 const DRAWBAR_OFFSET_MM = 1;
 const DRAWBAR_FEEDRATE_MMPM = 300;
 
+// Taper blow / cone clean. On the Sienci kit the taper-blow port is teed off
+// the drawbar valve, so air blasts out through the collet the whole time the
+// drawbar is open. With `taperBlow` on:
+//   * unload: lift off the holder, then CLOSE the drawbar right there, so the
+//     blow isn't venting across the whole traverse to the next slot;
+//   * load: arrive above the slot clamped, open the drawbar there, dwell for
+//     the air to vent (and blow the taper), then feed down the last stretch
+//     slowly with the blow running so chips are cleared off the holder;
+//   * a longer settle after the clamp before trusting it.
+// With it off (a spindle with no blow port connected) the chained swap keeps
+// the drawbar open between slots — nothing is venting, so nothing to save.
+// Numbers are Sienci's published values.
+const DEDUST_LIFT_MM = 20;
+const DEDUST_FEEDRATE_MMPM = 1500;
+const DEDUST_VENT_SEC = 0.8;
+const DEDUST_CLAMP_SETTLE_SEC = 1;
+
 const M6_PATTERN = /(?:^|[^A-Z])M0*6(?:\s*T0*(\d+)|(?=[^0-9T])|$)|(?:^|[^A-Z])T0*(\d+)\s*M0*6(?:[^0-9]|$)/i;
 const SLOT_PATTERN = /^\$SLOT0*(\d+)$/i;
 
@@ -196,6 +213,9 @@ const buildInitialConfig = (raw = {}) => {
     // if wired the other way round, invert the port in firmware ($370)
     // rather than in this plugin.
     pressureInput: sanitizeAuxInput(raw.pressureInput),
+    // Taper blow / cone clean plumbed off the drawbar valve (Sienci kit).
+    // See DEDUST_* above for what it changes in the sequence.
+    taperBlow: !!raw.taperBlow,
     // grblHAL aux INPUT reporting the drawbar's released state, read right
     // after the collet unclamps. -1 = no sensor wired, which disables the
     // check. Independent of toolSeatedSensorInput below — separate
@@ -1003,6 +1023,15 @@ function sensorGuard(input, waitMode, faultMsg, unverifiedMsg, oNum) {
 // switch wired the other way round is fixed with the controller's own
 // port-invert mask ($370), not a plugin-level toggle — one source of
 // truth for polarity instead of two that can disagree.
+//
+// Called ONCE per tool change, before anything moves (see
+// buildToolChangeProgram) — never again after a drawbar release. An
+// earlier version also re-checked after every release, and that produced
+// a false "Air Pressure Low" fault on real hardware: with the drawbar
+// open the pressure input can sit HIGH for a while even with a healthy
+// supply, so a read there doesn't mean what it's supposed to. Sienci's
+// own TC.macro only ever checks pressure once, before anything moves —
+// this now matches that.
 function pressureGuard(settings, oNum) {
   return sensorGuard(settings.pressureInput, 4, 'PRESSURE_FAULT', 'PRESSURE_FAULT_UNVERIFIED', oNum); // L4=wait-LOW
 }
@@ -1056,6 +1085,17 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
   const drawbarBackoff = `
       G53 G1 Z${settings.slot1.z + DRAWBAR_OFFSET_MM} F${DRAWBAR_FEEDRATE_MMPM}`;
 
+  // Taper blow: lift clear of the holder, then close the drawbar so the
+  // blow stops here instead of venting all the way to the next slot.
+  // Placed AFTER drawbarReleasedGuard, not before — the guard has to
+  // verify the ORIGINAL release before we go and reclamp over it;
+  // reclamping first would make it check the wrong state and fault on
+  // every taper-blow install.
+  const closeAfterLiftOff = settings.taperBlow ? `
+      G53 G0 Z${settings.slot1.z + DEDUST_LIFT_MM}
+      ${auxLineFor(settings, 'clamp')}
+      G4 P0.5` : '';
+
   if (settings.rackHolding === 'Cup') {
     return `
       ${cupEntrance(slotPos.engaged, origin, settings)}
@@ -1063,8 +1103,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
-      ${pressureGuard(settings, 130)}
-      ${drawbarReleasedGuard(settings, 160)}
+      ${drawbarReleasedGuard(settings, 160)}${closeAfterLiftOff}
       G53 G0 Z${settings.zSafe}
       M61 Q0
     `.trim();
@@ -1078,8 +1117,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     G4 P0.5
     ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
-    ${pressureGuard(settings, 140)}
-    ${drawbarReleasedGuard(settings, 170)}
+    ${drawbarReleasedGuard(settings, 170)}${closeAfterLiftOff}
     G53 G0 Z${settings.zSafe}
     M61 Q0
   `.trim();
@@ -1232,8 +1270,38 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}
       G4 P0.5
-      ${pressureGuard(settings, 150)}
       ${drawbarReleasedGuard(settings, 155)}`;
+
+  // Drawbar forward-seat during clamp — mirror of buildUnloadTool's
+  // back-off. Approach at slot.z + DRAWBAR_OFFSET_MM, clamp, then G1
+  // descend to slot.z at DRAWBAR_FEEDRATE_MMPM overlapping with the
+  // pneumatic pull-up so the holder stays on the cup / fork lip while
+  // the drawbar pulls the tang up. Applies to both hold styles.
+  const approachZ   = settings.slot1.z + DRAWBAR_OFFSET_MM;
+  const drawbarSeat = `
+      G53 G1 Z${settings.slot1.z} F${DRAWBAR_FEEDRATE_MMPM}`;
+
+  // Taper blow: arrive above the slot still clamped (a taper-blow unload
+  // reclamps after lift-off; T0's drawbar was already clamped at rest),
+  // release directly above the holder, dwell for the air to vent and
+  // blow the taper, then feed down the last stretch slowly with the
+  // blow running. Always runs its own release regardless of
+  // drawbarAlreadyReleased — taper blow needs the release to happen
+  // right here, above the holder, for the vent timing to mean anything,
+  // not wherever an earlier step happened to leave it. Verified with
+  // drawbarReleasedGuard before the feed-down: skipping that check would
+  // mean a failed release drives a closed collet into the holder at
+  // DEDUST_FEEDRATE_MMPM with nothing to stop it — the same crash this
+  // guard already prevents on the non-taper-blow path.
+  const descend = settings.taperBlow ? `
+      G53 G0 Z${settings.slot1.z + DEDUST_LIFT_MM}
+      G4 P0.1
+      ${auxLineFor(settings, 'unclamp')}
+      G4 P${DEDUST_VENT_SEC}
+      ${drawbarReleasedGuard(settings, 175)}
+      G53 G1 Z${approachZ} F${DEDUST_FEEDRATE_MMPM}` : `${releaseFirst}
+      G53 G0 Z${approachZ}`;
+  const clampSettle = settings.taperBlow ? DEDUST_CLAMP_SETTLE_SEC : 0.5;
 
   // Approach-to-engaged sequence differs by chain context AND hold style:
   //   * chainedFromRack=true (Tm→Tn swap, fork or cup): machine is already
@@ -1253,23 +1321,13 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       : `${rackEntrance(slotPos.engaged, { x: origin?.x ?? 0, y: origin?.y ?? 0 }, settings)}
         G53 G0 X${slotPos.engaged.x} Y${slotPos.engaged.y}`;
 
-  // Drawbar forward-seat during clamp — mirror of buildUnloadTool's
-  // back-off. Approach at slot.z + DRAWBAR_OFFSET_MM, clamp, then G1
-  // descend to slot.z at DRAWBAR_FEEDRATE_MMPM overlapping with the
-  // pneumatic pull-up so the holder stays on the cup / fork lip while
-  // the drawbar pulls the tang up. Applies to both hold styles.
-  const approachZ   = settings.slot1.z + DRAWBAR_OFFSET_MM;
-  const drawbarSeat = `
-      G53 G1 Z${settings.slot1.z} F${DRAWBAR_FEEDRATE_MMPM}`;
-
   if (settings.rackHolding === 'Cup') {
     const cupPostClampMotion = `G53 G0 Z${settings.zSafe}`;
     return `
-      ${approachToEngaged}${releaseFirst}
-      G53 G0 Z${approachZ}
+      ${approachToEngaged}${descend}
       G4 P0.5
       ${auxLineFor(settings, 'clamp')}${drawbarSeat}
-      G4 P0.5
+      G4 P${clampSettle}
       ${toolSeatedOrManualFallback(settings, toolNumber, tlsRoutine, cupPostClampMotion, 240, manualTlsRoutine)}
     `.trim();
   }
@@ -1280,11 +1338,10 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     G53 G0 Z${settings.zSafe}
   `.trim();
   return `
-    ${approachToEngaged}${releaseFirst}
-    G53 G0 Z${approachZ}
+    ${approachToEngaged}${descend}
     G4 P0.5
     ${auxLineFor(settings, 'clamp')}${drawbarSeat}
-    G4 P0.5
+    G4 P${clampSettle}
     ${toolSeatedOrManualFallback(settings, toolNumber, tlsRoutine, forkPostClampMotion, 300, manualTlsRoutine)}
   `.trim();
 }
@@ -1451,6 +1508,14 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     && currentTool > 0 && currentTool <= settings.slots
     && settings.toolSeatedSensorInput >= 0;
 
+  // A rack unload with the taper blow on re-clamps right after lift-off
+  // (see buildUnloadTool's closeAfterLiftOff), so the drawbar is NOT left
+  // open for whatever loads next the way a normal unload leaves it.
+  // Manual-source unloads are untouched by taperBlow, so this only
+  // applies to a rack source.
+  const rackUnloadReclamped = settings.taperBlow
+    && currentTool > 0 && currentTool <= settings.slots;
+
   // Both of these are baked into the STATIC gcode below, but the unload
   // they describe may not actually run at runtime when the pre-check is
   // active — so neither assumption is safe to make in that case. Forcing
@@ -1459,8 +1524,10 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // branch goes (a few extra moves + a release dwell when the tool WAS
   // there, in exchange for not crashing when it wasn't). Every install
   // without this sensor configured is unaffected — seatedPrecheckActive
-  // is false and both keep their original values.
-  const drawbarAlreadyReleased = currentTool > 0 && !seatedPrecheckActive;
+  // is false and both keep their original values. rackUnloadReclamped
+  // overrides independently of that — taper blow leaves the drawbar
+  // closed regardless of whether the pre-check is active.
+  const drawbarAlreadyReleased = currentTool > 0 && !seatedPrecheckActive && !rackUnloadReclamped;
   const unloadSection = isManualToManual
     ? ''
     : buildUnloadTool(settings, currentTool, sourceSlot, origin);
@@ -1515,8 +1582,10 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // load section to re-clamp). Restore the fail-safe clamped state so
   // the spindle isn't sitting with the collet open at rest. Safe to
   // leave unconditional even when the pre-check skips the unload above —
-  // re-clamping an already-clamped drawbar is a no-op.
-  const finalizeUnclamped = (toolNumber === 0 && unloadSection)
+  // re-clamping an already-clamped drawbar is a no-op. Skipped when the
+  // unload already re-clamped itself (taper blow) — nothing left open to
+  // restore.
+  const finalizeUnclamped = (toolNumber === 0 && unloadSection && !rackUnloadReclamped)
     ? `G4 P0.5\n    ${auxLineFor(settings, 'clamp')}\n    G4 P0.5`
     : '';
 
