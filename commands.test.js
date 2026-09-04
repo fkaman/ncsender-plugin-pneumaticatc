@@ -1326,10 +1326,25 @@ describe('taperBlow — Sienci-style drawbar handling around the traverse', () =
     const lines = motionLines(buildUnloadTool(on, 1, calculateSlotPosition(on, 1), { x: 0, y: 0 }));
     const lift = lines.findIndex((l) => l === 'G53 G0 Z-80');
     assert.ok(lift > 0, 'expected a lift to slot Z + 20');
-    assert.match(lines[lift + 1], /^M6[45] P1$/);
-    assert.notEqual(auxOf(lines[lift + 1]), auxOf(lines.find((l) => /^M6[45] P1$/.test(l))), 'the aux after lift-off must be the clamp, i.e. the opposite of the release');
+    const clampIdx = lines.findIndex((l, i) => i > lift && /^M6[45] P1$/.test(l));
+    assert.ok(clampIdx > lift, 'expected a clamp after the lift');
+    assert.notEqual(auxOf(lines[clampIdx]), auxOf(lines.find((l) => /^M6[45] P1$/.test(l))), 'the aux after lift-off must be the clamp, i.e. the opposite of the release');
     const safe = lines.findIndex((l) => l === 'G53 G0 Z-5');
-    assert.ok(safe > lift + 1, 'the clamp happens before the rapid to Z-safe');
+    assert.ok(safe > clampIdx, 'the clamp happens before the rapid to Z-safe');
+  });
+
+  // Regression: reported on hardware as the tool coming back up still
+  // gripped by the collet. The rapid lift reaching its Z target doesn't
+  // guarantee the tool has actually finished dropping clear — re-clamping
+  // the instant the move completes can catch it again. A settle dwell
+  // between the lift and the re-clamp gives it a moment to drop first.
+  test('on: the drawbar stays open for a settle dwell after the lift, before re-clamping', () => {
+    const lines = motionLines(buildUnloadTool(on, 1, calculateSlotPosition(on, 1), { x: 0, y: 0 }));
+    const lift = lines.findIndex((l) => l === 'G53 G0 Z-80');
+    const clampIdx = lines.findIndex((l, i) => i > lift && /^M6[45] P1$/.test(l));
+    assert.ok(lift > 0 && clampIdx > lift, 'lift and re-clamp must both be present, in order');
+    assert.equal(lines[lift + 1], 'G4 P0.5', 'a settle dwell must sit between reaching lift height and re-clamping');
+    assert.equal(clampIdx, lift + 2, 'the re-clamp must be the line right after the settle dwell — nothing else in between');
   });
 
   test('off: the unload leaves the drawbar open and goes straight to Z-safe', () => {

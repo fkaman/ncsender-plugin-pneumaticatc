@@ -45,11 +45,18 @@ const DRAWBAR_FEEDRATE_MMPM = 300;
 //   * a longer settle after the clamp before trusting it.
 // With it off (a spindle with no blow port connected) the chained swap keeps
 // the drawbar open between slots — nothing is venting, so nothing to save.
-// Numbers are Sienci's published values.
+// DEDUST_LIFT_MM/DEDUST_FEEDRATE_MMPM/DEDUST_VENT_SEC/DEDUST_CLAMP_SETTLE_SEC
+// are Sienci's published values. DEDUST_RELEASE_SETTLE_SEC is not one of
+// theirs — added after a report of the tool coming back up still gripped:
+// the drawbar stays open only for the rapid lift itself, with nothing
+// making sure the tool has actually finished dropping clear of the collet
+// before the drawbar closes again over it. This gives it a beat to settle
+// at full lift height before re-clamping.
 const DEDUST_LIFT_MM = 20;
 const DEDUST_FEEDRATE_MMPM = 1500;
 const DEDUST_VENT_SEC = 0.8;
 const DEDUST_CLAMP_SETTLE_SEC = 1;
+const DEDUST_RELEASE_SETTLE_SEC = 0.5;
 
 const M6_PATTERN = /(?:^|[^A-Z])M0*6(?:\s*T0*(\d+)|(?=[^0-9T])|$)|(?:^|[^A-Z])T0*(\d+)\s*M0*6(?:[^0-9]|$)/i;
 const SLOT_PATTERN = /^\$SLOT0*(\d+)$/i;
@@ -1091,8 +1098,16 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
   // verify the ORIGINAL release before we go and reclamp over it;
   // reclamping first would make it check the wrong state and fault on
   // every taper-blow install.
+  //
+  // DEDUST_RELEASE_SETTLE_SEC dwell AFTER reaching lift height, BEFORE
+  // re-clamping: reported on hardware as the tool staying gripped and
+  // coming back up with the spindle. The rapid lift reaching Z target
+  // doesn't guarantee the tool has actually finished falling clear of
+  // the collet — re-clamping the instant the move completes can catch
+  // it again. This gives it a moment to drop before the drawbar closes.
   const closeAfterLiftOff = settings.taperBlow ? `
       G53 G0 Z${settings.slot1.z + DEDUST_LIFT_MM}
+      G4 P${DEDUST_RELEASE_SETTLE_SEC}
       ${auxLineFor(settings, 'clamp')}
       G4 P0.5` : '';
 
