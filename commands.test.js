@@ -1347,6 +1347,14 @@ describe('taperBlow — Sienci-style drawbar handling around the traverse', () =
     assert.equal(clampIdx, lift + 2, 'the re-clamp must be the line right after the settle dwell — nothing else in between');
   });
 
+  test('on: the settle dwell honors a configured taperBlowReleaseSettleSec instead of the 0.5s default', () => {
+    const longerSettle = buildInitialConfig({ ...base, taperBlow: true, taperBlowReleaseSettleSec: 1.5 });
+    const lines = motionLines(buildUnloadTool(longerSettle, 1, calculateSlotPosition(longerSettle, 1), { x: 0, y: 0 }));
+    const lift = lines.findIndex((l) => l === 'G53 G0 Z-80');
+    assert.ok(lift > 0, 'expected a lift to slot Z + 20');
+    assert.equal(lines[lift + 1], 'G4 P1.5', 'must dwell for the configured settle time, not the hardcoded default');
+  });
+
   test('off: the unload leaves the drawbar open and goes straight to Z-safe', () => {
     const g = buildUnloadTool(off, 1, calculateSlotPosition(off, 1), { x: 0, y: 0 });
     assert.equal((motionLines(g).filter((l) => /^M6[45] P1$/.test(l))).length, 1, 'only the release, no re-clamp');

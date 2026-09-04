@@ -223,6 +223,13 @@ const buildInitialConfig = (raw = {}) => {
     // Taper blow / cone clean plumbed off the drawbar valve (Sienci kit).
     // See DEDUST_* above for what it changes in the sequence.
     taperBlow: !!raw.taperBlow,
+    // How long the drawbar stays open at full lift height before
+    // re-clamping during a taper-blow unload (see DEDUST_RELEASE_SETTLE_SEC
+    // above for why this exists). Configurable because the right value
+    // depends on how readily the tool actually drops clear of the collet
+    // on a given holder/tool combination — the default is a starting
+    // point, not a proven number like Sienci's other taper-blow timings.
+    taperBlowReleaseSettleSec: toFiniteNumber(raw.taperBlowReleaseSettleSec, DEDUST_RELEASE_SETTLE_SEC),
     // grblHAL aux INPUT reporting the drawbar's released state, read right
     // after the collet unclamps. -1 = no sensor wired, which disables the
     // check. Independent of toolSeatedSensorInput below — separate
@@ -1099,15 +1106,18 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
   // reclamping first would make it check the wrong state and fault on
   // every taper-blow install.
   //
-  // DEDUST_RELEASE_SETTLE_SEC dwell AFTER reaching lift height, BEFORE
+  // Configurable settle dwell AFTER reaching lift height, BEFORE
   // re-clamping: reported on hardware as the tool staying gripped and
   // coming back up with the spindle. The rapid lift reaching Z target
   // doesn't guarantee the tool has actually finished falling clear of
   // the collet — re-clamping the instant the move completes can catch
   // it again. This gives it a moment to drop before the drawbar closes.
+  // taperBlowReleaseSettleSec defaults to DEDUST_RELEASE_SETTLE_SEC but,
+  // unlike the other taper-blow timings, isn't a proven Sienci number —
+  // tunable per-install since how readily a tool drops clear varies.
   const closeAfterLiftOff = settings.taperBlow ? `
       G53 G0 Z${settings.slot1.z + DEDUST_LIFT_MM}
-      G4 P${DEDUST_RELEASE_SETTLE_SEC}
+      G4 P${toFiniteNumber(settings.taperBlowReleaseSettleSec, DEDUST_RELEASE_SETTLE_SEC)}
       ${auxLineFor(settings, 'clamp')}
       G4 P0.5` : '';
 

@@ -1672,6 +1672,13 @@
               <span class="pa-toggle-slider"></span>
             </label>
           </div>
+          <div class="pa-field" style="margin-top: 12px; max-width: 220px;">
+            <label for="pa-adv-taper-blow-settle">
+              Release Settle (s)
+              <span class="pa-help-tip" title="How long the drawbar stays open at full lift height before re-clamping during an unload. If the tool comes back up still gripped by the collet, increase this so it has more time to drop clear before the drawbar closes again.">?</span>
+            </label>
+            <input class="pa-input" type="number" id="pa-adv-taper-blow-settle" value="0.5" min="0" step="0.1">
+          </div>
         </div>
 
         <div class="pa-card pa-advanced-preview" id="pa-adv-sensors">
@@ -2760,6 +2767,12 @@
 
     var taperBlowInput = $('pa-adv-taper-blow');
     if (taperBlowInput) taperBlowInput.checked = !!initialConfig.taperBlow;
+    var taperBlowSettleInput = $('pa-adv-taper-blow-settle');
+    if (taperBlowSettleInput) {
+      taperBlowSettleInput.value = String(
+        typeof initialConfig.taperBlowReleaseSettleSec === 'number' ? initialConfig.taperBlowReleaseSettleSec : 0.5
+      );
+    }
 
     // Profile last, so it can lock/overwrite the pin fields it owns. Silent:
     // restoring saved state isn't a user edit.
@@ -2888,6 +2901,7 @@
       })(),
       // Taper blow / cone clean plumbed off the drawbar valve.
       taperBlow: $('pa-adv-taper-blow') ? $('pa-adv-taper-blow').checked : false,
+      taperBlowReleaseSettleSec: parseFloatOr($('pa-adv-taper-blow-settle') ? $('pa-adv-taper-blow-settle').value : '', 0.5),
       rackHolding: $('pa-rack-holding').value || 'Fork',
 
       orientation: segOrientation ? segOrientation.get() : 'Y',
