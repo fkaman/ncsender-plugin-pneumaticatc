@@ -1426,7 +1426,15 @@ function guardUnexpectedTool(settings, oNum) {
   `.trim();
 }
 
-function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets = { x: 0, y: 0 }, storedTlo = 0, origin = { x: 0, y: 0 }) {
+// options.forceTls — probe regardless of tlsMode / stored TLO (the
+//   Measure All Tools batch uses this to refresh every value).
+// options.endAtTls — after probing, stay parked at the toolsetter instead
+//   of routing back to `origin`. The batch chains tool after tool from
+//   there, so the trip back to the job and out again is skipped.
+// options.returnTo — XY to route back to at the end instead of `origin`
+//   (the batch's last step: unload from wherever we are, return to where
+//   the operator started).
+function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets = { x: 0, y: 0 }, storedTlo = 0, origin = { x: 0, y: 0 }, options = {}) {
   const sourceSlot = calculateSlotPosition(settings, currentTool);
   const targetSlot = calculateSlotPosition(settings, toolNumber);
   // Probing decision:
@@ -1437,8 +1445,10 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   //               so the controller still gets the offset loaded.
   //   (No tool assigned to slot / unknown toolNumber → storedTlo is 0 → probe.)
   const hasStoredTlo = Math.abs(storedTlo || 0) > 0.0001;
-  const shouldProbe = settings.tlsMode === 'always'
+  const shouldProbe = !!options.forceTls
+    || settings.tlsMode === 'always'
     || (settings.tlsMode === 'library' && !hasStoredTlo);
+  const returnTo = options.returnTo || origin;
 
   // Rack-fork gate: if we're loading a real rack tool via fork, wrap the
   // TLS entry with a safe rack exit so the trip from slot approach to
@@ -1602,15 +1612,15 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   //   * Otherwise (manual / T0→T0) → leave as-is; existing sequence handles it.
   let exitSection = '';
   if (isRackSlot && shouldProbe) {
-    exitSection = tlsExit(tlsX, tlsY, origin, settings);
+    exitSection = options.endAtTls ? '' : tlsExit(tlsX, tlsY, returnTo, settings);
   } else if (isBareUnload && !seatedPrecheckActive) {
     exitSection = isCup
-      ? cupExit(sourceSlot.engaged, origin, settings)
-      : rackExitToOrigin(sourceSlot.engaged, /* isEmpty */ true, origin, settings);
+      ? cupExit(sourceSlot.engaged, returnTo, settings)
+      : rackExitToOrigin(sourceSlot.engaged, /* isEmpty */ true, returnTo, settings);
   } else if (isRackSlot && !shouldProbe) {
     exitSection = isCup
-      ? cupExit(targetSlot.engaged, origin, settings)
-      : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, origin, settings);
+      ? cupExit(targetSlot.engaged, returnTo, settings)
+      : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, returnTo, settings);
   }
 
   // A rack load that fell back to buildManualLoad (see
@@ -1705,6 +1715,70 @@ function handleTLSCommand(commands, context, settings) {
     ? { x: mpos.x, y: mpos.y }
     : undefined;
   const program = createToolLengthSetProgram(settings, toolOffsets, { originMPos });
+  expandIntoCommands(commands, idx, commands[idx].command, program, settings);
+}
+
+// === Measure All Tools ===
+//
+// One step of the "Measure all tools" batch that the config dialog's TLS
+// tab drives. The dialog sends one command per tool so that the host's
+// one-shot TLO writeback (armTlsWriteback → next [TLO:]) is armed for a
+// single tool at a time — arming several at once would write the first
+// value to all of them. The dialog waits for each command to finish before
+// sending the next, tracks progress from the [TLO:] replies, and cancels
+// with feed hold + soft reset.
+//
+//   $MEASURE_TLO T<n>            load tool n (swapping out whatever is in
+//                                the spindle), probe it whatever the TLS
+//                                strategy or stored value says, save it,
+//                                and stay parked at the toolsetter.
+//   $MEASURE_TLO T<n>            with n already in the spindle: just probe.
+//   $MEASURE_TLO T0 X<x> Y<y>    put the current tool away and return to
+//                                X Y (where the operator started).
+function parseMeasureTloCommand(command) {
+  const m = /^\$MEASURE_TLO\b(.*)$/i.exec(command.trim());
+  if (!m) return null;
+  const args = m[1];
+  const t = /\bT(\d+)/i.exec(args);
+  if (!t) return null;
+  const x = /\bX(-?\d+(?:\.\d+)?)/i.exec(args);
+  const y = /\bY(-?\d+(?:\.\d+)?)/i.exec(args);
+  return {
+    toolNumber: parseInt(t[1], 10),
+    returnTo: (x && y) ? { x: parseFloat(x[1]), y: parseFloat(y[1]) } : null,
+  };
+}
+
+function handleMeasureTloCommand(commands, context, settings) {
+  const idx = commands.findIndex((c) => c.isOriginal && parseMeasureTloCommand(c.command));
+  if (idx === -1) return;
+  const req = parseMeasureTloCommand(commands[idx].command);
+  const toolNumber = req.toolNumber;
+  const currentTool = context.machineState?.tool ?? 0;
+  const origin = {
+    x: context.machineState?.mpos?.x ?? 0,
+    y: context.machineState?.mpos?.y ?? 0,
+  };
+
+  let program;
+  if (toolNumber > 0 && toolNumber === currentTool) {
+    // Already in the spindle: probe it where it is. Same as $TLS, and the
+    // writeback is armed the same way.
+    const toolOffsets = getToolProbeOffsets(currentTool, context.tools);
+    if (typeof pluginContext !== 'undefined' && pluginContext
+        && typeof pluginContext.armTlsWriteback === 'function') {
+      try { pluginContext.armTlsWriteback(currentTool); } catch (_) { /* older host */ }
+    }
+    program = createToolLengthSetProgram(settings, toolOffsets, { originMPos: origin });
+  } else if (toolNumber > 0) {
+    const toolOffsets = getToolProbeOffsets(toolNumber, context.tools);
+    const storedTlo = getStoredTlo(toolNumber, context.tools);
+    program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin,
+      { forceTls: true, endAtTls: true });
+  } else {
+    program = buildToolChangeProgram(settings, currentTool, 0, { x: 0, y: 0 }, 0, origin,
+      { returnTo: req.returnTo || origin });
+  }
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
 
@@ -1875,13 +1949,14 @@ function onBeforeCommand(commands, context, settings) {
   gateSpindleUnclamp(commands, context, settings);
   handleHomeCommand(commands, context, settings);
   handleTLSCommand(commands, context, settings);
+  handleMeasureTloCommand(commands, context, settings);
   handleSlotCommand(commands, context, settings);
   handleM6Command(commands, context, settings);
   return commands;
 }
 
 export {
-  onBeforeCommand, buildInitialConfig,
+  onBeforeCommand, buildInitialConfig, parseMeasureTloCommand,
   rackEntrance, rackExit, cupEntrance, cupExit, tlsEntrance, tlsExit,
   computeKeepoutZone, slotEntryPoint, slotApproachPoint,
   buildLoadTool, buildUnloadTool, buildSlotNav, calculateSlotPosition,

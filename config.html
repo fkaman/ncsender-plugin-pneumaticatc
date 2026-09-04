@@ -1008,6 +1008,100 @@
     justify-content: flex-end;
     gap: 10px;
   }
+
+  /* Measure All Tools (TLS tab) — confirm / progress / summary modals.
+     One row layout for every width: slot | tool | name over length | status.
+     The dialog grows to the available space and the list scrolls inside it,
+     so it reads the same on a landscape monitor and a portrait touchscreen. */
+  .pa-modal-card.pa-modal-wide {
+    display: flex;
+    flex-direction: column;
+    width: min(760px, 94vw);
+    max-width: none;
+    max-height: 88vh;
+    padding: 26px 30px 24px;
+    box-sizing: border-box;
+  }
+  .pa-modal-card.pa-modal-wide .pa-modal-title { font-size: 1.25rem; margin-bottom: 12px; }
+  .pa-modal-card.pa-modal-wide .pa-modal-body { font-size: 1rem; line-height: 1.55; margin-bottom: 16px; }
+  .pa-mt-note {
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: var(--color-surface-muted);
+    border: 1px solid var(--color-border);
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: var(--color-text-secondary);
+  }
+  .pa-mt-note strong { color: var(--color-text-primary); }
+  .pa-mt-list {
+    flex: 1 1 auto;
+    min-height: 140px;
+    margin: 0 0 16px;
+    overflow-y: auto;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+  }
+  .pa-mt-row {
+    display: grid;
+    grid-template-columns: 64px 52px minmax(0, 1fr) auto;
+    gap: 14px;
+    align-items: center;
+    padding: 11px 14px;
+    font-size: 0.95rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .pa-mt-row:last-child { border-bottom: none; }
+  .pa-mt-row.pa-mt-head {
+    position: sticky; top: 0; z-index: 1;
+    padding: 8px 14px;
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--color-text-secondary); background: var(--color-surface-muted);
+  }
+  .pa-mt-row__slot { font-size: 0.85rem; color: var(--color-text-secondary); white-space: nowrap; }
+  .pa-mt-row__tool { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--color-text-primary); }
+  .pa-mt-row__main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .pa-mt-row__name { color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pa-mt-row__val { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--color-text-secondary); white-space: nowrap; }
+  .pa-mt-row__val .pa-mt-new { color: var(--color-text-primary); font-weight: 600; }
+  .pa-mt-row__status {
+    font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--color-text-secondary); min-width: 84px; text-align: right; white-space: nowrap;
+  }
+  .pa-mt-row.pa-mt-active { background: var(--color-surface-muted); }
+  .pa-mt-row.pa-mt-active .pa-mt-row__status { color: var(--color-accent); }
+  .pa-mt-row.pa-mt-done .pa-mt-row__status { color: var(--color-success, #2ecc71); }
+  .pa-mt-row.pa-mt-failed .pa-mt-row__status,
+  .pa-mt-row.pa-mt-cancelled .pa-mt-row__status { color: var(--color-danger, #e74c3c); }
+  @media (max-width: 520px) {
+    .pa-modal-card.pa-modal-wide { padding: 20px 18px 18px; }
+    .pa-mt-row { grid-template-columns: 54px 44px minmax(0, 1fr) auto; gap: 10px; padding: 10px 10px; }
+    .pa-mt-row__status { min-width: 0; }
+  }
+  .pa-mt-bar {
+    height: 14px;
+    border-radius: 999px;
+    background: var(--color-surface-muted);
+    border: 1px solid var(--color-border);
+    overflow: hidden;
+    margin: 6px 0 10px;
+  }
+  .pa-mt-bar__fill {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background-color: var(--color-accent);
+    background-image: linear-gradient(135deg, rgba(255,255,255,0.22) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.22) 50%, rgba(255,255,255,0.22) 75%, transparent 75%, transparent);
+    background-size: 28px 28px;
+    animation: pa-mt-stripes 0.9s linear infinite;
+    transition: width 0.6s ease;
+  }
+  .pa-mt-bar__fill.pa-mt-bar__fill--done { animation: none; background-image: none; }
+  @keyframes pa-mt-stripes { from { background-position: 0 0; } to { background-position: 28px 0; } }
+  .pa-mt-meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 0.9rem; color: var(--color-text-secondary); margin-bottom: 16px; }
+  .pa-mt-warn { font-size: 0.9rem; line-height: 1.5; color: var(--color-danger, #e74c3c); margin: 0 0 14px; }
+  .pa-mt-warn:empty { display: none; }
 </style>
 
 <div class="pa-wrapper">
@@ -1319,6 +1413,13 @@
               <option value="library">Use tool library offset (probe when missing)</option>
             </select>
           </div>
+          <div class="pa-field-inline" style="margin-top: 12px; align-items: flex-start;">
+            <div style="flex: 1;">
+              <label for="pa-measure-all" style="display: block;">Measure all tools</label>
+              <span class="pa-field-note" id="pa-measure-all-note">Load every tool that has a rack slot, probe each on the tool setter and save the length to the library, whether or not a value is already stored. Use it after moving bits around the rack or when the stored lengths are in doubt.</span>
+            </div>
+            <button type="button" class="pa-btn pa-btn-sm" id="pa-measure-all" style="margin-left: 12px; flex: 0 0 auto;">Measure all tools…</button>
+          </div>
         </div>
 
         <div class="pa-card">
@@ -1628,6 +1729,51 @@
       <div class="pa-modal-actions">
         <button type="button" class="pa-btn pa-btn-ghost" id="pa-modal-no">No, keep existing</button>
         <button type="button" class="pa-btn" id="pa-modal-yes">Yes, auto-populate</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Measure All Tools: confirm -->
+  <div class="pa-modal-backdrop" id="pa-mt-confirm">
+    <div class="pa-modal-card pa-modal-wide">
+      <h3 class="pa-modal-title">Measure all tools?</h3>
+      <p class="pa-modal-body" id="pa-mt-confirm-text"></p>
+      <div class="pa-mt-note">
+        <strong>Before you start:</strong> make sure every setting is configured (rack, tool setter, clamp output) and that you have completed at least one normal tool change with this plugin, so the rack positions and tool setter are proven.
+        <strong>While it runs:</strong> stay at the machine and do not close this window, refresh the page, or disconnect. If the connection is lost the sequence stops after the tool in progress and the rest is skipped.
+      </div>
+      <div class="pa-mt-list" id="pa-mt-confirm-list"></div>
+      <p class="pa-mt-warn" id="pa-mt-confirm-warn"></p>
+      <div class="pa-modal-actions">
+        <button type="button" class="pa-btn pa-btn-ghost" id="pa-mt-confirm-cancel">Cancel</button>
+        <button type="button" class="pa-btn" id="pa-mt-confirm-start">Start</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Measure All Tools: progress -->
+  <div class="pa-modal-backdrop" id="pa-mt-progress">
+    <div class="pa-modal-card pa-modal-wide">
+      <h3 class="pa-modal-title">Measuring tool lengths</h3>
+      <p class="pa-modal-body" id="pa-mt-progress-text" style="margin-bottom: 10px;"></p>
+      <div class="pa-mt-note">Do not close this window, refresh, or disconnect until it finishes. Use <strong>Cancel</strong> to stop: it sends a feed hold, then a soft reset.</div>
+      <div class="pa-mt-bar"><div class="pa-mt-bar__fill" id="pa-mt-progress-fill"></div></div>
+      <div class="pa-mt-meta"><span id="pa-mt-progress-count"></span><span id="pa-mt-progress-time"></span></div>
+      <div class="pa-mt-list" id="pa-mt-progress-list"></div>
+      <div class="pa-modal-actions">
+        <button type="button" class="pa-btn pa-btn-danger" id="pa-mt-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Measure All Tools: summary -->
+  <div class="pa-modal-backdrop" id="pa-mt-summary">
+    <div class="pa-modal-card pa-modal-wide">
+      <h3 class="pa-modal-title" id="pa-mt-summary-title">Tool lengths updated</h3>
+      <p class="pa-modal-body" id="pa-mt-summary-text"></p>
+      <div class="pa-mt-list" id="pa-mt-summary-list"></div>
+      <div class="pa-modal-actions">
+        <button type="button" class="pa-btn" id="pa-mt-summary-close">Close</button>
       </div>
     </div>
   </div>
@@ -2659,6 +2805,7 @@
     var savedMode = initialConfig.tlsMode === 'first' ? 'library'
                   : (initialConfig.tlsMode || (initialConfig.performTlsOnToolChange === false ? 'library' : 'always'));
     tlsModeSelect.value = savedMode;
+    if (typeof updateMeasureAllEnabled === 'function') updateMeasureAllEnabled();
     updateTlsMode();
 
     (initialConfig.slotCoords || []).forEach(function(sc) {
@@ -3078,6 +3225,327 @@
         .then(function(s) { if (s) updateAxisReadout(extractCoords(s)); })
         .catch(function() {});
     });
+
+  // ---------- Measure All Tools (TLS tab) ----------
+  //
+  // Drives one `$MEASURE_TLO T<n>` command per rack tool (see commands.js:
+  // handleMeasureTloCommand) and waits for each to finish before sending
+  // the next, so the host's one-shot TLO writeback is armed for exactly
+  // one tool at a time. Progress comes from the command completing plus
+  // the `[TLO:...]` reply the TLS routine's `$#` produces; the summary is
+  // read back from the tool library so it shows what was actually saved.
+  var lastMachine = { status: 'Unknown', tool: 0, homed: false };
+  function absorbMachineState(ms) {
+    if (!ms || typeof ms !== 'object') return;
+    if (typeof ms.status === 'string') lastMachine.status = ms.status;
+    if (typeof ms.tool === 'number') lastMachine.tool = ms.tool;
+    if (typeof ms.homed === 'boolean') lastMachine.homed = ms.homed;
+  }
+  window.addEventListener('message', function(evt) {
+    if (!evt.data || evt.data.type !== 'server-state-update') return;
+    absorbMachineState(evt.data.state && evt.data.state.machineState);
+  });
+
+  var mt = null; // active run, or null
+  window.addEventListener('message', function(evt) {
+    if (!mt || !evt.data || evt.data.type !== 'cnc-data') return;
+    var line = evt.data.data;
+    if (typeof line !== 'string') return;
+    var m = /^\[TLO:([^\]]+)\]/.exec(line.trim());
+    if (!m) return;
+    var parts = m[1].split(',');
+    var z = Number.parseFloat(parts.length >= 3 ? parts[2] : parts[0]);
+    if (Number.isFinite(z)) mt.lastTlo = z;
+  });
+
+  function mtFmt(v) { return Number.isFinite(v) ? v.toFixed(3) : '—'; }
+  function mtSleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+  function mtSend(command) {
+    return fetch(BASE_URL + '/api/send-command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: command, meta: { sourceId: 'pneumaticatc-measure-all' } })
+    }).then(function(r) { return r.json(); }).catch(function(e) { return { status: 'error', message: e.message }; });
+  }
+  function mtOk(res) {
+    if (!res) return false;
+    if (res.status === 'error' || res.status === 'skipped' || res.status === 'flushed') return false;
+    return true;
+  }
+  function mtErr(res) {
+    return (res && (res.message || res.errorMessage || res.skipReason)) || 'command failed';
+  }
+
+  function mtRow(t, mode) {
+    var row = document.createElement('div');
+    row.className = 'pa-mt-row' + (t.status && t.status !== 'pending' ? ' pa-mt-' + t.status : '');
+    // Slot N holds tool N in this plugin, so the slot is the tool number.
+    var slot = document.createElement('span'); slot.className = 'pa-mt-row__slot'; slot.textContent = 'Slot ' + t.toolNumber;
+    var tool = document.createElement('span'); tool.className = 'pa-mt-row__tool'; tool.textContent = 'T' + t.toolNumber;
+    var main = document.createElement('span'); main.className = 'pa-mt-row__main';
+    var name = document.createElement('span'); name.className = 'pa-mt-row__name'; name.textContent = t.name || ('Tool ' + t.toolNumber);
+    var val = document.createElement('span'); val.className = 'pa-mt-row__val';
+    var hasOld = Math.abs(t.oldTlo) > 0.0001;
+    if (t.status === 'done') {
+      val.innerHTML = 'Length ' + (hasOld ? mtFmt(t.oldTlo) : '—') + ' → <span class="pa-mt-new">' + mtFmt(t.newTlo) + '</span>';
+    } else {
+      val.textContent = 'Length ' + (hasOld ? mtFmt(t.oldTlo) : (mode === 'confirm' ? 'not set' : '—'));
+    }
+    main.appendChild(name); main.appendChild(val);
+    var st = document.createElement('span'); st.className = 'pa-mt-row__status';
+    st.textContent = mode === 'confirm' ? (Math.abs(t.oldTlo) > 0.0001 ? 'stored' : 'missing')
+      : t.status === 'active' ? 'measuring'
+      : t.status === 'done' ? 'saved'
+      : t.status === 'failed' ? 'failed'
+      : t.status === 'cancelled' ? 'cancelled'
+      : t.status === 'skipped' ? 'skipped'
+      : 'pending';
+    row.appendChild(slot); row.appendChild(tool); row.appendChild(main); row.appendChild(st);
+    return row;
+  }
+  function mtHeadRow(mode) {
+    var row = document.createElement('div');
+    row.className = 'pa-mt-row pa-mt-head';
+    ['Slot', 'Tool', mode === 'summary' ? 'Name · length (old → new)' : 'Name · stored length', 'Status'].forEach(function(h, i) {
+      var c = document.createElement('span');
+      if (i === 3) c.style.textAlign = 'right';
+      c.textContent = h;
+      row.appendChild(c);
+    });
+    return row;
+  }
+  function mtRender(listId, plan, mode) {
+    var list = $(listId); if (!list) return;
+    list.innerHTML = '';
+    list.appendChild(mtHeadRow(mode));
+    plan.forEach(function(t) { list.appendChild(mtRow(t, mode)); });
+  }
+
+  async function mtBuildPlan() {
+    var slots = parseInt(($('pa-slots') || {}).value, 10) || initialConfig.slots || 0;
+    var tools = [];
+    try {
+      var r = await fetch(BASE_URL + '/api/tools');
+      if (r.ok) tools = await r.json();
+    } catch (_) { /* offline */ }
+    if (!Array.isArray(tools)) tools = [];
+    var plan = tools.filter(function(t) {
+      return typeof t.toolNumber === 'number' && t.toolNumber >= 1 && t.toolNumber <= slots;
+    }).sort(function(a, b) { return a.toolNumber - b.toolNumber; }).map(function(t) {
+      return {
+        id: t.id, toolNumber: t.toolNumber, name: t.name || '',
+        oldTlo: (t.offsets && Number.isFinite(t.offsets.tlo)) ? t.offsets.tlo : 0,
+        newTlo: null, status: 'pending', error: null
+      };
+    });
+    // Slot order, ascending — the list and the run follow the rack.
+    return plan;
+  }
+
+  async function mtOpenConfirm() {
+    try {
+      var r = await fetch(BASE_URL + '/api/server-state');
+      if (r.ok) { var st = await r.json(); absorbMachineState(st && st.machineState); }
+    } catch (_) {}
+    var plan = await mtBuildPlan();
+    var modal = $('pa-mt-confirm');
+    var text = $('pa-mt-confirm-text');
+    var warn = $('pa-mt-confirm-warn');
+    var start = $('pa-mt-confirm-start');
+    var n = plan.length;
+    text.textContent = n
+      ? 'Each of the ' + n + ' tool' + (n === 1 ? '' : 's') + ' below is loaded in turn, probed on the tool setter and its length saved to the tool library, replacing whatever is stored. The last tool is put away and the machine returns to its current XY when done. Allow roughly a minute per tool — stay at the machine and watch it.'
+      : 'No tools are assigned to rack slots.';
+    mtRender('pa-mt-confirm-list', plan, 'confirm');
+    var problems = [];
+    if (!n) problems.push('Assign tools to slots in the tool library first.');
+    if (isDirty) problems.push('Save your settings first — the measurement runs with the saved settings.');
+    if (!lastMachine.homed) problems.push('Home the machine first.');
+    if (lastMachine.status !== 'Idle') problems.push('The machine must be idle (it is ' + lastMachine.status + ').');
+    var slots = parseInt(($('pa-slots') || {}).value, 10) || initialConfig.slots || 0;
+    if (lastMachine.tool > slots) problems.push('T' + lastMachine.tool + ' is in the spindle and has no rack slot; it will be unloaded at the manual station first (a dialog will guide you).');
+    var blocking = problems.filter(function(p) { return !/manual station/.test(p); });
+    warn.textContent = problems.join(' ');
+    start.disabled = blocking.length > 0;
+
+    return new Promise(function(resolve) {
+      var cancel = $('pa-mt-confirm-cancel');
+      function cleanup(v) {
+        modal.classList.remove('pa-open');
+        start.removeEventListener('click', onStart);
+        cancel.removeEventListener('click', onCancel);
+        resolve(v ? plan : null);
+      }
+      function onStart() { cleanup(true); }
+      function onCancel() { cleanup(false); }
+      start.addEventListener('click', onStart);
+      cancel.addEventListener('click', onCancel);
+      modal.classList.add('pa-open');
+    });
+  }
+
+  function mtUpdateProgress(plan, phase) {
+    var done = plan.filter(function(t) { return t.status === 'done'; }).length;
+    var total = plan.length;
+    var active = plan.find(function(t) { return t.status === 'active'; });
+    var fill = $('pa-mt-progress-fill');
+    var pct = total ? Math.round((done + (phase === 'unload' ? 1 : 0)) / (total + 1) * 100) : 0;
+    if (fill) {
+      fill.style.width = pct + '%';
+      fill.classList.toggle('pa-mt-bar__fill--done', phase === 'stopping');
+    }
+    $('pa-mt-progress-text').textContent =
+      phase === 'unload' ? 'All tools measured. Putting the last tool away and returning to the start position.'
+      : phase === 'stopping' ? 'Stopping… feed hold, then a soft reset.'
+      : active ? 'Measuring T' + active.toolNumber + (active.name ? ' — ' + active.name : '') + '. Loading it, probing on the tool setter, saving the length.'
+      : 'Starting…';
+    $('pa-mt-progress-count').textContent = done + ' of ' + total + ' measured';
+    var elapsed = Math.round((Date.now() - mt.startedAt) / 1000);
+    var remainingTxt;
+    if (phase === 'unload') remainingTxt = 'finishing';
+    else if (mt.durations.length) {
+      var avg = mt.durations.reduce(function(a, b) { return a + b; }, 0) / mt.durations.length;
+      var left = total - done;
+      var stepElapsed = mt.stepStart ? (Date.now() - mt.stepStart) : 0;
+      var rem = Math.max(0, left * avg - stepElapsed);
+      remainingTxt = 'about ' + mtMinSec(rem) + ' remaining';
+    } else {
+      remainingTxt = 'estimating time…';
+    }
+    $('pa-mt-progress-time').textContent = mtMinSec(elapsed * 1000) + ' elapsed · ' + remainingTxt;
+    mtRender('pa-mt-progress-list', plan, 'progress');
+  }
+  function mtMinSec(ms) {
+    var s = Math.max(0, Math.round(ms / 1000));
+    var m = Math.floor(s / 60); s = s % 60;
+    return m ? m + ' min ' + (s < 10 ? '0' : '') + s + ' s' : s + ' s';
+  }
+
+  async function mtCancel() {
+    if (!mt || mt.cancelled) return;
+    mt.cancelled = true;
+    $('pa-mt-cancel').disabled = true;
+    mtUpdateProgress(mt.plan, 'stopping');
+    await mtSend('!');
+    await mtSleep(200);
+    await mtSend('0x18');
+  }
+
+  async function mtRun(plan) {
+    mt = { plan: plan, cancelled: false, failed: null, startedAt: Date.now(), stepStart: 0, durations: [], lastTlo: null };
+    var startXY = { x: lastMPos.x, y: lastMPos.y };
+    var modal = $('pa-mt-progress');
+    var cancelBtn = $('pa-mt-cancel');
+    cancelBtn.disabled = false;
+    cancelBtn.addEventListener('click', mtCancel);
+    var fill0 = $('pa-mt-progress-fill');
+    if (fill0) { fill0.style.width = '0%'; fill0.classList.remove('pa-mt-bar__fill--done'); }
+    modal.classList.add('pa-open');
+    var tick = setInterval(function() { if (mt) mtUpdateProgress(mt.plan, mt.phase); }, 1000);
+    mtUpdateProgress(plan, 'run');
+
+    for (var i = 0; i < plan.length; i += 1) {
+      if (mt.cancelled) break;
+      var t = plan[i];
+      t.status = 'active';
+      mt.lastTlo = null;
+      mt.stepStart = Date.now();
+      mtUpdateProgress(plan, 'run');
+      var res = await mtSend('$MEASURE_TLO T' + t.toolNumber);
+      if (mt.cancelled) { t.status = 'cancelled'; break; }
+      if (!mtOk(res)) { t.status = 'failed'; t.error = mtErr(res); mt.failed = t.error; break; }
+      t.status = 'done';
+      t.newTlo = mt.lastTlo;
+      mt.durations.push(Date.now() - mt.stepStart);
+      mt.stepStart = 0;
+      mtUpdateProgress(plan, 'run');
+    }
+    plan.forEach(function(t) { if (t.status === 'pending') t.status = mt.cancelled ? 'cancelled' : (mt.failed ? 'skipped' : t.status); });
+
+    if (!mt.cancelled && !mt.failed) {
+      mt.phase = 'unload';
+      mtUpdateProgress(plan, 'unload');
+      var out = await mtSend('$MEASURE_TLO T0 X' + startXY.x.toFixed(3) + ' Y' + startXY.y.toFixed(3));
+      if (!mt.cancelled && !mtOk(out)) mt.failed = 'Putting the tool away failed: ' + mtErr(out);
+    }
+
+    clearInterval(tick);
+    cancelBtn.removeEventListener('click', mtCancel);
+    modal.classList.remove('pa-open');
+
+    // What actually got saved — read back from the library rather than
+    // trusting the reply we parsed.
+    try {
+      var r = await fetch(BASE_URL + '/api/tools');
+      if (r.ok) {
+        var tools = await r.json();
+        plan.forEach(function(t) {
+          var lib = Array.isArray(tools) ? tools.find(function(x) { return x.id === t.id; }) : null;
+          if (t.status === 'done' && lib && lib.offsets && Number.isFinite(lib.offsets.tlo)) t.newTlo = lib.offsets.tlo;
+        });
+      }
+    } catch (_) {}
+
+    var run = mt; mt = null;
+    mtShowSummary(plan, run);
+  }
+
+  function mtShowSummary(plan, run) {
+    var done = plan.filter(function(t) { return t.status === 'done'; }).length;
+    var title = $('pa-mt-summary-title');
+    var text = $('pa-mt-summary-text');
+    if (run.cancelled) {
+      title.textContent = 'Measurement cancelled';
+      text.textContent = done + ' of ' + plan.length + ' tool' + (plan.length === 1 ? '' : 's') + ' measured and saved before stopping. The controller was soft-reset mid-sequence: check what is in the spindle and whether the drawbar is open before the next tool change.';
+    } else if (run.failed) {
+      title.textContent = 'Measurement stopped';
+      text.textContent = done + ' of ' + plan.length + ' tool' + (plan.length === 1 ? '' : 's') + ' measured and saved. Stopped because: ' + run.failed + '. Check the machine before continuing.';
+    } else {
+      title.textContent = 'Tool lengths updated';
+      text.textContent = done + ' tool' + (done === 1 ? '' : 's') + ' measured and saved to the tool library in ' + mtMinSec(Date.now() - run.startedAt) + '. The spindle is empty and the machine is back where it started.';
+    }
+    mtRender('pa-mt-summary-list', plan, 'summary');
+    var modal = $('pa-mt-summary');
+    var close = $('pa-mt-summary-close');
+    function onClose() { modal.classList.remove('pa-open'); close.removeEventListener('click', onClose); }
+    close.addEventListener('click', onClose);
+    modal.classList.add('pa-open');
+  }
+
+  var measureAllBtn = $('pa-measure-all');
+  // Only meaningful with the library strategy: with "probe after every
+  // tool change" the stored values are never used, so refreshing them
+  // buys nothing.
+  function updateMeasureAllEnabled() {
+    if (!measureAllBtn) return;
+    var sel = $('pa-tls-mode');
+    var libraryMode = !!sel && sel.value === 'library';
+    measureAllBtn.disabled = !libraryMode || !!mt;
+    var note = $('pa-measure-all-note');
+    if (note) {
+      note.textContent = libraryMode
+        ? 'Load every tool that has a rack slot, probe each on the tool setter and save the length to the library, whether or not a value is already stored. Use it after moving bits around the rack or when the stored lengths are in doubt.'
+        : 'Available with the "Use tool library offset" strategy. With "Probe after every tool change" the stored lengths are never used, so there is nothing to refresh.';
+    }
+  }
+  var tlsModeSel = $('pa-tls-mode');
+  if (tlsModeSel) tlsModeSel.addEventListener('change', updateMeasureAllEnabled);
+  updateMeasureAllEnabled();
+  if (measureAllBtn) {
+    measureAllBtn.addEventListener('click', async function() {
+      if (mt) return;
+      measureAllBtn.disabled = true;
+      try {
+        var plan = await mtOpenConfirm();
+        if (plan && plan.length) await mtRun(plan);
+      } catch (e) {
+        console.error('[PneumaticATC] measure all failed', e);
+        mt = null;
+      } finally {
+        updateMeasureAllEnabled();
+      }
+    });
+  }
 
   populateAuxOutputs();
 })();

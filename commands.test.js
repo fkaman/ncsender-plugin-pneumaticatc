@@ -42,6 +42,7 @@ import {
   buildSlotNav,
   calculateSlotPosition,
   buildToolChangeProgram,
+  parseMeasureTloCommand,
   gateSpindleUnclamp,
   createToolLengthSetRoutine,
   createToolLengthSetProgram,
@@ -2539,5 +2540,63 @@ describe('tlsExit — Fork rack picks the keepout edge nearest the destination',
     const slot = calculateSlotPosition(SIENCI_12, 12);
     const gcode = rackExit(slot.approach, { x: 406.3, y: -489.287 }, SIENCI_12);
     assert.match(motionLines(gcode)[0], /Y-7\.244$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// $MEASURE_TLO — one step of the Measure All Tools batch (driven from the
+// TLS tab). Forces a probe whatever the strategy says, parks at the
+// toolsetter between tools, and the T0 step returns to a given XY.
+// ---------------------------------------------------------------------------
+describe('$MEASURE_TLO — measure-all batch step', () => {
+  const settings = buildInitialConfig({
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5,
+    clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, tlsMode: 'library',
+  });
+  const tools = [
+    { toolNumber: 1, offsets: { x: 0, y: 0, z: -55.014, tlsZ: 0 } },  // has a stored TLO
+    { toolNumber: 2, offsets: { x: 0, y: 0, z: 0, tlsZ: 0 } },
+  ];
+  const run = (command, tool, mpos = { x: 10, y: 20 }) => {
+    const commands = [{ command, isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool, mpos }, tools }, { ...settings });
+    return commands.map((c) => c.command.trim());
+  };
+
+  test('parses the tool and optional return XY', () => {
+    assert.deepEqual(parseMeasureTloCommand('$MEASURE_TLO T3'), { toolNumber: 3, returnTo: null });
+    assert.deepEqual(parseMeasureTloCommand('$measure_tlo T0 X406.3 Y-489.287'), { toolNumber: 0, returnTo: { x: 406.3, y: -489.287 } });
+    assert.equal(parseMeasureTloCommand('$TLS'), null);
+  });
+
+  test('probes even when the library already has a TLO (library strategy would skip)', () => {
+    const lines = run('$MEASURE_TLO T1', 0);
+    assert.ok(lines.some((l) => /^G38\.2/.test(l)), 'expected a probe move');
+    assert.ok(!lines.some((l) => /Load stored TLO/.test(l)), 'must not shortcut to the stored value');
+    // Sanity: a plain M6 T1 with this strategy does NOT probe.
+    const plain = run('M6 T1', 0);
+    assert.ok(!plain.some((l) => /^G38\.2/.test(l)));
+  });
+
+  test('stays at the toolsetter afterwards instead of routing back to the origin', () => {
+    const lines = run('$MEASURE_TLO T1', 0, { x: 10, y: 20 });
+    assert.ok(!lines.some((l) => /tlsExit/.test(l)), 'no tlsExit section');
+    assert.ok(!lines.some((l) => /^G53 G0 X10 Y20$/.test(l)), 'no move back to the origin');
+    const plain = run('M6 T2', 0, { x: 10, y: 20 });
+    assert.ok(plain.some((l) => /^G53 G0 X10 Y20$/.test(l)), 'a normal M6 does return');
+  });
+
+  test('tool already in the spindle: probe only, no rack motion', () => {
+    const lines = run('$MEASURE_TLO T1', 1);
+    assert.ok(lines.some((l) => /^G38\.2/.test(l)));
+    assert.ok(!lines.some((l) => /^M6[45] P1$/.test(l)), 'no drawbar action');
+    assert.ok(!lines.some((l) => /^M61 Q/.test(l)), 'no tool number change');
+  });
+
+  test('T0 with XY: unloads the current tool and returns to that XY', () => {
+    const lines = run('$MEASURE_TLO T0 X406.3 Y-489.287', 2, { x: 300, y: -200 });
+    assert.ok(lines.some((l) => /^M61 Q0$/.test(l)), 'unloads');
+    assert.equal(lines.filter((l) => /^G53 G0 X406\.3 Y-489\.287$/.test(l)).length, 1, 'ends at the requested XY');
+    assert.ok(!lines.some((l) => /^G38\.2/.test(l)), 'no probe on the way out');
   });
 });
