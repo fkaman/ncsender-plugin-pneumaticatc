@@ -2622,6 +2622,25 @@ describe('$MEASURE_TLO — measure-all batch step', () => {
     assert.ok(!plain.some((l) => /^G38\.2/.test(l)));
   });
 
+  test('library strategy probes anyway while the controller has no Tool Length Reference', () => {
+    const runWithTlr = (toolLengthSet) => {
+      const commands = [{ command: 'M6 T1', isOriginal: true }];
+      onBeforeCommand(commands, { machineState: { tool: 0, mpos: { x: 10, y: 20 }, toolLengthSet }, tools }, { ...settings });
+      return commands.map((c) => c.command.trim());
+    };
+    // Reference established → stored TLO is reused, no probe.
+    const withRef = runWithTlr(true);
+    assert.ok(!withRef.some((l) => /^G38\.2/.test(l)), 'must not probe when the reference is set');
+    assert.ok(withRef.some((l) => /Load stored TLO/.test(l)));
+    // No reference (fresh boot / reset) → probe even though T1 has a TLO on file.
+    const noRef = runWithTlr(false);
+    assert.ok(noRef.some((l) => /^G38\.2/.test(l)), 'expected a probe when no TLR');
+    assert.ok(!noRef.some((l) => /Load stored TLO/.test(l)));
+    // Older host that does not report the field → behave as before (reuse).
+    const legacy = runWithTlr(undefined);
+    assert.ok(!legacy.some((l) => /^G38\.2/.test(l)));
+  });
+
   test('stays at the toolsetter afterwards instead of routing back to the origin', () => {
     const lines = run('$MEASURE_TLO T1', 0, { x: 10, y: 20 });
     assert.ok(!lines.some((l) => /tlsExit/.test(l)), 'no tlsExit section');

@@ -1467,6 +1467,10 @@ function guardUnexpectedTool(settings, oNum) {
 // options.returnTo — XY to route back to at the end instead of `origin`
 //   (the batch's last step: unload from wherever we are, return to where
 //   the operator started).
+// options.tlrMissing — no Tool Length Reference is established on the
+//   controller right now (host reports machineState.toolLengthSet false:
+//   fresh boot / reset / G49). In 'library' mode a stored TLO is only
+//   meaningful relative to that reference, so probe instead of loading it.
 function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets = { x: 0, y: 0 }, storedTlo = 0, origin = { x: 0, y: 0 }, options = {}) {
   const sourceSlot = calculateSlotPosition(settings, currentTool);
   const targetSlot = calculateSlotPosition(settings, toolNumber);
@@ -1477,10 +1481,13 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   //               inject `G43.1 Z<value>` instead of the probe routine
   //               so the controller still gets the offset loaded.
   //   (No tool assigned to slot / unknown toolNumber → storedTlo is 0 → probe.)
+  //   'library' also probes when the controller has no Tool Length
+  //   Reference yet (options.tlrMissing) — the first change after a boot
+  //   re-establishes it even for a tool whose TLO is on file.
   const hasStoredTlo = Math.abs(storedTlo || 0) > 0.0001;
   const shouldProbe = !!options.forceTls
     || settings.tlsMode === 'always'
-    || (settings.tlsMode === 'library' && !hasStoredTlo);
+    || (settings.tlsMode === 'library' && (!hasStoredTlo || !!options.tlrMissing));
   const returnTo = options.returnTo || origin;
 
   // Rack-fork gate: if we're loading a real rack tool via fork, wrap the
@@ -1921,7 +1928,10 @@ function handleM6Command(commands, context, settings) {
     x: context.machineState?.mpos?.x ?? 0,
     y: context.machineState?.mpos?.y ?? 0,
   };
-  const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin);
+  // Older hosts don't expose toolLengthSet at all (undefined) — only a
+  // definite `false` means "no reference"; otherwise trust the library.
+  const tlrMissing = context.machineState?.toolLengthSet === false;
+  const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin, { tlrMissing });
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
 
