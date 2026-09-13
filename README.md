@@ -20,6 +20,14 @@ Automatic tool changer support for pneumatic ATC systems that use a single aux o
 - Pre / Post / Abort event hooks let you toggle coolant, open ATC covers, etc.
 - Optional **Taper Blow / Cone Clean**: closes the drawbar right after lifting off an unloaded holder instead of leaving it open for the whole traverse to the next slot, for kits where the taper-blow air port is teed off the drawbar valve. The settle dwell before re-clamping is configurable per install
 
+### Retractable Tool Rack
+- For a rack mounted on an actuator that extends it into position for a load/unload and retracts it clear of the machining envelope the rest of the time
+- A digital output drives the actuator; extends once before any rack-slot motion (`M6`, `$SLOT<n>`, or a Measure All Tools step) and retracts once everything rack-related is done
+- On a chained rack-to-rack swap the rack stays deployed for the whole swap — it only extends/retracts once, not once per side
+- `$SLOT<n>` extends the rack before jogging there but does **not** retract afterward, since jogging to a slot is a deliberate operator action
+- A pure manual-to-manual tool change never touches the rack at all
+- Two independent end-stop sensors — **Rack Available** (extended) and **Rack Unavailable** (retracted) — rather than one sensor read both ways, so a rack stuck mid-travel is caught instead of misread as either end. Both are optional on their own; the whole feature is off if the aux output isn't configured
+
 ### Rack Layout
 - **Linear array** – uniform spacing driven by Slot 1 position + orientation (X/Y) + direction (±) + slot distance
 - **Custom** – per-slot X/Y coordinates in a table, useful for multi-row racks or non-uniform spacing. Switching from Linear to Custom offers to auto-populate the table from the Linear values so you can start close and fine-tune
@@ -27,7 +35,7 @@ Automatic tool changer support for pneumatic ATC systems that use a single aux o
 
 ### Tool Length Setter (TLS)
 - **Probe after every tool change** – always runs TLS on `M6`
-- **Use tool library offset (probe when missing)** – reuses the stored TLO from the tool library; probes only when a tool has no offset yet, then writes the value back so subsequent swaps skip the probe
+- **Use tool library offset (probe when missing)** – reuses the stored TLO from the tool library; probes only when a tool has no offset yet, then writes the value back so subsequent swaps skip the probe. Also probes regardless of a stored value when the controller has no Tool Length Reference established yet (fresh boot, reset, or `G49`) — a stored TLO is only meaningful relative to that reference
 - **Measure All Tools** – one action on the TLS tab that loads every tool with a rack slot in turn, probes each on the tool setter regardless of what's stored, saves the length to the library, then returns to where you started
 - Optional automatic TLS after the first `$H` (per-session first-home)
 - Configurable seek start Z, seek distance, seek feedrate, and TLS aux output for the probe signal
@@ -70,6 +78,8 @@ Open **Plugins → Pneumatic ATC** from the toolbar. The dialog uses a left-side
 | | Slide Distance / Speed | Horizontal travel to enter / leave the fork (Fork only) |
 | | Z-Retract | Post-engage clearance |
 | **Sensors** | Air Pressure / Drawbar / Tool Seated | grblHAL aux inputs, each optional |
+| **Retractable Tool Rack** | Tool Rack Aux Output | Drives the extend/retract actuator — disabled turns the whole feature off |
+| | Rack Available / Unavailable Sensor | Independent end-stop sensors, each optional |
 | **Taper Blow** | Taper Blow / Cone Clean | On/off — forced on and locked under the Sienci profile |
 | | Release Settle (s) | Dwell before re-clamping after the unload lift — editable even under the Sienci profile |
 | **Options** | Show G-Code Commands on Terminal | Reveals the expanded macro output |
@@ -110,8 +120,9 @@ Three Monaco G-code editors:
 2. **Pick a profile** — select `Sienci` if you're on that kit to auto-fill pins and geometry, otherwise stay on `Generic` (this covers HQD and other equivalent pneumatic ATC spindles).
 3. **Set the rack** by jogging the spindle to Slot 1's fully-engaged position and hitting **Grab** — this captures machine XY plus the descent Z. Configure Orientation / Direction / Slot Distance to match your rack (Linear mode) or switch to Custom for irregular racks.
 4. **Wire any sensors** you have (Air Pressure, Drawbar Released, Tool Seated) — each is optional and independently configurable; invert polarity in firmware (`$370`) if needed rather than in the plugin.
-5. **Set the TLS location** by touching off a known tool on the setter, then Grab. Pick your strategy — probe every time is safest until you trust the library offsets, then switch to library mode and use Measure All Tools to seed it.
-6. **Save**. The plugin registers `M6`, `$TLS`, `$MEASURE_TLO`, `$SLOT1..N` handlers and updates ncSender's tool count to match your slot count.
+5. **If your rack retracts**, wire its actuator to the Tool Rack Aux Output and, if you have them, its two end-stop sensors (Available / Unavailable). Leave the output disabled if the rack doesn't retract.
+6. **Set the TLS location** by touching off a known tool on the setter, then Grab. Pick your strategy — probe every time is safest until you trust the library offsets, then switch to library mode and use Measure All Tools to seed it.
+7. **Save**. The plugin registers `M6`, `$TLS`, `$MEASURE_TLO`, `$SLOT1..N` handlers and updates ncSender's tool count to match your slot count.
 
 ## Installation
 
@@ -119,7 +130,7 @@ Install through the ncSender **Plugins** interface (Add plugin from URL or `.zip
 
 ## Development
 
-This is a fork of the original Pneumatic ATC plugin, adapted to support a HQD or equivalent pneumatic ATC spindle system, and tracking upstream while adding safety sensors, the manual-fallback recovery path, taper blow, and Measure All Tools:
+This is a fork of the original Pneumatic ATC plugin, adapted to support a HQD or equivalent pneumatic ATC spindle system, and tracking upstream while adding safety sensors, the manual-fallback recovery path, taper blow, Measure All Tools, and retractable tool rack support:
 https://github.com/fkaman/ncsender-plugin-pneumaticatc
 
 Upstream: https://github.com/siganberg/ncsender-plugin-pneumaticatc
