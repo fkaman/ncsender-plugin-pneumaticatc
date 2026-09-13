@@ -2663,3 +2663,82 @@ describe('$MEASURE_TLO — measure-all batch step', () => {
     assert.ok(!lines.some((l) => /^G38\.2/.test(l)), 'no probe on the way out');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Retractable tool rack: a digital output extends the rack into position
+// before any load/unload, retracts it clear afterward. Two independent
+// end-stop sensors (available / unavailable), not one sensor read both
+// ways — each is its own optional guard, same Re-check/Abort shape as
+// every other sensor in this plugin. Extend/retract are no-ops entirely
+// when the output itself is unconfigured (-1).
+// ---------------------------------------------------------------------------
+describe('retractable tool rack — extend/retract around rack-slot motion', () => {
+  const WITH_RACK = {
+    ...CUP_RACK, toolRackAuxOutput: 3,
+    toolRackAvailableSensorInput: 6, toolRackUnavailableSensorInput: 7,
+    manualTool: { x: 321, y: -966 }
+  };
+  const NO_RACK_OUTPUT = { ...CUP_RACK, manualTool: { x: 321, y: -966 } };
+
+  test('extendToolRack / retractToolRack: no-op entirely when the output is unconfigured', () => {
+    const program = buildToolChangeProgram(NO_RACK_OUTPUT, 0, 1).join('\n');
+    assert.ok(!program.includes('M64 P3') && !program.includes('M65 P3'), 'no rack aux output line when unconfigured');
+    assert.ok(!program.includes('TOOLRACK'), 'no tool-rack dialog machinery when the output is unconfigured');
+  });
+
+  test('output configured, sensors unconfigured: fires the aux lines with no M66 verification', () => {
+    const outputOnly = { ...CUP_RACK, toolRackAuxOutput: 3, manualTool: { x: 321, y: -966 } };
+    const program = buildToolChangeProgram(outputOnly, 0, 1).join('\n');
+    assert.ok(program.includes('M64 P3'), 'extend must still fire the output');
+    assert.ok(program.includes('M65 P3'), 'retract must still fire the output');
+    assert.ok(!program.includes('M66 P6') && !program.includes('M66 P7'), 'no verification read when the sensors are unconfigured');
+  });
+
+  test('output + sensors configured: extend fires before any unload/load motion, with TOOLRACK_FAULT verification', () => {
+    const lines = motionLines(buildToolChangeProgram(WITH_RACK, 0, 1).join('\n'));
+    const extendIdx = lines.indexOf('M64 P3');
+    const readIdx = lines.indexOf('M66 P6 L3 Q0.01');
+    const firstMotion = lines.findIndex((l) => /^G53 G[01] [XY]/.test(l));
+    assert.ok(extendIdx !== -1 && readIdx !== -1 && firstMotion !== -1, 'extend, verification read and first rack-approach move must all be present');
+    assert.ok(extendIdx < readIdx && readIdx < firstMotion, 'the rack must extend and verify available before any approach motion');
+    assert.ok(buildToolChangeProgram(WITH_RACK, 0, 1).join('\n').includes('(MSG, PLUGIN_PNEUMATICATC:TOOLRACK_FAULT)'));
+  });
+
+  test('output + sensors configured: retract fires after everything rack-related is done, with TOOLRACK_RETRACT_FAULT verification', () => {
+    const program = buildToolChangeProgram(WITH_RACK, 0, 1).join('\n');
+    const lines = motionLines(program);
+    const retractIdx = lines.indexOf('M65 P3');
+    const readIdx = lines.indexOf('M66 P7 L3 Q0.01', retractIdx - 1);
+    assert.ok(retractIdx !== -1, 'retract must fire');
+    assert.ok(readIdx !== -1 && readIdx >= retractIdx, 'retract verification read must follow the retract line');
+    assert.ok(program.includes('(MSG, PLUGIN_PNEUMATICATC:TOOLRACK_RETRACT_FAULT)'));
+    // Must be the LAST rack-related thing — only wrap-up follows.
+    const lastM61 = lines.lastIndexOf(lines.find((l) => /^M61 Q/.test(l)) || '');
+    assert.ok(retractIdx > lastM61, 'retract must come after the tool change has already reported its outcome');
+  });
+
+  test('a rack-to-rack chained swap extends once and retracts once — not between the unload and the load', () => {
+    const lines = motionLines(buildToolChangeProgram(WITH_RACK, 1, 2).join('\n'));
+    const extendCount = lines.filter((l) => l === 'M64 P3').length;
+    const retractCount = lines.filter((l) => l === 'M65 P3').length;
+    assert.equal(extendCount, 1, 'must extend exactly once for the whole swap, not once per side');
+    assert.equal(retractCount, 1, 'must retract exactly once for the whole swap, not once per side');
+  });
+
+  test('pure manual-to-manual: no rack touch at all, extend/retract never fire', () => {
+    const program = buildToolChangeProgram(WITH_RACK, 4, 5).join('\n');
+    assert.ok(!program.includes('M64 P3') && !program.includes('M65 P3'), 'neither extend nor retract when the rack is never touched');
+  });
+
+  test('bare unload to T0 from a rack slot still extends/retracts (rack IS touched)', () => {
+    const program = buildToolChangeProgram(WITH_RACK, 1, 0).join('\n');
+    assert.ok(program.includes('M64 P3') && program.includes('M65 P3'));
+  });
+
+  test('$SLOT<n>: extends before jogging to the slot, but does NOT retract afterward', () => {
+    const gcode = buildSlotNav(WITH_RACK, 1, { x: 60, y: 120 });
+    const lines = motionLines(gcode);
+    assert.ok(lines.includes('M64 P3'), 'must extend before jogging to the slot');
+    assert.ok(!lines.includes('M65 P3'), 'must NOT retract — the operator jogged here deliberately and likely wants to stay');
+  });
+});

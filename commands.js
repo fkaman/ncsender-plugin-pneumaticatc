@@ -242,6 +242,20 @@ const buildInitialConfig = (raw = {}) => {
     // round.
     toolSeatedSensorInput: sanitizeAuxInput(raw.toolSeatedSensorInput),
 
+    // Retractable tool rack: a digital output extends the rack into
+    // position for a load/unload and retracts it clear afterward, so it
+    // doesn't sit in the machining envelope during a job. -1/unconfigured
+    // output disables the whole feature (extend/retract become no-ops).
+    // Two independent end-stop sensors, NOT one sensor read both ways —
+    // a single sensor can't distinguish "stuck mid-travel" from either
+    // confirmed end. Each is optional on its own; skipping one just means
+    // that particular actuation goes unverified, same as every other
+    // sensor in this plugin. Both read as true-when-HIGH; invert via
+    // $370 if wired the other way round.
+    toolRackAuxOutput: sanitizeAuxOutput(raw.toolRackAuxOutput),
+    toolRackAvailableSensorInput: sanitizeAuxInput(raw.toolRackAvailableSensorInput),
+    toolRackUnavailableSensorInput: sanitizeAuxInput(raw.toolRackUnavailableSensorInput),
+
     dialogBehavior: {
       countdownSec: toFiniteNumber(raw.dialogBehavior?.countdownSec, 5),
       chainSteps: !!raw.dialogBehavior?.chainSteps
@@ -1066,6 +1080,42 @@ function toolSeatedGuard(settings, oNum) {
   return sensorGuard(settings.toolSeatedSensorInput, 3, 'TOOL_FAULT', 'TOOL_FAULT_UNVERIFIED', oNum); // L3=wait-HIGH
 }
 
+// Retractable tool rack — two independent end-stop sensors, each its own
+// dedicated guard. Separate dialogs (not shared with the drawbar/pressure
+// ones) since "rack didn't confirm available" and "rack didn't confirm
+// retracted" mean different things to the operator.
+function toolRackAvailableGuard(settings, oNum) {
+  return sensorGuard(settings.toolRackAvailableSensorInput, 3, 'TOOLRACK_FAULT', 'TOOLRACK_FAULT_UNVERIFIED', oNum); // L3=wait-HIGH
+}
+function toolRackUnavailableGuard(settings, oNum) {
+  return sensorGuard(settings.toolRackUnavailableSensorInput, 3, 'TOOLRACK_RETRACT_FAULT', 'TOOLRACK_RETRACT_FAULT_UNVERIFIED', oNum); // L3=wait-HIGH
+}
+
+// Fires the rack actuator and (if that sensor is wired) verifies it got
+// there. No settle dwell before the read — the actuator is fast/reliable
+// enough that the guard's own read is sufficient. Returns '' entirely
+// when the output itself isn't configured — the whole feature is off.
+function rackOutputConfigured(settings) {
+  return settings.toolRackAuxOutput === 'M7' || settings.toolRackAuxOutput === 'M8'
+    || (typeof settings.toolRackAuxOutput === 'number' && settings.toolRackAuxOutput >= 0);
+}
+function extendToolRack(settings, oNum) {
+  if (!rackOutputConfigured(settings)) return '';
+  const { on } = auxOnOff(settings.toolRackAuxOutput);
+  return `
+    ${on}
+    ${toolRackAvailableGuard(settings, oNum)}
+  `.trim();
+}
+function retractToolRack(settings, oNum) {
+  if (!rackOutputConfigured(settings)) return '';
+  const { off } = auxOnOff(settings.toolRackAuxOutput);
+  return `
+    ${off}
+    ${toolRackUnavailableGuard(settings, oNum)}
+  `.trim();
+}
+
 function slideFeedrate(settings) {
   return settings.slideSpeed > 0 ? settings.slideSpeed : 500;
 }
@@ -1548,6 +1598,12 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // released, and a manual load that follows uses the CLAMP dialog.
   const isManualToManual = currentTool > settings.slots && toolNumber > settings.slots;
 
+  // Retractable rack: extend before any motion toward a rack slot,
+  // retract once everything's done. Either side of the change touching
+  // a rack slot is enough — a pure manual-to-manual swap never needs it.
+  const touchesRack = (currentTool > 0 && currentTool <= settings.slots)
+    || (toolNumber > 0 && toolNumber <= settings.slots);
+
   // Whether the unload below might get skipped at RUNTIME by the
   // tool-seated pre-check (see wrapUnloadWithSeatedCheck). Applies to any
   // command that believes a rack tool is in the spindle, regardless of
@@ -1685,6 +1741,13 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ? guardUnexpectedTool(settings, 205)
     : '';
 
+  // Extend once, before any rack-slot motion; retract once, after
+  // everything rack-related is done (including exit/TLS routing) — NOT
+  // between unload and load, since a chained Tm→Tn swap pars-walks
+  // between two rack slots with the rack still deployed the whole time.
+  const rackExtend = touchesRack ? extendToolRack(settings, 400) : '';
+  const rackRetract = touchesRack ? retractToolRack(settings, 410) : '';
+
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
 
@@ -1697,12 +1760,14 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${pressureGuard(settings, 120)}
     G53 G0 Z${settings.zSafe}
     ${unexpectedToolGuard}
+    ${rackExtend}
     ${guardedUnloadSection}
     ${bareUnloadStatusFix}
     ${loadSection}
     G53 G0 Z${settings.zSafe}
     ${finalizeUnclamped}
     ${guardedExitSection}
+    ${rackRetract}
     G4 P0
     G[#<return_units>]
     ${postCmd}
@@ -1878,8 +1943,13 @@ function buildSlotNav(settings, slotNum, origin = { x: 0, y: 0 }) {
     ? cupEntrance(engaged, origin, settings)
     : `${rackEntrance(engaged, origin, settings)}
        G53 G0 X${engaged.x} Y${engaged.y}`;
+  // Extend before jogging over the slot — same reasoning as the M6 path.
+  // No retract afterward: the operator jogged here deliberately (setup /
+  // inspection) and likely wants to stay, unlike a tool change where the
+  // rack has to be clear again before the job resumes.
   return `
     G53 G21 G90 G0 Z${settings.zSafe}
+    ${extendToolRack(settings, 420)}
     ${entrance}
   `.trim();
 }

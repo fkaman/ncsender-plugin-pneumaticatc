@@ -65,6 +65,26 @@
       "message": "Rack slot for tool {toolNumber} appears empty. Switching to manual load.",
       "continueLabel": "Continue"
     },
+    "TOOLRACK_FAULT": {
+      "title": "Tool Rack Not Available",
+      "message": "Tool rack not confirmed available. Check it, then Re-check or Abort.",
+      "continueLabel": "Re-check"
+    },
+    "TOOLRACK_FAULT_UNVERIFIED": {
+      "title": "Tool Rack Still Not Available",
+      "message": "Tool rack still not available after 2 rechecks. Continuing is unverified and risky.",
+      "continueLabel": "Continue anyway"
+    },
+    "TOOLRACK_RETRACT_FAULT": {
+      "title": "Tool Rack Not Retracted",
+      "message": "Tool rack not confirmed retracted. Check it, then Re-check or Abort.",
+      "continueLabel": "Re-check"
+    },
+    "TOOLRACK_RETRACT_FAULT_UNVERIFIED": {
+      "title": "Tool Rack Still Not Retracted",
+      "message": "Tool rack still not retracted after 2 rechecks. Continuing is unverified and risky.",
+      "continueLabel": "Continue anyway"
+    },
     "UNEXPECTED_TOOL_DETECTED": {
       "title": "Unexpected Tool",
       "message": "A tool is unexpectedly seated. Release opens after a delay. Remove it by hand, then Continue.",

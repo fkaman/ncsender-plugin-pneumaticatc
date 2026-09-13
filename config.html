@@ -1657,6 +1657,41 @@
           </div>
         </div>
 
+        <div class="pa-card" id="pa-adv-toolrack-card">
+          <h3 class="pa-card-title">Retractable Tool Rack</h3>
+          <p class="pa-card-help">
+            For a rack mounted on an actuator that extends it into position for a load/unload and retracts it clear for the rest of the job. Pick the aux output that drives it, and (optionally) the two aux inputs confirming each end of travel — a separate sensor for available and for unavailable, not one sensor read both ways, so a rack stuck mid-travel is caught instead of read as either end. Both read as <b>true when the input is HIGH</b> — invert the port in firmware (<code>$370</code>) if wired the other way round. Leave the output disabled if your rack doesn't retract: nothing below changes.
+          </p>
+
+          <div class="pa-form-row">
+            <label class="pa-form-label" for="pa-adv-toolrack-output">
+              Tool Rack Aux Output
+              <span class="pa-help-tip" title="Drives the rack extend/retract actuator. ON extends it into position, OFF retracts it clear. Disabled = feature off.">?</span>
+            </label>
+            <select id="pa-adv-toolrack-output" class="pa-select"></select>
+          </div>
+
+          <div class="pa-form-row">
+            <label class="pa-form-label" for="pa-adv-input-toolrack-available">
+              Rack Available Sensor
+              <span class="pa-help-tip" title="Confirms the rack is extended and available for a load/unload. Checked before approaching any slot.">?</span>
+            </label>
+            <select id="pa-adv-input-toolrack-available" class="pa-select pa-adv-pin">
+              <option value="">N/A</option>
+            </select>
+          </div>
+
+          <div class="pa-form-row">
+            <label class="pa-form-label" for="pa-adv-input-toolrack-unavailable">
+              Rack Unavailable Sensor
+              <span class="pa-help-tip" title="Confirms the rack is retracted clear of the machining envelope. Checked after a tool change finishes.">?</span>
+            </label>
+            <select id="pa-adv-input-toolrack-unavailable" class="pa-select pa-adv-pin">
+              <option value="">N/A</option>
+            </select>
+          </div>
+        </div>
+
         <div class="pa-card" id="pa-adv-taper-blow-card">
           <h3 class="pa-card-title">Taper Blow / Cone Clean</h3>
           <p class="pa-card-help">
@@ -1878,7 +1913,7 @@
   var AUX_INPUT_FALLBACK = 8;
   var auxInputCount = null;
   var auxOutputCount = null;
-  var PIN_SELECT_IDS = ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolseated', 'pa-adv-input-holder'];
+  var PIN_SELECT_IDS = ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolseated', 'pa-adv-input-holder', 'pa-adv-input-toolrack-available', 'pa-adv-input-toolrack-unavailable'];
 
   function pinOptionExists(sel, value) {
     return qsa('option', sel).some(function(o) { return o.value === String(value); });
@@ -2672,6 +2707,9 @@
         }
       }
       fill($('pa-clamp-aux'), false, initialConfig.clampAuxOutput);
+      // Optional — unlike the clamp output, "Disabled" is a real choice
+      // (a rack that doesn't retract at all).
+      fill($('pa-adv-toolrack-output'), true, initialConfig.toolRackAuxOutput);
       // Re-apply the profile now the real option names exist, so a locked
       // field shows "Aux Out P1" (or the user's alias) rather than a
       // placeholder — and so the value survives the list being rebuilt.
@@ -2764,6 +2802,14 @@
     setAdvPin('pa-adv-input-drawbar', (typeof savedDrawbar === 'number' && savedDrawbar >= 0) ? savedDrawbar : '');
     var savedToolSeated = initialConfig.toolSeatedSensorInput;
     setAdvPin('pa-adv-input-toolseated', (typeof savedToolSeated === 'number' && savedToolSeated >= 0) ? savedToolSeated : '');
+
+    // Retractable tool rack — two independent end-stop sensors, same
+    // -1/missing = blank convention. The output itself is seeded by
+    // populateAuxOutputs() below, once its option list actually exists.
+    var savedRackAvailable = initialConfig.toolRackAvailableSensorInput;
+    setAdvPin('pa-adv-input-toolrack-available', (typeof savedRackAvailable === 'number' && savedRackAvailable >= 0) ? savedRackAvailable : '');
+    var savedRackUnavailable = initialConfig.toolRackUnavailableSensorInput;
+    setAdvPin('pa-adv-input-toolrack-unavailable', (typeof savedRackUnavailable === 'number' && savedRackUnavailable >= 0) ? savedRackUnavailable : '');
 
     var taperBlowInput = $('pa-adv-taper-blow');
     if (taperBlowInput) taperBlowInput.checked = !!initialConfig.taperBlow;
@@ -2896,6 +2942,19 @@
       })(),
       toolSeatedSensorInput: (function() {
         var sel = $('pa-adv-input-toolseated');
+        var n = Number.parseInt(sel ? sel.value : '', 10);
+        return Number.isFinite(n) && n >= 0 ? n : -1;
+      })(),
+      // Retractable tool rack: aux output plus its two independent
+      // end-stop sensors. -1/Disabled output = feature off.
+      toolRackAuxOutput: parseAuxValue($('pa-adv-toolrack-output')),
+      toolRackAvailableSensorInput: (function() {
+        var sel = $('pa-adv-input-toolrack-available');
+        var n = Number.parseInt(sel ? sel.value : '', 10);
+        return Number.isFinite(n) && n >= 0 ? n : -1;
+      })(),
+      toolRackUnavailableSensorInput: (function() {
+        var sel = $('pa-adv-input-toolrack-unavailable');
         var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
