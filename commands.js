@@ -1103,6 +1103,12 @@ function toolRackUnavailableGuard(settings, oNum) {
 // there. No settle dwell before the read — the actuator is fast/reliable
 // enough that the guard's own read is sufficient. Returns '' entirely
 // when the output itself isn't configured — the whole feature is off.
+//
+// Both force a Z-safe retract first, immediately before actuating —
+// deliberately NOT relying on the caller already being at a safe height.
+// Retracting (or extending) while the spindle is still down near slot
+// depth risks the rack moving into the spindle's own path. A harmless
+// no-op when the spindle is already there.
 function rackOutputConfigured(settings) {
   return settings.toolRackAuxOutput === 'M7' || settings.toolRackAuxOutput === 'M8'
     || (typeof settings.toolRackAuxOutput === 'number' && settings.toolRackAuxOutput >= 0);
@@ -1111,6 +1117,7 @@ function extendToolRack(settings, oNum) {
   if (!rackOutputConfigured(settings)) return '';
   const { on } = auxOnOff(settings.toolRackAuxOutput);
   return `
+    G53 G0 Z${settings.zSafe}
     ${on}
     ${toolRackAvailableGuard(settings, oNum)}
   `.trim();
@@ -1119,6 +1126,7 @@ function retractToolRack(settings, oNum) {
   if (!rackOutputConfigured(settings)) return '';
   const { off } = auxOnOff(settings.toolRackAuxOutput);
   return `
+    G53 G0 Z${settings.zSafe}
     ${off}
     ${toolRackUnavailableGuard(settings, oNum)}
   `.trim();

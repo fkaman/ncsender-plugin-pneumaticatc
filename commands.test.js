@@ -2785,4 +2785,17 @@ describe('retractable tool rack — extend/retract around rack-slot motion', () 
     assert.ok(extendIdx !== -1 && probeIdx !== -1 && retractIdx !== -1, 'extend, probe and retract must all be present inside the post-home TLS branch');
     assert.ok(extendIdx < probeIdx && probeIdx < retractIdx, 'must extend before probing and retract after');
   });
+
+  // Regression: extend/retract must not depend on the caller already
+  // being at a safe height — each forces its own Z-safe move first, so
+  // actuating the rack can never happen while the spindle is still down
+  // near slot depth.
+  test('extend and retract each force their own Z-safe move immediately beforehand', () => {
+    const lines = motionLines(buildToolChangeProgram(WITH_RACK, 0, 1).join('\n'));
+    const extendIdx = lines.indexOf('M64 P3');
+    const retractIdx = lines.indexOf('M65 P3');
+    assert.ok(extendIdx > 0 && retractIdx > 0, 'extend and retract must both be present');
+    assert.equal(lines[extendIdx - 1], `G53 G0 Z${WITH_RACK.zSafe}`, 'extend must be preceded by its own Z-safe move');
+    assert.equal(lines[retractIdx - 1], `G53 G0 Z${WITH_RACK.zSafe}`, 'retract must be preceded by its own Z-safe move');
+  });
 });
