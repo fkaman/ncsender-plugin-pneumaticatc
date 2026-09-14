@@ -2741,4 +2741,48 @@ describe('retractable tool rack — extend/retract around rack-slot motion', () 
     assert.ok(lines.includes('M64 P3'), 'must extend before jogging to the slot');
     assert.ok(!lines.includes('M65 P3'), 'must NOT retract — the operator jogged here deliberately and likely wants to stay');
   });
+
+  // Regression: standalone $TLS and $MEASURE_TLO's "tool already in the
+  // spindle" step both probe via createToolLengthSetProgram directly,
+  // bypassing buildToolChangeProgram entirely — so they used to bypass
+  // its extend/retract wrapping too. $H's post-home TLS builds its own
+  // separate template and had the same gap. All three probe on the
+  // toolsetter, which needs the rack extended the same as any rack-slot
+  // interaction.
+  const WITH_RACK_TLS = { ...WITH_RACK, toolsetter: { x: 0, y: 0 } };
+
+  test('$TLS: extends before the probe, retracts after', () => {
+    const commands = [{ command: '$TLS', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, { ...WITH_RACK_TLS });
+    const lines = motionLines(commands.map((c) => c.command).join('\n'));
+    const extendIdx = lines.indexOf('M64 P3');
+    const probeIdx = lines.findIndex((l) => /^G38\.2/.test(l));
+    const retractIdx = lines.indexOf('M65 P3');
+    assert.ok(extendIdx !== -1 && probeIdx !== -1 && retractIdx !== -1, 'extend, probe and retract must all be present');
+    assert.ok(extendIdx < probeIdx && probeIdx < retractIdx, 'must extend before probing and retract after');
+  });
+
+  test('$MEASURE_TLO Tn with n already in the spindle: extends before the probe, retracts after', () => {
+    const commands = [{ command: '$MEASURE_TLO T1', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [{ toolNumber: 1, offsets: { x: 0, y: 0, z: 0, tlsZ: 0 } }] }, { ...WITH_RACK_TLS });
+    const lines = motionLines(commands.map((c) => c.command).join('\n'));
+    const extendIdx = lines.indexOf('M64 P3');
+    const probeIdx = lines.findIndex((l) => /^G38\.2/.test(l));
+    const retractIdx = lines.indexOf('M65 P3');
+    assert.ok(extendIdx !== -1 && probeIdx !== -1 && retractIdx !== -1, 'extend, probe and retract must all be present');
+    assert.ok(extendIdx < probeIdx && probeIdx < retractIdx, 'must extend before probing and retract after');
+  });
+
+  test('$H + performTlsAfterHome: extends before the post-home probe, retracts after', () => {
+    const withHome = { ...WITH_RACK_TLS, performTlsAfterHome: true };
+    const commands = [{ command: '$H', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, withHome);
+    const gcode = commands.map((c) => c.command).join('\n');
+    const lines = motionLines(gcode);
+    const extendIdx = lines.indexOf('M64 P3');
+    const probeIdx = lines.findIndex((l) => /^G38\.2/.test(l));
+    const retractIdx = lines.indexOf('M65 P3');
+    assert.ok(extendIdx !== -1 && probeIdx !== -1 && retractIdx !== -1, 'extend, probe and retract must all be present inside the post-home TLS branch');
+    assert.ok(extendIdx < probeIdx && probeIdx < retractIdx, 'must extend before probing and retract after');
+  });
 });

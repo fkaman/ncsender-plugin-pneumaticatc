@@ -511,15 +511,23 @@ function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
   const tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets, options);
+  // Both current callers ($TLS and Measure All Tools' "already loaded"
+  // step) probe on the toolsetter, which needs the rack extended the
+  // same as any rack-slot interaction — baked in here once rather than
+  // in each caller. No-op entirely when the rack output isn't configured.
+  const rackExtend = extendToolRack(settings, 430);
+  const rackRetract = retractToolRack(settings, 440);
 
   const gcode = `
     (Start of Tool Length Setter)
     ${preCmd}
     #<return_units> = [20 + #<_metric>]
     G21
+    ${rackExtend}
     ${tlsRoutine}
     G53 G0 Z${settings.zSafe}
     ${tlsExitMove}
+    ${rackRetract}
     G4 P0
     G[#<return_units>]
     ${postCmd}
@@ -1912,6 +1920,11 @@ function handleHomeCommand(commands, context, settings) {
   const tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets, { originMPos });
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
+  // Same as any other TLS probe — needs the rack extended, retracted
+  // again once done. Inside the o100 IF so it only fires when the
+  // post-home TLS actually runs.
+  const rackExtend = extendToolRack(settings, 470);
+  const rackRetract = retractToolRack(settings, 480);
 
   const gcode = `
     $H
@@ -1919,9 +1932,11 @@ function handleHomeCommand(commands, context, settings) {
     o100 IF [[#<_tool_offset> EQ 0] AND [#<_current_tool> NE 0]]
       ${preCmd}
       G21
+      ${rackExtend}
       ${tlsRoutine}
       G53 G0 Z${settings.zSafe}
       ${tlsExitMove}
+      ${rackRetract}
       G4 P0
       G53 G0 X0 Y0
       ${postCmd}
