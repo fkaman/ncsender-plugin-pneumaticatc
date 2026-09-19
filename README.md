@@ -74,8 +74,9 @@ Open **Plugins → Pneumatic ATC** from the toolbar. The dialog uses a left-side
 | | Slot 1 X/Y/Z + Grab | Engaged position of Slot 1 (Z = spindle descent depth) |
 | | Orientation / Direction / Slot Distance | Linear mode only |
 | | Per-slot table | Custom mode only |
-| **Engage Motion** | Slide Direction | ± along the axis perpendicular to Orientation (Fork only) |
+| **Engage Motion** | Slide Direction | ± along the axis perpendicular to Orientation. On a Cup rack it is shown as **Exit Side**: the edge of the rack the gantry routes around when leaving, so point it away from a machine limit |
 | | Slide Distance / Speed | Horizontal travel to enter / leave the fork (Fork only) |
+| | Safety Margin | How far out from the slots the routing keeps clear of the rack; also sets where the Cup exit edge sits |
 | | Z-Retract | Post-engage clearance |
 | **Sensors** | Air Pressure / Drawbar / Tool Seated | grblHAL aux inputs, each optional |
 | **Retractable Tool Rack** | Tool Rack Aux Output | Drives the extend/retract actuator — disabled turns the whole feature off |

@@ -1255,23 +1255,27 @@
             </div>
           </div>
 
-          <!-- Fork-only motion params (shown when Rack Holding = Fork) -->
+          <!-- Slide Direction doubles as the Cup exit side, and Safety Margin sets
+               how far out that edge sits, so both stay visible for Cup. Slide
+               Distance / Speed are fork-only. -->
           <div id="pa-fork-settings">
             <div class="pa-field-inline">
-              <label>Slide Direction</label>
+              <label id="pa-label-slide-direction">Slide Direction</label>
               <div class="pa-segment" id="pa-slide-direction">
                 <button type="button" class="pa-segment-btn active" data-value="Negative">−</button>
                 <button type="button" class="pa-segment-btn" data-value="Positive">+</button>
                 <div class="pa-segment-indicator"></div>
               </div>
             </div>
-            <div class="pa-field-inline">
-              <label id="pa-label-slide-distance">Slide Distance (mm)</label>
-              <input class="pa-input" type="number" id="pa-slide-distance" value="40" min="0" step="0.1">
-            </div>
-            <div class="pa-field-inline">
-              <label id="pa-label-slide-speed">Slide Speed (mm/min)</label>
-              <input class="pa-input" type="number" id="pa-slide-speed" value="500" min="1" step="1">
+            <div id="pa-fork-only-fields">
+              <div class="pa-field-inline">
+                <label id="pa-label-slide-distance">Slide Distance (mm)</label>
+                <input class="pa-input" type="number" id="pa-slide-distance" value="40" min="0" step="0.1">
+              </div>
+              <div class="pa-field-inline">
+                <label id="pa-label-slide-speed">Slide Speed (mm/min)</label>
+                <input class="pa-input" type="number" id="pa-slide-speed" value="500" min="1" step="1">
+              </div>
             </div>
             <div class="pa-field-inline">
               <label id="pa-label-keepout-padding">Safety Margin (mm)</label>
@@ -2474,13 +2478,23 @@
   var segDirection = initSegment('pa-direction');
   var segSlideDir = initSegment('pa-slide-direction');
 
-  // Rack Holding visibility — Cup drops top-down so the slide fields are
-  // irrelevant. Toggle the fork-only block based on the dropdown value.
+  // Rack Holding visibility — Cup drops top-down so the slide distance and
+  // speed are irrelevant, but its exit route still goes around the rack via
+  // an edge picked by the direction + safety margin, so those stay visible
+  // (relabelled) and the user can point that route away from a hard stop.
   function updateRackHoldingVisibility() {
-    var forkBlock = $('pa-fork-settings');
+    var forkOnly = $('pa-fork-only-fields');
+    var dirLabel = $('pa-label-slide-direction');
     var holding = $('pa-rack-holding');
-    if (!forkBlock || !holding) return;
-    forkBlock.style.display = holding.value === 'Cup' ? 'none' : '';
+    if (!forkOnly || !holding) return;
+    var isCup = holding.value === 'Cup';
+    forkOnly.style.display = isCup ? 'none' : '';
+    if (dirLabel) {
+      dirLabel.textContent = isCup ? 'Exit Side' : 'Slide Direction';
+      dirLabel.title = isCup
+        ? 'Which side of the rack (lower or higher coordinate on the axis across the slots) the gantry routes around when it leaves. Pick the side away from your machine limit.'
+        : '';
+    }
   }
   var rackHoldingSelect = $('pa-rack-holding');
   if (rackHoldingSelect) rackHoldingSelect.addEventListener('change', updateRackHoldingVisibility);
