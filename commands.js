@@ -1043,7 +1043,20 @@ function auxLineFor(settings, action) {
 //
 // `oNum` is the base for this guard's o-word blocks; each call site needs
 // its own base, spaced far enough apart not to collide within one macro.
-function sensorGuard(input, waitMode, faultMsg, unverifiedMsg, oNum) {
+// Without `retreat`, 3 numbers (oNum..oNum+2); with it, 4 (oNum..oNum+3).
+//
+// `retreat` — for guards that fire down in a slot rather than at Z-safe.
+// A fault here means the caller's assumption (drawbar released, tool
+// seated) didn't hold, so we don't actually know whether something's
+// still gripped — reported on hardware as the operator's hands going in
+// for a Re-check right next to a tool that may not be fully clear. Lift
+// straight up (over the same XY, not a lateral retreat — sliding out an
+// unconfirmed grip is how a loose tool gets thrown) BEFORE the first
+// dialog shows, and feed back down to the exact Z the caller was at only
+// once the whole retry chain resolves — a Re-check that succeeds still
+// needs the descend, since nothing else in the caller's sequence expects
+// the spindle to have moved. { liftZ, returnZ, returnFeed }.
+function sensorGuard(input, waitMode, faultMsg, unverifiedMsg, oNum, retreat) {
   if (!(input >= 0)) return ''; // covers -1 (no sensor) and undefined/NaN alike
   const read = `M66 P${input} L${waitMode} Q0.01\n    G4 P0.1`;
   const retry = (n) => `
@@ -1052,14 +1065,28 @@ function sensorGuard(input, waitMode, faultMsg, unverifiedMsg, oNum) {
       M0
       ${read}
     o${n} endif`;
-  return `
-    ${read}
-    ${retry(oNum).trim()}
+  const faultChain = `
     ${retry(oNum + 1).trim()}
     o${oNum + 2} if [#5399 EQ -1]
       (MSG, PLUGIN_PNEUMATICATC:${unverifiedMsg})
       M0
     o${oNum + 2} endif
+  `.trim();
+  if (!retreat) {
+    return `
+      ${read}
+      ${retry(oNum).trim()}
+      ${faultChain}
+    `.trim();
+  }
+  return `
+    ${read}
+    o${oNum + 3} if [#5399 EQ -1]
+      G53 G0 Z${retreat.liftZ}
+      ${retry(oNum).trim()}
+      ${faultChain}
+      G53 G1 Z${retreat.returnZ} F${retreat.returnFeed}
+    o${oNum + 3} endif
   `.trim();
 }
 
@@ -1085,8 +1112,8 @@ function pressureGuard(settings, oNum) {
 // sensor below — on kits where it's physically the same sensor, both
 // settings just get pointed at the same pin. Invert via $370 if wired
 // the other way round.
-function drawbarReleasedGuard(settings, oNum) {
-  return sensorGuard(settings.drawbarSensorInput, 3, 'DRAWBAR_FAULT', 'DRAWBAR_FAULT_UNVERIFIED', oNum); // L3=wait-HIGH
+function drawbarReleasedGuard(settings, oNum, retreat) {
+  return sensorGuard(settings.drawbarSensorInput, 3, 'DRAWBAR_FAULT', 'DRAWBAR_FAULT_UNVERIFIED', oNum, retreat); // L3=wait-HIGH
 }
 
 // Tool-seated sensor at the spindle, read right after the collet clamps.
@@ -1209,7 +1236,11 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
-      ${drawbarReleasedGuard(settings, 160)}${closeAfterLiftOff}
+      ${drawbarReleasedGuard(settings, 160, {
+        liftZ: settings.zSafe,
+        returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM,
+        returnFeed: DRAWBAR_FEEDRATE_MMPM
+      })}${closeAfterLiftOff}
       G53 G0 Z${settings.zSafe}
       M61 Q0
     `.trim();
@@ -1223,7 +1254,11 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     G4 P0.5
     ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
-    ${drawbarReleasedGuard(settings, 170)}${closeAfterLiftOff}
+    ${drawbarReleasedGuard(settings, 170, {
+      liftZ: settings.zSafe,
+      returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM,
+      returnFeed: DRAWBAR_FEEDRATE_MMPM
+    })}${closeAfterLiftOff}
     G53 G0 Z${settings.zSafe}
     M61 Q0
   `.trim();
@@ -1341,18 +1376,23 @@ function toolSeatedOrManualFallback(settings, toolNumber, tlsRoutine, postClampM
     return `${postClampMotion}\n    ${reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum)}`.trim();
   }
   const read = `M66 P${settings.toolSeatedSensorInput} L3 Q0.01\n    G4 P0.1`; // seated=HIGH
-  // Retreat via postClampMotion, NOT a bare Z retract — the tool is
-  // clamped and still sitting at the engaged position, so a Fork rack
-  // needs the same sideways slide-out to slotPos.approach that the
-  // success path already gets from forkPostClampMotion before it's
-  // safe to go vertical. A straight G53 G0 Z here would lift the
-  // clamped tool straight up while still inside the fork's envelope.
-  // Cup racks are unaffected — cupPostClampMotion already IS a bare Z
-  // retract, so this is a no-op change for them.
+  // Retreat via postClampMotion BEFORE the dialog, not after — a fault
+  // here used to leave the spindle sitting at the engaged position (down
+  // in the rack) for the whole time the operator reads the message and
+  // hits Continue. postClampMotion is still the right retreat, NOT a
+  // bare Z lift — the tool (if anything's even there) is at the engaged
+  // position, and a Fork rack needs the same sideways slide-out to
+  // slotPos.approach the success path gets from forkPostClampMotion
+  // before it's safe to go vertical; a straight G53 G0 Z here would
+  // lift straight into the fork's own structure. Cup racks are
+  // unaffected either way — cupPostClampMotion already IS a bare Z
+  // retract. Moving it earlier doesn't change what it's safe to do,
+  // only when — this exact motion already ran unconditionally on this
+  // path before, just after the dialog instead of before it.
   const fallback = `
+    ${postClampMotion}
     (MSG, PLUGIN_PNEUMATICATC:RACK_SLOT_EMPTY_${toolNumber})
     M0
-    ${postClampMotion}
     ${buildManualLoad(settings, toolNumber, manualTlsRoutine, false)}
   `.trim();
   const normalContinuation = `${postClampMotion}\n      ${reportLoadOutcome(settings, toolNumber, tlsRoutine, oNum + 1)}`.trim();
@@ -1379,7 +1419,9 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
   // fail-safe clamped state, so we must release it before descending
   // onto the shank — otherwise the collet is closed on contact and the
   // tool never enters. Coming from a prior unload the drawbar is
-  // already open, so skip the extra release + dwell.
+  // already open, so skip the extra release + dwell. No retreat here —
+  // this runs before the Z descent to approachZ below, so the spindle
+  // is still at Z-safe; there's nothing to lift clear of.
   const releaseFirst = drawbarAlreadyReleased ? '' : `
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}
@@ -1412,7 +1454,11 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G4 P0.1
       ${auxLineFor(settings, 'unclamp')}
       G4 P${DEDUST_VENT_SEC}
-      ${drawbarReleasedGuard(settings, 175)}
+      ${drawbarReleasedGuard(settings, 175, {
+        liftZ: settings.zSafe,
+        returnZ: settings.slot1.z + DEDUST_LIFT_MM,
+        returnFeed: DRAWBAR_FEEDRATE_MMPM
+      })}
       G53 G1 Z${approachZ} F${DEDUST_FEEDRATE_MMPM}` : `${releaseFirst}
       G53 G0 Z${approachZ}`;
   const clampSettle = settings.taperBlow ? DEDUST_CLAMP_SETTLE_SEC : 0.5;

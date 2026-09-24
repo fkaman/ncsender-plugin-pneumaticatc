@@ -1434,6 +1434,29 @@ describe('taperBlow — Sienci-style drawbar handling around the traverse', () =
       assert.ok(!gcode.includes('M66'), 'no read when the drawbar sensor is unconfigured');
       assert.ok(!gcode.includes('DRAWBAR_FAULT'));
     });
+
+    // Regression: this release happens directly above the holder
+    // (slot1.z + DEDUST_LIFT_MM), not at Z-safe — a fault here used to
+    // show the dialog right there. Lifts to Z-safe first, descends back
+    // to that same height (at drawbar feed, since it's heading back down
+    // toward a holder) once resolved, so the vent-timed feed-down after
+    // it still starts from the height it expects.
+    test('a failed release lifts to Z-safe before the dialog and descends back to holder height after', () => {
+      const gcode = buildLoadTool(withSensor, 2, calculateSlotPosition(withSensor, 2), '', false, { x: 0, y: 0 }, true);
+      const outerIdx = gcode.indexOf('o178 if [#5399 EQ -1]');
+      const liftIdx = gcode.indexOf(`G53 G0 Z${withSensor.zSafe}`, outerIdx);
+      const dialogIdx = gcode.indexOf('(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAULT)');
+      const descendIdx = gcode.indexOf('G53 G1 Z-80 F300');
+      const outerEndIdx = gcode.indexOf('o178 endif');
+      const feedDownIdx = gcode.indexOf('G53 G1 Z-99 F1500');
+      assert.ok(outerIdx !== -1, 'retreat wrapper (base+3) must gate the whole fault chain');
+      assert.ok(outerIdx < liftIdx && liftIdx < dialogIdx,
+        'must lift to Z-safe, inside the retreat gate, before the fault dialog shows');
+      assert.ok(dialogIdx < descendIdx && descendIdx < outerEndIdx,
+        'must descend back to holder-clearance height only once the retry chain resolves');
+      assert.ok(outerEndIdx < feedDownIdx,
+        'the vent-timed feed-down onto the holder must still come after the whole guard, unaffected');
+    });
   });
 
   // Both compound overrides on drawbarAlreadyReleased/chainedFromRack active
@@ -1518,6 +1541,59 @@ describe('drawbar / tool-seated sensor guards', () => {
     const retractIdx = lines.indexOf(`G53 G0 Z${FORK_SENSORS.zSafe}`);
     assert.ok(unclampIdx !== -1 && readIdx !== -1 && retractIdx !== -1, 'unclamp, sensor read and retract must all be present');
     assert.ok(readIdx > unclampIdx && readIdx < retractIdx, 'drawbar read must fire after unclamp and before Z-safe retract');
+  });
+
+  // Regression: a drawbar fault during unload used to leave the spindle
+  // sitting at slot depth (slot1.z + DRAWBAR_OFFSET_MM) for the whole
+  // Re-check/Abort dialog — right where a stuck tool would be. It now
+  // lifts to Z-safe before the fault ever shows a dialog, and only
+  // descends back to that exact height once the check is resolved, so
+  // the closeAfterLiftOff / final retract that follow still see the Z
+  // they expect.
+  describe('a failed drawbar check lifts clear before the dialog and descends back after', () => {
+    test('Cup unload (o160 guard, retreat wrapper is o163)', () => {
+      const slotPos = calculateSlotPosition(SENSORS, 1);
+      const gcode = buildUnloadTool(SENSORS, 1, slotPos, { x: 60, y: 120 });
+      const outerIdx = gcode.indexOf('o163 if [#5399 EQ -1]');
+      const liftIdx = gcode.indexOf(`G53 G0 Z${SENSORS.zSafe}`, outerIdx);
+      const dialogIdx = gcode.indexOf('(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAULT)');
+      // fromIndex=dialogIdx: drawbarBackoff (before the guard even runs)
+      // emits this exact same line, so search past the dialog for OUR
+      // retreat's copy, not that earlier, unrelated one.
+      const descendIdx = gcode.indexOf(`G53 G1 Z${SENSORS.slot1.z + 1} F300`, dialogIdx);
+      const outerEndIdx = gcode.indexOf('o163 endif');
+      assert.ok(outerIdx !== -1, 'retreat wrapper (base+3) must gate the whole fault chain');
+      assert.ok(outerIdx < liftIdx && liftIdx < dialogIdx,
+        'must lift to Z-safe, inside the retreat gate, before the fault dialog shows');
+      assert.ok(dialogIdx < descendIdx && descendIdx < outerEndIdx,
+        'must descend back to the original Z only once the retry chain resolves, before the gate closes');
+    });
+
+    test('Fork unload (o170 guard, retreat wrapper is o173)', () => {
+      const slotPos = calculateSlotPosition(FORK_SENSORS, 1);
+      const gcode = buildUnloadTool(FORK_SENSORS, 1, slotPos, { x: 60, y: 120 });
+      const outerIdx = gcode.indexOf('o173 if [#5399 EQ -1]');
+      const liftIdx = gcode.indexOf(`G53 G0 Z${FORK_SENSORS.zSafe}`, outerIdx);
+      const dialogIdx = gcode.indexOf('(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAULT)');
+      // fromIndex=dialogIdx — see the Cup test above for why.
+      const descendIdx = gcode.indexOf(`G53 G1 Z${FORK_SENSORS.slot1.z + 1} F300`, dialogIdx);
+      const outerEndIdx = gcode.indexOf('o173 endif');
+      assert.ok(outerIdx !== -1, 'retreat wrapper (base+3) must gate the whole fault chain');
+      assert.ok(outerIdx < liftIdx && liftIdx < dialogIdx,
+        'must lift to Z-safe, inside the retreat gate, before the fault dialog shows');
+      assert.ok(dialogIdx < descendIdx && descendIdx < outerEndIdx,
+        'must descend back to the original Z only once the retry chain resolves, before the gate closes');
+    });
+
+    // T0 -> T1's releaseFirst check (o155) runs before the Z descent onto
+    // the shank — the spindle is already at Z-safe there, so lifting
+    // clear would be a same-height no-op. No retreat wrapper (o158) at all.
+    test('T0 -> T1 releaseFirst: no retreat wrapper (already at Z-safe)', () => {
+      const slotPos = calculateSlotPosition(SENSORS, 1);
+      const gcode = buildLoadTool(SENSORS, 1, slotPos, '', /* drawbarAlreadyReleased */ false, { x: 60, y: 120 }, false);
+      assert.ok(gcode.includes('M66 P3 L3 Q0.01'), 'drawbar read must be present');
+      assert.ok(!gcode.includes('o158'), 'no retreat wrapper — this check already runs at Z-safe');
+    });
   });
 
   test('Cup load: tool-seated check (M66 P5 L3, wait-HIGH by default) fires after clamp, before Z-safe retract', () => {
@@ -2226,6 +2302,40 @@ describe('toolSeatedOrManualFallback — single-read fallback to buildManualLoad
     const occurrences = gcode.split('RACK_SLOT_EMPTY_1').length - 1;
     assert.equal(occurrences, 1, 'RACK_SLOT_EMPTY must fire exactly once, never retried');
     assert.ok(!gcode.includes('RACK_SLOT_EMPTY_99'), 'must address the actual tool number, not a renumbered one');
+  });
+
+  // Regression: a tool-not-seated fault used to show RACK_SLOT_EMPTY
+  // while the spindle was still parked at the engaged position, down in
+  // the rack. postClampMotion (the same retreat the success path already
+  // runs) now goes first, so the dialog only ever shows once the spindle
+  // has cleared the rack — a bare Z lift here would be wrong for Fork
+  // (still engaged in the fork groove), so this stays the existing
+  // slide-out-then-lift retreat, just resequenced earlier.
+  describe('the rack-clear retreat runs before the RACK_SLOT_EMPTY dialog, not after', () => {
+    test('Cup: Z-safe retract precedes the dialog', () => {
+      const slotPos = calculateSlotPosition(FALLBACK_CUP, 1);
+      const gcode = buildLoadTool(FALLBACK_CUP, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+      const checkIdx = gcode.indexOf('o240 if [#5399 EQ -1]');
+      const retreatIdx = gcode.indexOf(`G53 G0 Z${FALLBACK_CUP.zSafe}`, checkIdx);
+      const dialogIdx = gcode.indexOf('(MSG, PLUGIN_PNEUMATICATC:RACK_SLOT_EMPTY_1)');
+      assert.ok(checkIdx !== -1 && retreatIdx !== -1 && dialogIdx !== -1,
+        'fault branch, retreat and dialog must all be present');
+      assert.ok(checkIdx < retreatIdx && retreatIdx < dialogIdx,
+        'the Z-safe retract must run before the dialog, not after');
+    });
+
+    test('Fork: slide-out-then-lift precedes the dialog (never a bare Z lift while still engaged)', () => {
+      const slotPos = calculateSlotPosition(FALLBACK_FORK, 1);
+      const gcode = buildLoadTool(FALLBACK_FORK, 1, slotPos, '', false, { x: 60, y: 120 }, false);
+      const checkIdx = gcode.indexOf('o300 if [#5399 EQ -1]');
+      const slideIdx = gcode.indexOf('G53 G1 X', checkIdx);
+      const liftIdx = gcode.indexOf(`G53 G0 Z${FALLBACK_FORK.zSafe}`, checkIdx);
+      const dialogIdx = gcode.indexOf('(MSG, PLUGIN_PNEUMATICATC:RACK_SLOT_EMPTY_1)');
+      assert.ok(checkIdx !== -1 && slideIdx !== -1 && liftIdx !== -1 && dialogIdx !== -1,
+        'fault branch, slide-out, Z-safe lift and dialog must all be present');
+      assert.ok(checkIdx < slideIdx && slideIdx < liftIdx && liftIdx < dialogIdx,
+        'must slide out of the fork, then lift to Z-safe, before the dialog shows — never lift first');
+    });
   });
 
   test('manual-context load (toolNumber > slots) is unaffected: no fallback flag at all', () => {
