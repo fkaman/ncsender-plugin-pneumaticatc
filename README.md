@@ -105,6 +105,8 @@ Three Monaco G-code editors:
 - **Post Tool Change** – runs after every `M6`
 - **Abort Event** – runs when the tool change is aborted
 
+Pre/Post Tool Change run in whatever units the program is currently using, not always millimetres — add an explicit `G20`/`G21` if the snippet has coordinates in it. Units and distance mode are restored right after, so a `G21` or `G91` left in the snippet can't leak into the rest of the job.
+
 ## Commands
 
 | Command | Effect |

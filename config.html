@@ -1553,12 +1553,12 @@
       <div class="pa-panel pa-panel-events">
         <div class="pa-card pa-events-card">
           <h3 class="pa-card-title">Pre Tool Change</h3>
-          <p class="pa-card-help">G-code commands executed before each tool change (M6). E.g. turn off coolant, open ATC cover.</p>
+          <p class="pa-card-help">G-code commands executed before each tool change (M6). E.g. turn off coolant, open ATC cover. Runs in the units the program is using (<code>G20</code>/<code>G21</code>), not always millimetres — so put an explicit <code>G20</code> or <code>G21</code> in the snippet if it contains coordinates. Units and distance mode are restored afterwards, so anything modal you set here cannot leak into the rest of the job.</p>
           <div id="pa-pre-editor" class="pa-monaco"></div>
         </div>
         <div class="pa-card pa-events-card">
           <h3 class="pa-card-title">Post Tool Change</h3>
-          <p class="pa-card-help">G-code commands executed after each tool change (M6) completes. E.g. close ATC cover, restore coolant.</p>
+          <p class="pa-card-help">G-code commands executed after each tool change (M6) completes. E.g. close ATC cover, restore coolant. Runs in the units the program is using (<code>G20</code>/<code>G21</code>), not always millimetres — so put an explicit <code>G20</code> or <code>G21</code> in the snippet if it contains coordinates. Units and distance mode are restored afterwards, so anything modal you set here cannot leak into the rest of the job.</p>
           <div id="pa-post-editor" class="pa-monaco"></div>
         </div>
         <div class="pa-card pa-events-card">

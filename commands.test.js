@@ -2926,3 +2926,65 @@ describe('retractable tool rack — extend/retract around rack-slot motion', () 
     assert.equal(lines[retractIdx - 1], 'G4 P0', 'retract must dwell right after Z-safe, before actuating');
   });
 });
+
+// === Event g-code modal containment ====================================
+//
+// Pre/Post Tool Change snippets run in the PROGRAM's units by design — they
+// sit outside the G21 wrapper that makes the plugin's own mm config correct.
+// What must not happen is a modal word in the snippet surviving into the
+// rest of the job: a G21 written "to be safe" on an inch program would put
+// every remaining line in millimetres, silently, for the rest of the run.
+// Matches a fix from siganberg's upstream feat/probe-auto-loader branch
+// (v0.1.41), adapted to this fork's own event call sites.
+describe('event g-code cannot leak modal state into the job', () => {
+  const withEvents = (pre, post) => buildInitialConfig({
+    slots: 4, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80,
+    clampAuxOutput: 1, rackHolding: 'Fork',
+    preToolChangeGcode: pre, postToolChangeGcode: post
+  });
+  const program = (s) => motionLines(buildToolChangeProgram(s, 1, 2).join('\n'));
+
+  test('a post event is bracketed by a units and distance-mode restore', () => {
+    const ls = program(withEvents('', 'G21\nG91\nG0 Z-5'));
+    const capU = ls.indexOf('#<post_units> = [20 + #<_metric>]');
+    const capD = ls.indexOf('#<post_dist> = [91 - #<_absolute>]');
+    const body = ls.indexOf('G0 Z-5');
+    const relU = ls.indexOf('G[#<post_units>]');
+    const relD = ls.indexOf('G[#<post_dist>]');
+    assert.ok(capU >= 0 && capD > capU, 'both modes captured before the snippet');
+    assert.ok(body > capD, 'snippet runs after the capture');
+    assert.ok(relU > body && relD > relU, 'both restored after the snippet');
+  });
+
+  test('a pre event gets its own bracket, independent of the post one', () => {
+    const ls = program(withEvents('G20', 'G91'));
+    assert.ok(ls.includes('#<pre_units> = [20 + #<_metric>]'));
+    assert.ok(ls.includes('G[#<pre_dist>]'));
+    assert.ok(ls.includes('#<post_units> = [20 + #<_metric>]'));
+    assert.ok(ls.includes('G[#<post_dist>]'));
+    assert.ok(ls.indexOf('G[#<pre_dist>]') < ls.indexOf('#<post_units> = [20 + #<_metric>]'),
+      'the pre bracket closes before the post one opens');
+  });
+
+  test('no event configured emits no bracket at all', () => {
+    const g = program(withEvents('', '')).join('\n');
+    assert.doesNotMatch(g, /pre_units|post_units|pre_dist|post_dist/);
+  });
+
+  // The plugin's own moves stay metric regardless — that wrapper is what
+  // makes its millimetre config mean what it says.
+  test('the plugin still forces G21 for its own moves and restores after', () => {
+    const g = program(withEvents('', 'G0 Z-5')).join('\n');
+    assert.match(g, /#<return_units> = \[20 \+ #<_metric>\]/);
+    assert.match(g, /G\[#<return_units>\]/);
+  });
+
+  test('createToolLengthSetProgram also brackets its events', () => {
+    const s = withEvents('G20 X0', 'G21 Y0');
+    const g = createToolLengthSetProgram(s).join('\n');
+    assert.match(g, /#<pre_units> = \[20 \+ #<_metric>\]/);
+    assert.match(g, /G\[#<pre_dist>\]/);
+    assert.match(g, /#<post_units> = \[20 \+ #<_metric>\]/);
+    assert.match(g, /G\[#<post_dist>\]/);
+  });
+});

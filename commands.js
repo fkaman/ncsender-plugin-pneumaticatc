@@ -514,6 +514,32 @@ function createToolLengthSetExitMove(settings, toolOffsets = { x: 0, y: 0, z: 0 
   return waypoints.map((p) => `G53 G0 X${p.x} Y${p.y}`).join('\n    ');
 }
 
+// A user's Pre/Post Tool Change g-code deliberately runs in the PROGRAM's
+// units, not the plugin's — it's spliced outside the G21 wrapper that makes
+// the plugin's own (millimetre) config correct. That stays: someone running
+// an inch post is thinking in inches, and the snippet reads as part of
+// their program.
+//
+// What must not survive is a modal word set inside the snippet. Write G21
+// in Post Tool Change "to be safe" on an inch program and every remaining
+// line of the job silently becomes millimetres; write G91 and the rest goes
+// incremental. Either corrupts the whole run with no error and no clue at
+// the machine.
+//
+// So the snippet is bracketed: capture units and distance mode before it,
+// put them back after. grblHAL exposes both read-only (_metric, _absolute).
+// Feed is deliberately NOT restored — #<_feed> reads 0 until the program
+// sets one, and emitting F0 is worse than the leak it would prevent.
+function modalSafe(snippet, tag) {
+  const body = String(snippet || '').trim();
+  if (!body) return '';
+  return `#<${tag}_units> = [20 + #<_metric>]
+    #<${tag}_dist> = [91 - #<_absolute>]
+    ${body}
+    G[#<${tag}_units>]
+    G[#<${tag}_dist>]`;
+}
+
 function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }, options = {}) {
   const tlsRoutine = createToolLengthSetRoutine(settings, toolOffsets, options).join('\n');
   const preCmd = settings.preToolChangeGcode?.trim() || '';
@@ -528,7 +554,7 @@ function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }
 
   const gcode = `
     (Start of Tool Length Setter)
-    ${preCmd}
+    ${modalSafe(preCmd, 'pre')}
     #<return_units> = [20 + #<_metric>]
     G21
     ${rackExtend}
@@ -538,7 +564,7 @@ function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     ${rackRetract}
     G4 P0
     G[#<return_units>]
-    ${postCmd}
+    ${modalSafe(postCmd, 'post')}
     (End of Tool Length Setter)
   `.trim();
   return formatGCode(gcode);
@@ -1830,7 +1856,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
 
   const gcode = `
     (Start of PneumaticATC Plugin Sequence)
-    ${preCmd}
+    ${modalSafe(preCmd, 'pre')}
     #<return_units> = [20 + #<_metric>]
     G21
     M5
@@ -1847,7 +1873,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${rackRetract}
     G4 P0
     G[#<return_units>]
-    ${postCmd}
+    ${modalSafe(postCmd, 'post')}
     (End of PneumaticATC Plugin Sequence)
   `.trim();
 
@@ -1999,7 +2025,7 @@ function handleHomeCommand(commands, context, settings) {
     $H
     #<return_units> = [20 + #<_metric>]
     o100 IF [[#<_tool_offset> EQ 0] AND [#<_current_tool> NE 0]]
-      ${preCmd}
+      ${modalSafe(preCmd, 'pre')}
       G21
       ${rackExtend}
       ${tlsRoutine}
@@ -2008,7 +2034,7 @@ function handleHomeCommand(commands, context, settings) {
       ${rackRetract}
       G4 P0
       G53 G0 X0 Y0
-      ${postCmd}
+      ${modalSafe(postCmd, 'post')}
     o100 ENDIF
     G[#<return_units>]
   `.trim();
