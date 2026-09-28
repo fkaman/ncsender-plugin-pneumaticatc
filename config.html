@@ -1475,14 +1475,6 @@
             </div>
           </div>
           <p class="pa-card-help" style="margin-top: 8px;">Absolute machine Z where the seek begins after the XY move to the toolsetter. Values closer to the toolsetter shorten travel on tall gantries; keep it clear of the tallest tool. The tool library's TLS Z offset is added on top of this for the specific tool being probed.</p>
-
-          <div class="pa-field-inline" style="margin-top: 12px;">
-            <label>Perform TLS after first <code>$H</code></label>
-            <label class="pa-toggle">
-              <input type="checkbox" id="pa-perform-tls-after-home">
-              <span class="pa-toggle-slider"></span>
-            </label>
-          </div>
         </div>
       </div>
 
@@ -3055,7 +3047,6 @@
     $('pa-dialog-chain-steps').checked = !!db.chainSteps;
 
     $('pa-show-macro-command').checked = !!initialConfig.showMacroCommand;
-    $('pa-perform-tls-after-home').checked = !!initialConfig.performTlsAfterHome;
 
     // Migrate legacy 'first' (removed in v0.1.35) → 'library'; the new
     // 'library' mode probes automatically when the tool has no TLO yet.
@@ -3213,7 +3204,6 @@
 
       tlsMode: tlsMode,
       performTlsOnToolChange: tlsMode === 'always',
-      performTlsAfterHome: $('pa-perform-tls-after-home').checked,
       toolsetter: {
         x: toMetric(parseFloatOr($('pa-toolsetter-x').value, 0)),
         y: toMetric(parseFloatOr($('pa-toolsetter-y').value, 0))

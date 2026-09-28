@@ -569,7 +569,7 @@ describe('tlsExit (.117 kiosk Cup): TLS + origin both inside perp band on opposi
 });
 
 // Standalone $TLS approach. createToolLengthSetRoutine runs before every
-// probe cycle — via $TLS, via M6, via $H+performTlsAfterHome. It didn't
+// probe cycle — via $TLS or via M6. It didn't
 // know about the keepout: a single `G53 G0 X{tlsX} Y{tlsY}` from wherever
 // the spindle sat could cut diagonally across occupied slot columns on
 // the way in. Fix mirrors rackExit — if TLS sits inside the padded rack
@@ -1682,53 +1682,6 @@ describe('routePoint — direct primitive scenarios', () => {
 
 
 // ---------------------------------------------------------------------------
-// $H + performTlsAfterHome must anchor on machine origin, not on wherever the
-// spindle happened to be sitting when the command was expanded.
-//
-// Reported from the shop: $REBOOT, jog clear of the keepout, then $H with
-// "perform TLS after home" on. Homing succeeded, the TLS ran, and the machine
-// then threw a travel-limit error. Expansion happens BEFORE $H executes, so the
-// approach was being routed from the pre-home reading — a coordinate in a frame
-// homing was about to redefine — and the waypoints are emitted as absolute
-// `G53 G0` moves, so they landed outside travel. It only looked fine when the
-// machine was already homed and sitting near zero.
-// ---------------------------------------------------------------------------
-describe('$H + performTlsAfterHome — routed from machine origin', () => {
-  const SETTINGS = buildInitialConfig({
-    slots: 3,
-    orientation: 'Y',
-    direction: 'Positive',
-    slot1: { x: -115, y: 40 },
-    slotDistance: 80,
-    slideDirection: 'Positive',
-    performTlsAfterHome: true,
-    tls: { x: -115, y: 400 },
-  });
-
-  const expand = (mpos) => {
-    const commands = [{ isOriginal: true, command: '$H' }];
-    onBeforeCommand(commands, {
-      machineState: { tool: 1, mpos },
-      tools: [{ number: 1, tlsBias: 0 }],
-    }, { ...SETTINGS });
-    return commands.map((c) => c.command).join('\n');
-  };
-
-  test('a far pre-home position does not leak into the approach', () => {
-    // Same rack, two wildly different pre-home readings. If either leaks in,
-    // the emitted G53 targets differ — which is the bug.
-    const nearZero = expand({ x: 0, y: 0 });
-    const farAway  = expand({ x: -812.5, y: 1234.75 });
-    assert.equal(farAway, nearZero,
-      'approach must not depend on the pre-home machine position');
-  });
-
-  test('no waypoint references the stale coordinate', () => {
-    const gcode = expand({ x: -812.5, y: 1234.75 });
-    assert.ok(!gcode.includes('-812.5'), 'stale X leaked into the program');
-    assert.ok(!gcode.includes('1234.75'), 'stale Y leaked into the program');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Air-pressure read placement. Sienci reads pressure once, before the change
@@ -2460,5 +2413,115 @@ describe('event g-code cannot leak modal state into the job', () => {
     const g = program(withEvents('', 'G0 Z-5')).join('\n');
     assert.match(g, /#<return_units> = \[20 \+ #<_metric>\]/);
     assert.match(g, /G\[#<return_units>\]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Z0 set before a Tool Length Reference (the gSender habit). The host reports
+// machineState.zeroSetWithoutTlr / zeroTool; every TLS path must keep that Z0.
+// ---------------------------------------------------------------------------
+describe('keeps a Z0 set before any tool length reference', () => {
+  const settings = buildInitialConfig({
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5,
+    clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, tlsMode: 'library',
+  });
+  const tools = [
+    { toolNumber: 1, offsets: { x: 0, y: 0, z: -55.014, tlsZ: 0 } },
+    { toolNumber: 2, offsets: { x: 0, y: 0, z: -48.2, tlsZ: 0 } },
+  ];
+  const pending = { toolLengthSet: false, zeroSetWithoutTlr: true, zeroTool: 1 };
+  const run = (command, ms) => {
+    const commands = [{ command, isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 10, y: 20 }, ...ms }, tools }, { ...settings });
+    return commands.map((c) => c.command.trim());
+  };
+  const at = (lines, re) => lines.findIndex((l) => re.test(l));
+  const keepRef = /^G10 L2 P\[#5220\] Z\[#<_cur_wcs_z_ofs> - #<_nc_ref_tlo>\]$/;
+  const keepSelf = /^G10 L2 P\[#5220\] Z\[#<_cur_wcs_z_ofs> - #<_nc_last_tlo>\]$/;
+
+  test('M6 measures the tool that set Z0 before unloading it, then keeps Z0 with the new tool', () => {
+    const lines = run('M6 T2', pending);
+    const ref = at(lines, /^#<_nc_ref_tlo> = #<_nc_last_tlo>$/);
+    const unload = at(lines, /^M61 Q0$/);
+    const g10 = at(lines, keepRef);
+    assert.ok(ref >= 0, 'reference measure present');
+    assert.ok(unload > ref, 'reference measure happens before the unload');
+    assert.ok(g10 > ref, 'Z0 is kept after the new tool is measured');
+    const notifyBefore = lines.slice(0, g10).lastIndexOf('$#=_tool_offset');
+    assert.ok(notifyBefore > ref, 'offset applied and announced before the work offset is written');
+  });
+
+  test('the reference measure leaves the new tool\'s library writeback alone', () => {
+    const lines = run('M6 T2', pending);
+    const ref = at(lines, /^#<_nc_ref_tlo> = #<_nc_last_tlo>$/);
+    const firstDump = lines.indexOf('$#');
+    assert.ok(firstDump > ref, 'no [#] dump before the new tool is measured');
+    assert.equal(lines.filter((l) => /^G10 L2/.test(l)).length, 1, 'one work-offset write only');
+    const beforeRef = lines.slice(0, ref);
+    assert.ok(!beforeRef.includes('$#=_tool_offset'), 'the reference measure does not announce a reference');
+  });
+
+  test('after the extra touch-off it goes straight to the rack, and only returns to the job at the end', () => {
+    const lines = run('M6 T2', pending);
+    const ref = at(lines, /^#<_nc_ref_tlo> = #<_nc_last_tlo>$/);
+    const unload = at(lines, /^M61 Q0$/);
+    const between = lines.slice(ref, unload);
+    assert.ok(!between.some((l) => /^G53 G0 X10 Y20$/.test(l)), 'no detour back to the job before the swap');
+    const load = at(lines, /^M61 Q2$/);
+    assert.ok(lines.slice(load).some((l) => /^G53 G0 X10 Y20$/.test(l)), 'returns to the job after the change');
+  });
+
+  test('the unload route starts at the toolsetter, same as a change that began there', () => {
+    const fromTls = run('M6 T2', pending);
+    const unloadA = fromTls.slice(fromTls.indexOf('(MSG, ZERO_KEEP_END)') + 1, at(fromTls, /^M61 Q0$/) + 1);
+    const commands = [{ command: 'M6 T2', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 300, y: -200 }, toolLengthSet: true }, tools }, { ...settings });
+    const plain = commands.map((c) => c.command.trim());
+    const unloadB = plain.slice(plain.indexOf('G53 G0 Z-5') + 1, at(plain, /^M61 Q0$/) + 1);
+    assert.deepEqual(unloadA, unloadB);
+  });
+
+  test('the extra measure is wrapped in ZERO_KEEP markers for the UI banner', () => {
+    const lines = run('M6 T2', pending);
+    const a = lines.indexOf('(MSG, ZERO_KEEP_START T1)');
+    const b = lines.indexOf('(MSG, ZERO_KEEP_END)');
+    assert.ok(a >= 0 && b > a);
+    assert.ok(lines.slice(a, b).some((l) => /^G38\.2/.test(l)), 'touch-off inside the markers');
+    assert.ok(b < at(lines, /^M61 Q0$/), 'banner is gone before the swap');
+    assert.equal(run('M6 T2', { toolLengthSet: false, zeroSetWithoutTlr: false, zeroTool: 0 }).indexOf('(MSG, ZERO_KEEP_START T1)'), -1);
+  });
+
+  test('M6 T0 fixes the reference with the current tool before putting it away', () => {
+    const lines = run('M6 T0', pending);
+    assert.ok(at(lines, keepSelf) >= 0);
+    assert.ok(at(lines, keepSelf) < at(lines, /^M61 Q0$/));
+  });
+
+  test('$TLS and $MEASURE_TLO on the loaded tool keep the Z0', () => {
+    assert.ok(at(run('$TLS', pending), keepSelf) >= 0, '$TLS');
+    assert.ok(at(run('$MEASURE_TLO T1', pending), keepSelf) >= 0, '$MEASURE_TLO');
+  });
+
+  test('nothing changes when no Z0 is pending, a reference exists, or another tool set Z0', () => {
+    for (const ms of [
+      { toolLengthSet: false, zeroSetWithoutTlr: false, zeroTool: 0 },
+      { toolLengthSet: true, zeroSetWithoutTlr: true, zeroTool: 1 },
+      { toolLengthSet: false, zeroSetWithoutTlr: true, zeroTool: 3 },
+    ]) {
+      for (const cmd of ['M6 T2', '$TLS']) {
+        const lines = run(cmd, ms);
+        assert.ok(!lines.some((l) => /^G10 L2/.test(l)), `${cmd} ${JSON.stringify(ms)}`);
+        assert.ok(!lines.some((l) => /_nc_ref_tlo/.test(l)), `${cmd} ${JSON.stringify(ms)}`);
+      }
+    }
+  });
+});
+
+describe('homing', () => {
+  test('$H passes through untouched: no tool setter run after homing', () => {
+    const settings = buildInitialConfig({ slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5, clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, performTlsAfterHome: true });
+    const commands = [{ command: '$H', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 10, y: 20 } }, tools: [] }, { ...settings });
+    assert.deepEqual(commands.map((c) => c.command.trim()), ['$H']);
   });
 });

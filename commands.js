@@ -243,7 +243,6 @@ const buildInitialConfig = (raw = {}) => {
     rackHolding: raw.rackHolding === 'Cup' ? 'Cup' : 'Fork',
 
     showMacroCommand: raw.showMacroCommand ?? false,
-    performTlsAfterHome: raw.performTlsAfterHome ?? false,
     tlsMode: sanitizeTlsMode(raw.tlsMode, raw.performTlsOnToolChange),
 
     slot1: { x: toFiniteNumber(slot1Raw.x), y: toFiniteNumber(slot1Raw.y), z: toFiniteNumber(slot1Z, -100) },
@@ -426,6 +425,31 @@ function auxOnOff(auxOutput) {
   return { on: '', off: '' };
 }
 
+// === Keeping a Z0 that was set before any Tool Length Reference ===
+//
+// The offset applied here is absolute: G43.1 Z<machine Z where the tool
+// touched the setter>, so work Z = machine Z - G5x Z - TLO. A Z0 set AFTER a
+// reference exists is right for every tool. A Z0 set BEFORE one (TLO still 0)
+// goes wrong the moment the first TLS applies an offset: everything shifts by
+// the whole touch height and the next cut plunges — the "zero first, TLS
+// later" habit gSender users bring with them.
+//
+// The host reports it (machineState.zeroSetWithoutTlr / zeroTool). While the
+// tool that set that Z0 is still in the spindle we keep it by paying the first
+// applied offset back into the work offset, so G5x Z + TLO does not change:
+//   'keepSelf'  measure this tool, apply its offset, shift G5x Z by it.
+//   'reference' measure the tool that set Z0, only remember its touch height.
+//   'keepRef'   measure the new tool, apply its offset, shift G5x Z by the
+//               remembered height of the tool that set Z0.
+// The work offset is written after the offset is active and announced, so the
+// host never mistakes it for a fresh unreferenced Z0.
+function zeroKeepPlan(context, currentTool) {
+  const ms = (context && context.machineState) || {};
+  const pending = ms.zeroSetWithoutTlr === true && ms.toolLengthSet !== true;
+  const zeroTool = typeof ms.zeroTool === 'number' ? ms.zeroTool : 0;
+  return { keep: pending && zeroTool === currentTool, swapped: pending && zeroTool !== currentTool };
+}
+
 // === Tool Length Setter routine ===
 
 function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }, options = {}) {
@@ -484,6 +508,23 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     ? `G38.3 G91 Z${approachDelta.toFixed(3)} F99999\n    G90`
     : '';
 
+  // options.mode — see zeroKeepPlan. 'reference' only remembers the touch
+  // height: no offset, no host notification and no [#] dump, so a TLO
+  // writeback armed for the NEXT tool is not consumed by this measurement.
+  const mode = options.mode || 'normal';
+  const applyOffset = mode === 'reference'
+    ? `(Remember the touch height of the tool that set Z0)
+    #<_nc_ref_tlo> = #<_nc_last_tlo>`
+    : `G43.1 Z[#<_nc_last_tlo>]
+    (Notify ncSender that toolLengthSet is now set)
+    $#=_tool_offset${mode === 'keepSelf' ? `
+    (Keep the Z0 that was set before this reference)
+    G10 L2 P[#5220] Z[#<_cur_wcs_z_ofs> - #<_nc_last_tlo>]` : ''}${mode === 'keepRef' ? `
+    (Keep the Z0 that was set with the previous tool)
+    G10 L2 P[#5220] Z[#<_cur_wcs_z_ofs> - #<_nc_ref_tlo>]` : ''}
+    (Trigger a full [#] dump so ncSender receives [TLO:xxx] for writeback)
+    $#`;
+
   const gcode = `
     G53 G0 Z${settings.zSafe}
     ${tlsApproach}
@@ -499,11 +540,7 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     #<_ofs_idx> = [#5220 * 20 + 5203]
     #<_cur_wcs_z_ofs> = #[#<_ofs_idx>]
     #<_nc_last_tlo> = [#5063 + #<_cur_wcs_z_ofs>]
-    G43.1 Z[#<_nc_last_tlo>]
-    (Notify ncSender that toolLengthSet is now set)
-    $#=_tool_offset
-    (Trigger a full [#] dump so ncSender receives [TLO:xxx] for writeback)
-    $#
+    ${applyOffset}
   `.trim();
   return gcode.split('\n');
 }
@@ -1700,8 +1737,13 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // After a probe pickup the spindle is at the holder, so the toolsetter
   // approach routes from there rather than from the pre-M6 origin.
   const tlsRouteFrom = targetIsProbe ? holderRestXY : origin;
+  // Z0 set before a reference by the tool now in the spindle (zeroKeepPlan):
+  // measure that tool first, then let the new tool's measurement keep the Z0.
+  // Without a new tool to measure, fix the reference with the current tool.
+  const keepZero = !!options.keepZero;
+  const keepViaReference = keepZero && toolNumber !== 0 && shouldProbe;
   const rawTlsRoutine = shouldProbe
-    ? createToolLengthSetRoutine(settings, toolOffsets, { skipXYApproach: chainedFromRackExit, originMPos: tlsRouteFrom }).join('\n')
+    ? createToolLengthSetRoutine(settings, toolOffsets, { skipXYApproach: chainedFromRackExit, originMPos: tlsRouteFrom, mode: keepViaReference ? 'keepRef' : 'normal' }).join('\n')
     : (settings.tlsMode === 'library' && hasStoredTlo
         ? `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`
         : '');
@@ -1735,11 +1777,19 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   const rackUnloadReclamped = settings.taperBlow && currentTool > 0 && currentTool <= settings.slots;
   const probeUnloadReclamped = settings.taperBlow && sourceIsProbe;
   const drawbarAlreadyReleased = currentTool > 0 && !rackUnloadReclamped && !probeUnloadReclamped;
+  // Where the swap starts from. Normally the pre-M6 position; after the
+  // extra touch-off that keeps a Z0 (see zeroKeepPlan) the spindle is at the
+  // toolsetter, so route the unload straight from there instead of driving
+  // back to the job first. The final exit still returns to `returnTo`.
+  const currentOffsets = options.currentOffsets || { x: 0, y: 0, z: 0 };
+  const swapFrom = keepZero
+    ? { x: settings.toolsetter.x + (currentOffsets.x || 0), y: settings.toolsetter.y + (currentOffsets.y || 0) }
+    : origin;
   const unloadSection = isManualToManual
     ? ''
     : sourceIsProbe
-      ? buildProbeUnload(settings, origin)
-      : buildUnloadTool(settings, currentTool, sourceSlot, origin);
+      ? buildProbeUnload(settings, swapFrom)
+      : buildUnloadTool(settings, currentTool, sourceSlot, swapFrom);
 
   // Chained rack swap: an unload just placed the machine at the source
   // slot's engaged position at Z-safe. Slot N's engaged sits in the
@@ -1755,7 +1805,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // Where the spindle is when the load begins: still at the pre-M6 origin
   // for T0, at the holder after a probe put-down, at the slot after a rack
   // unload (buildLoadTool handles that chain itself).
-  const loadFrom = sourceIsProbe ? holderUnloadRestXY : origin;
+  const loadFrom = sourceIsProbe ? holderUnloadRestXY : swapFrom;
   let loadSection;
   if (isManualToManual) {
     loadSection = buildManualSwap(settings, toolNumber, tlsRoutine);
@@ -1763,7 +1813,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     // Entrance to the holder approach: leave the rack properly when
     // chained after a rack unload, otherwise route from wherever we are
     // (origin, or the manual station after a manual unload).
-    const fromXY = isManualTool(currentTool) ? settings.manualTool : origin;
+    const fromXY = isManualTool(currentTool) ? settings.manualTool : swapFrom;
     const entrance = chainedFromRack
       ? (settings.rackHolding === 'Cup'
           ? cupExit(sourceSlot.engaged, holder.approach, settings)
@@ -1821,6 +1871,15 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
 
+  // Out to the toolsetter; the unload below routes on from there (swapFrom).
+  const zeroKeepSection = keepZero
+    ? `(Measure T${currentTool} first: it set Z0 before a tool length reference existed)
+    (MSG, ZERO_KEEP_START T${currentTool})
+    ${createToolLengthSetRoutine(settings, currentOffsets, { originMPos: origin, mode: keepViaReference ? 'reference' : 'keepSelf' }).join('\n')}
+    G53 G0 Z${settings.zSafe}
+    (MSG, ZERO_KEEP_END)`
+    : '';
+
   const gcode = `
     (Start of PneumaticATC Plugin Sequence)
     ${modalSafe(preCmd, 'pre')}
@@ -1829,6 +1888,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     M5
     ${pressureGuard(settings, 120)}
     G53 G0 Z${settings.zSafe}
+    ${zeroKeepSection}
     ${unloadSection}
     ${loadSection}
     G53 G0 Z${settings.zSafe}
@@ -1885,7 +1945,10 @@ function handleTLSCommand(commands, context, settings) {
   const originMPos = (mpos && typeof mpos.x === 'number' && typeof mpos.y === 'number')
     ? { x: mpos.x, y: mpos.y }
     : undefined;
-  const program = createToolLengthSetProgram(settings, toolOffsets, { originMPos });
+  const program = createToolLengthSetProgram(settings, toolOffsets, {
+    originMPos,
+    mode: zeroKeepPlan(context, currentTool).keep ? 'keepSelf' : 'normal',
+  });
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
 
@@ -1940,12 +2003,17 @@ function handleMeasureTloCommand(commands, context, settings) {
         && typeof pluginContext.armTlsWriteback === 'function') {
       try { pluginContext.armTlsWriteback(currentTool); } catch (_) { /* older host */ }
     }
-    program = createToolLengthSetProgram(settings, toolOffsets, { originMPos: origin });
+    program = createToolLengthSetProgram(settings, toolOffsets, {
+      originMPos: origin,
+      mode: zeroKeepPlan(context, currentTool).keep ? 'keepSelf' : 'normal',
+    });
   } else if (toolNumber > 0) {
     const toolOffsets = getToolProbeOffsets(toolNumber, context.tools);
     const storedTlo = getStoredTlo(toolNumber, context.tools);
     program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin,
-      { forceTls: true, endAtTls: true });
+      { forceTls: true, endAtTls: true,
+        keepZero: zeroKeepPlan(context, currentTool).keep,
+        currentOffsets: getToolProbeOffsets(currentTool, context.tools) });
   } else {
     program = buildToolChangeProgram(settings, currentTool, 0, { x: 0, y: 0 }, 0, origin,
       { returnTo: req.returnTo || origin });
@@ -1953,50 +2021,6 @@ function handleMeasureTloCommand(commands, context, settings) {
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
 
-function handleHomeCommand(commands, context, settings) {
-  const idx = commands.findIndex((c) => c.isOriginal && c.command.trim().toUpperCase() === '$H');
-  if (idx === -1) return;
-  if (!settings.performTlsAfterHome) return;
-
-  const currentTool = context.machineState?.tool ?? 0;
-  const toolOffsets = getToolOffsets(currentTool, context.tools);
-  // Machine origin, NOT the current position.
-  //
-  // This runs while the command is being expanded, which is *before* the $H
-  // below has executed — so context.machineState.mpos is wherever the spindle
-  // happens to be sitting now, in a coordinate frame homing is about to throw
-  // away. Anchoring the approach there produced absolute `G53 G0` waypoints
-  // computed in the old frame: harmless when the machine was already homed and
-  // near zero, a travel-limit error after a $REBOOT and a jog, where the
-  // pre-home reading can be anything at all.
-  //
-  // The routine runs after $H completes, when the spindle is at machine origin
-  // — which is what the rest of this program already assumes, ending as it does
-  // with `G53 G0 X0 Y0`.
-  const originMPos = { x: 0, y: 0 };
-  const tlsRoutine = createToolLengthSetRoutine(settings, toolOffsets, { originMPos }).join('\n');
-  const tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets, { originMPos });
-  const preCmd = settings.preToolChangeGcode?.trim() || '';
-  const postCmd = settings.postToolChangeGcode?.trim() || '';
-
-  const gcode = `
-    $H
-    #<return_units> = [20 + #<_metric>]
-    o100 IF [[#<_tool_offset> EQ 0] AND [#<_current_tool> NE 0]]
-      ${modalSafe(preCmd, 'pre')}
-      G21
-      ${tlsRoutine}
-      G53 G0 Z${settings.zSafe}
-      ${tlsExitMove}
-      G4 P0
-      G53 G0 X0 Y0
-      ${modalSafe(postCmd, 'post')}
-    o100 ENDIF
-    G[#<return_units>]
-  `.trim();
-  const program = formatGCode(gcode);
-  expandIntoCommands(commands, idx, commands[idx].command, program, settings);
-}
 
 // Manual $slotN navigation. Routes through the same keepout-safe
 // entrance used by tool change (buildLoadTool / buildUnloadTool). A
@@ -2062,7 +2086,11 @@ function handleM6Command(commands, context, settings) {
   // Older hosts don't expose toolLengthSet at all (undefined) — only a
   // definite `false` means "no reference"; otherwise trust the library.
   const tlrMissing = context.machineState?.toolLengthSet === false;
-  const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin, { tlrMissing });
+  const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin, {
+    tlrMissing,
+    keepZero: zeroKeepPlan(context, currentTool).keep,
+    currentOffsets: getToolProbeOffsets(currentTool, context.tools),
+  });
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }
 
@@ -2121,7 +2149,6 @@ function onBeforeCommand(commands, context, settings) {
     settings.zSafe = context.safeZHeight;
   }
   gateSpindleUnclamp(commands, context, settings);
-  handleHomeCommand(commands, context, settings);
   handleTLSCommand(commands, context, settings);
   handleMeasureTloCommand(commands, context, settings);
   handleSlotCommand(commands, context, settings);
