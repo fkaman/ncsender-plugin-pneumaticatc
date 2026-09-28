@@ -1,5 +1,4 @@
 ## What's Changed
 
 ### 🔧 Improvements
-- A Z0 now stays set before the tool length reference is taken
-- The tool length setter no longer runs automatically after homing
+- Manual tools are now always measured, whichever tool length setter strategy you use
