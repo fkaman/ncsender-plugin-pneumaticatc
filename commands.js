@@ -1715,7 +1715,12 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // The probe follows the same strategy as any tool: with the library
   // strategy and a TLO on file for its tool number (the Tool Library's
   // "Probe" slot) the pickup loads the stored offset instead of probing.
+  // A manual tool (numbered above the rack, not the probe) is fitted by hand,
+  // so its stickout differs every time and a stored TLO can't be trusted:
+  // always measure it, whatever the strategy.
+  const targetIsManual = toolNumber > settings.slots && !isProbeTool(settings, toolNumber);
   const shouldProbe = !!options.forceTls
+    || targetIsManual
     || settings.tlsMode === 'always'
     || (settings.tlsMode === 'library' && (!hasStoredTlo || !!options.tlrMissing));
   const returnTo = options.returnTo || origin;

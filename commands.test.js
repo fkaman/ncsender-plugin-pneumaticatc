@@ -2525,3 +2525,36 @@ describe('homing', () => {
     assert.deepEqual(commands.map((c) => c.command.trim()), ['$H']);
   });
 });
+
+describe('manual tools always measure', () => {
+  const settings = buildInitialConfig({
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5,
+    clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, manualTool: { x: 200, y: -100 }, tlsMode: 'library',
+  });
+  const tools = [
+    { toolNumber: 2, offsets: { z: -52.1 } },   // rack tool, TLO on file
+    { toolNumber: 5, offsets: { z: -47.5 } },   // manual tool, TLO on file
+  ];
+  const run = (command, tool = 1) => {
+    const commands = [{ command, isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool, mpos: { x: 10, y: 20 }, toolLengthSet: true }, tools }, { ...settings });
+    return commands.map((c) => c.command.trim());
+  };
+
+  test('a manual tool with a stored TLO is measured, not loaded from the library', () => {
+    const lines = run('M6 T5');
+    assert.ok(lines.some((l) => /^G38\.2/.test(l)), 'expected a probe move');
+    assert.ok(!lines.some((l) => /Load stored TLO/.test(l)), 'must not reuse the stored value');
+  });
+
+  test('a manual-to-manual swap is measured too', () => {
+    const lines = run('M6 T5', 4);
+    assert.ok(lines.some((l) => /^G38\.2/.test(l)));
+  });
+
+  test('a rack tool with a stored TLO still follows the library strategy', () => {
+    const lines = run('M6 T2');
+    assert.ok(!lines.some((l) => /^G38\.2/.test(l)), 'rack tool reuses its stored value');
+    assert.ok(lines.some((l) => /Load stored TLO/.test(l)));
+  });
+});
