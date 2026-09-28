@@ -1,4 +1,5 @@
 ## What's Changed
 
-### 🐛 Bug Fixes
-- Fixed an issue where g-code run from a Stop event could leave modal settings behind that carried over into the job
+### 🔧 Improvements
+- A Z0 now stays set before the tool length reference is taken
+- The tool length setter no longer runs automatically after homing
