@@ -300,12 +300,42 @@ const buildInitialConfig = (raw = {}) => {
 //                             TLS probe motion (e.g. for oddball fixtures).
 //                             Separate from TLO.
 
-// A T number names a slot first, then a Tool ID — the order the app itself
-// uses — so a tool that isn't in any slot still gets its own offsets rather
-// than silently getting none. Offsets belong to the tool, never the slot.
+// Tool-id concept: a T number is the Tool ID (the tool, not the pocket), so
+// the library is searched by Tool ID first; a slot is only a fallback.
+// Offsets belong to the tool, never the slot.
 function findTool(toolNumber, tools) {
-  return tools.find((t) => t.toolNumber === toolNumber)
-    || tools.find((t) => t.toolId === toolNumber);
+  return tools.find((t) => t.toolId === toolNumber)
+    || tools.find((t) => t.toolNumber === toolNumber);
+}
+
+// The sequence builders think in physical positions: 1..slots is a rack slot,
+// the probe number is the probe, anything above the rack is a hand-loaded
+// tool. toPhysical() maps a Tool ID onto that: the slot the library puts it
+// in, else a hand-tool number (MANUAL_BASE + id, always above any rack).
+// idOf() maps back so M61, messages and the TLO writeback carry the Tool ID.
+const MANUAL_BASE = 1000;
+let _physToId = new Map();
+function idOf(n) {
+  return _physToId.has(n) ? _physToId.get(n) : n;
+}
+function toPhysical(id, settings, tools) {
+  if (!id || id <= 0) return 0;
+  if (isProbeTool(settings, id)) return id;
+  const list = Array.isArray(tools) ? tools : [];
+  const tool = list.find((t) => t.toolId === id);
+  let phys;
+  if (tool) {
+    const slot = Number.isInteger(tool.toolNumber) ? tool.toolNumber : 0;
+    phys = slot >= 1 && slot <= settings.slots ? slot : MANUAL_BASE + id;
+  } else {
+    // Not in the library. Keep the old meaning (T = slot) only while that
+    // slot isn't holding some other identified tool; an empty library
+    // therefore behaves exactly as before.
+    const occupant = list.find((t) => t.toolNumber === id);
+    phys = id <= settings.slots && (!occupant || occupant.toolId == null) ? id : MANUAL_BASE + id;
+  }
+  _physToId.set(phys, id);
+  return phys;
 }
 
 function getToolProbeOffsets(toolNumber, tools) {
@@ -1347,7 +1377,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     return `
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
       G4 P0
-      (MSG, PLUGIN_PNEUMATICATC:MANUAL_UNLOAD_TOOL_${currentTool})
+      (MSG, PLUGIN_PNEUMATICATC:MANUAL_UNLOAD_TOOL_${idOf(currentTool)})
       M0
       ${auxLineFor(settings, 'unclamp')}
       M0
@@ -1421,11 +1451,11 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     return `
       G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
       G4 P0${autoRelease}
-      (MSG, PLUGIN_PNEUMATICATC:MANUAL_CLAMP_TOOL_${toolNumber})
+      (MSG, PLUGIN_PNEUMATICATC:MANUAL_CLAMP_TOOL_${idOf(toolNumber)})
       M0
       ${auxLineFor(settings, 'clamp')}
       M0
-      M61 Q${toolNumber}
+      M61 Q${idOf(toolNumber)}
       ${tlsRoutine}
     `.trim();
   }
@@ -1492,7 +1522,7 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
       ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
       G53 G0 Z${settings.zSafe}
-      M61 Q${toolNumber}
+      M61 Q${idOf(toolNumber)}
       ${tlsRoutine}
     `.trim();
   }
@@ -1507,7 +1537,7 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
     G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
     G53 G0 Z${settings.zSafe}
-    M61 Q${toolNumber}
+    M61 Q${idOf(toolNumber)}
     ${tlsRoutine}
   `.trim();
 }
@@ -1680,7 +1710,7 @@ function buildProbeLoad(settings, entrance, tlsRoutine, drawbarAlreadyReleased) 
       G4 P${clampSettle}
       ${drawbarGuard(settings, 231, 'closed', { safeZ: settings.zSafe, returnZ: h.z })}
       ${toolGuard(settings, 232, 'present', { safeZ: settings.zSafe, returnZ: h.z })}
-      M61 Q${toolNumber}
+      M61 Q${idOf(toolNumber)}
       ${verify}
       G53 G0 Z${settings.zSafe}
       ${tlsRoutine}
@@ -1698,7 +1728,7 @@ function buildProbeLoad(settings, entrance, tlsRoutine, drawbarAlreadyReleased) 
     ${drawbarGuard(settings, 231, 'closed', { safeZ: settings.zSafe, returnZ: h.z })}
     ${toolGuard(settings, 232, 'present', { safeZ: settings.zSafe, returnZ: h.z })}
     G53 G1 X${h.approach.x} Y${h.approach.y} F${feed}
-    M61 Q${toolNumber}
+    M61 Q${idOf(toolNumber)}
     ${verify}
     G53 G0 Z${settings.zSafe}
     ${tlsRoutine}
@@ -1712,13 +1742,13 @@ function buildManualSwap(settings, toolNumber, tlsRoutine) {
   return `
     G53 G0 X${settings.manualTool.x} Y${settings.manualTool.y}
     G4 P0
-    (MSG, PLUGIN_PNEUMATICATC:MANUAL_SWAP_TOOL_${toolNumber})
+    (MSG, PLUGIN_PNEUMATICATC:MANUAL_SWAP_TOOL_${idOf(toolNumber)})
     M0
     ${auxLineFor(settings, 'unclamp')}
     M0
     ${auxLineFor(settings, 'clamp')}
     M0
-    M61 Q${toolNumber}
+    M61 Q${idOf(toolNumber)}
     ${tlsRoutine}
   `.trim();
 }
@@ -1835,7 +1865,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
       && typeof pluginContext !== 'undefined'
       && pluginContext
       && typeof pluginContext.armTlsWriteback === 'function') {
-    try { pluginContext.armTlsWriteback(toolNumber); } catch (_) { /* older host */ }
+    try { pluginContext.armTlsWriteback(idOf(toolNumber)); } catch (_) { /* older host */ }
   }
 
   // Manual → Manual: unload + load happen at the same physical spot,
@@ -1979,12 +2009,12 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     postAtEnd = !!postCmd && !shareLeg;
     swapBody = `#<_nc_lib_ok> = [ABS[#<_nc_ref_tlo> - [${refLibTlo}]] LT ${REF_MATCH_TOLERANCE_MM}]
     o7101 if [#<_nc_lib_ok>]
-    (T${currentTool} touched off where the library says: load T${toolNumber} from the library)
+    (T${idOf(currentTool)} touched off where the library says: load T${idOf(toolNumber)} from the library)
     ${libLoad}
     G53 G0 Z${settings.zSafe}
     ${libEnding}
     o7101 else
-    (T${currentTool} touched off away from its library value: measure T${toolNumber})
+    (T${idOf(currentTool)} touched off away from its library value: measure T${idOf(toolNumber)})
     ${loadSection}
     G53 G0 Z${settings.zSafe}
     ${measuredEnding}
@@ -2002,8 +2032,8 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
 
   // Out to the toolsetter; the unload below routes on from there (swapFrom).
   const zeroKeepSection = keepZero
-    ? `(Measure T${currentTool} first: it set Z0 before a tool length reference existed)
-    (MSG, ZERO_KEEP_START T${currentTool})
+    ? `(Measure T${idOf(currentTool)} first: it set Z0 before a tool length reference existed)
+    (MSG, ZERO_KEEP_START T${idOf(currentTool)})
     ${createToolLengthSetRoutine(settings, currentOffsets, { originMPos: origin, mode: keepViaReference ? 'reference' : 'keepSelf' }).join('\n')}
     G53 G0 Z${settings.zSafe}
     (MSG, ZERO_KEEP_END)`
@@ -2115,6 +2145,9 @@ function handleMeasureTloCommand(commands, context, settings) {
   const req = parseMeasureTloCommand(commands[idx].command);
   const toolNumber = req.toolNumber;
   const currentTool = context.machineState?.tool ?? 0;
+  _physToId = new Map();
+  const physTarget = toPhysical(toolNumber, settings, context.tools);
+  const physCurrent = toPhysical(currentTool, settings, context.tools);
   const origin = {
     x: context.machineState?.mpos?.x ?? 0,
     y: context.machineState?.mpos?.y ?? 0,
@@ -2136,12 +2169,12 @@ function handleMeasureTloCommand(commands, context, settings) {
   } else if (toolNumber > 0) {
     const toolOffsets = getToolProbeOffsets(toolNumber, context.tools);
     const storedTlo = getStoredTlo(toolNumber, context.tools);
-    program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin,
+    program = buildToolChangeProgram(settings, physCurrent, physTarget, toolOffsets, storedTlo, origin,
       { forceTls: true, endAtTls: true,
         keepZero: zeroKeepPlan(context, currentTool).keep,
         currentOffsets: getToolProbeOffsets(currentTool, context.tools) });
   } else {
-    program = buildToolChangeProgram(settings, currentTool, 0, { x: 0, y: 0 }, 0, origin,
+    program = buildToolChangeProgram(settings, physCurrent, 0, { x: 0, y: 0 }, 0, origin,
       { returnTo: req.returnTo || origin });
   }
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
@@ -2199,6 +2232,9 @@ function handleM6Command(commands, context, settings) {
   if (!parsed?.matched || parsed.toolNumber === null) return;
   const toolNumber = parsed.toolNumber;
   const currentTool = context.machineState?.tool ?? 0;
+  _physToId = new Map();
+  const physTarget = toPhysical(toolNumber, settings, context.tools);
+  const physCurrent = toPhysical(currentTool, settings, context.tools);
   const toolOffsets = getToolProbeOffsets(toolNumber, context.tools);
   const storedTlo = getStoredTlo(toolNumber, context.tools);
   // Pre-M6 machine XY snapshot — rack routing branches on this at
@@ -2214,9 +2250,9 @@ function handleM6Command(commands, context, settings) {
   const tlrMissing = context.machineState?.toolLengthSet === false;
   // Only a rack or probe tool's library TLO says anything about this boot; a
   // hand-fitted manual tool's stickout changes every time.
-  const currentIsTrusted = currentTool > 0
-    && (currentTool <= settings.slots || isProbeTool(settings, currentTool));
-  const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin, {
+  const currentIsTrusted = physCurrent > 0
+    && (physCurrent <= settings.slots || isProbeTool(settings, physCurrent));
+  const program = buildToolChangeProgram(settings, physCurrent, physTarget, toolOffsets, storedTlo, origin, {
     tlrMissing,
     keepZero: zeroKeepPlan(context, currentTool).keep,
     currentOffsets: getToolProbeOffsets(currentTool, context.tools),
