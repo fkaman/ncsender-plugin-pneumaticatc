@@ -576,11 +576,57 @@ function modalSafe(snippet, tag) {
     G[#<${tag}_dist>]`;
 }
 
+// Post Tool Change runs once the new tool is in and the spindle has left
+// the rack (or the tool setter) at safe Z, BEFORE the final leg back to
+// where the change started. Running it after that leg means a routine
+// that goes to pick up a dust shoe drives back to the work first, then off
+// to the dust shoe, then the job moves back again. The final leg is the
+// one handed to the core's keepout check (handFinalLegToCoreCheck), so the
+// trip back from wherever the routine leaves the spindle is still checked.
+//
+// splitFinalLeg pulls that marked line off the end of an exit block; leg
+// is '' when the exit has none (manual paths, endAtTls) or was never
+// marked, and the caller keeps running the event at the very end instead.
+function splitFinalLeg(exit) {
+  if (!exit) return { body: exit || '', leg: '' };
+  const lines = exit.split('\n');
+  const i = lines.findIndex((l) => l.includes(CORE_CHECKED_MARKER));
+  if (i < 0) return { body: exit, leg: '' };
+  return { body: lines.slice(0, i).join('\n'), leg: lines.slice(i).join('\n') };
+}
+
+// The event in the program's units (see modalSafe), then back to
+// millimetres and safe Z before the final leg — in case the event moved
+// the spindle or left a modal word modalSafe doesn't cover (e.g. feed).
+function postToolChangeThenLeg(postCmd, leg, settings) {
+  return `G4 P0
+    G[#<return_units>]
+    ${modalSafe(postCmd, 'post')}
+    G21
+    G53 G0 Z${settings.zSafe}
+    ${leg.trim()}`;
+}
+
 function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }, options = {}) {
   const tlsRoutine = createToolLengthSetRoutine(settings, toolOffsets, options).join('\n');
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
-  const tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets, options);
+  // `originMPos` is the one destination here the plugin didn't compute —
+  // same reasoning as buildToolChangeProgram's exitSection. Unconditional:
+  // even a standalone $TLS with no Post Tool Change configured benefits
+  // from the core validating this leg instead of it being blanket-bypassed.
+  let tlsExitMove = handFinalLegToCoreCheck(createToolLengthSetExitMove(settings, toolOffsets, options));
+  // With the origin known, the exit ends there; run Post Tool Change
+  // before that last move, which then goes through the core's check.
+  let postAtEnd = !!postCmd;
+  if (postCmd && options.originMPos && tlsExitMove) {
+    const { body, leg } = splitFinalLeg(tlsExitMove);
+    if (leg) {
+      tlsExitMove = `${body}
+    ${postToolChangeThenLeg(postCmd, leg, settings)}`;
+      postAtEnd = false;
+    }
+  }
   // Both current callers ($TLS and Measure All Tools' "already loaded"
   // step) probe on the toolsetter, which needs the rack extended the
   // same as any rack-slot interaction — baked in here once rather than
@@ -600,7 +646,7 @@ function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     ${rackRetract}
     G4 P0
     G[#<return_units>]
-    ${modalSafe(postCmd, 'post')}
+    ${postAtEnd ? modalSafe(postCmd, 'post') : ''}
     (End of Tool Length Setter)
   `.trim();
   return formatGCode(gcode);
@@ -1600,17 +1646,24 @@ function buildManualSwap(settings, toolNumber, tlsRoutine) {
 // block in a runtime IF so nothing moves toward a slot that has no tool
 // to drop. `oNum` must not collide with any other guard's o-word base
 // used within the same macro.
-function wrapUnloadWithSeatedCheck(settings, unloadSection, oNum) {
+// elseSection — runs when the pre-check finds the spindle already empty
+// (nothing to unload, machine never left origin). Empty by default, which
+// keeps the exact if-only shape every existing call relied on; only used
+// today to still run Post Tool Change when it got spliced onto the bare-
+// unload exit's leg below — that leg is unreached in this branch, but the
+// event isn't the leg and has always run regardless of which branch fired.
+function wrapUnloadWithSeatedCheck(settings, unloadSection, oNum, elseSection = '') {
   // Self-guards on the sensor input rather than trusting the caller's
   // own gate (seatedPrecheckActive) alone — safe to call from anywhere.
   // !(x >= 0) (not `x < 0`) so undefined/NaN are also treated as
   // "not configured" instead of slipping through to build `M66 Pundefined`.
   if (!unloadSection || !(settings.toolSeatedSensorInput >= 0)) return unloadSection;
   // Seated (tool present) reads HIGH (1); invert via $370 if wired the other way round.
+  const elseBlock = elseSection ? `\n    o${oNum} else\n      ${elseSection}` : '';
   return `
     M66 P${settings.toolSeatedSensorInput} L0 Q0
     o${oNum} if [#5399 EQ 1]
-      ${unloadSection}
+      ${unloadSection}${elseBlock}
     o${oNum} endif
   `.trim();
 }
@@ -1802,6 +1855,9 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   const isCup = settings.rackHolding === 'Cup';
   const isBareUnload = toolNumber === 0 && currentTool > 0 && currentTool <= settings.slots;
 
+  const preCmd = settings.preToolChangeGcode?.trim() || '';
+  const postCmd = settings.postToolChangeGcode?.trim() || '';
+
   // Bare unload (Tn → T0, nothing loading next): the return-to-origin
   // exit move assumes the machine physically went to sourceSlot — true
   // only on the branch where the pre-check found a tool and unload
@@ -1815,12 +1871,24 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
         ? cupExit(sourceSlot.engaged, origin, settings)
         : rackExitToOrigin(sourceSlot.engaged, /* isEmpty */ true, origin, settings))
     : '';
+  // Same Post-Tool-Change-before-the-final-leg treatment as the main
+  // exitSection below (see postAtEnd). This exit lives inside the
+  // tool-seated pre-check's own o200 gate, which has no "did we actually
+  // unload" else today — added below only when there's an event to run
+  // there, since the leg itself is unreached in that branch (nothing
+  // moved) but the event has always run regardless of which branch fired.
+  const bareUnloadSplit = splitFinalLeg(bareUnloadExit);
+  const bareUnloadHasSplice = !!(postCmd && bareUnloadSplit.leg);
+  const bareUnloadExitWithPost = bareUnloadHasSplice
+    ? `${bareUnloadSplit.body}\n      ${postToolChangeThenLeg(postCmd, bareUnloadSplit.leg, settings)}`
+    : bareUnloadExit;
   const unloadPlusExit = (seatedPrecheckActive && isBareUnload)
-    ? `${unloadSection}\n    ${bareUnloadExit}`
+    ? `${unloadSection}\n    ${bareUnloadExitWithPost}`
     : unloadSection;
 
   const guardedUnloadSection = seatedPrecheckActive
-    ? wrapUnloadWithSeatedCheck(settings, unloadPlusExit, 200)
+    ? wrapUnloadWithSeatedCheck(settings, unloadPlusExit, 200,
+        bareUnloadHasSplice ? modalSafe(postCmd, 'post') : '')
     : unloadSection;
 
   // Tn → T0 resolves to T0 whichever branch the guard above takes — the
@@ -1869,6 +1937,23 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // destination in this program the plugin cannot vouch for.
   exitSection = handFinalLegToCoreCheck(exitSection);
 
+  // Post Tool Change goes in front of the final leg, not after it (see
+  // splitFinalLeg/postToolChangeThenLeg) — running it after means a
+  // routine that goes to pick up a dust shoe drives back to the work
+  // first, then off to the dust shoe, then the job moves back again.
+  // exitSplit.leg is '' when exitSection has no marked leg at all (a
+  // manual / T0→T0 change never built one), so hasSplice naturally stays
+  // false there and postCmd keeps running at the very end, unchanged.
+  // Mutually exclusive with bareUnloadHasSplice above — a bare unload only
+  // takes this exitSection branch when the pre-check is OFF, and only
+  // takes the bareUnloadExit branch when it's on.
+  const exitSplit = splitFinalLeg(exitSection);
+  const hasSplice = !!(postCmd && exitSplit.leg);
+  const postAtEnd = !hasSplice && !bareUnloadHasSplice;
+  const exitBody = hasSplice
+    ? `${exitSplit.body}\n      ${postToolChangeThenLeg(postCmd, exitSplit.leg, settings)}`
+    : exitSection;
+
   // A rack load that fell back to buildManualLoad (see
   // toolSeatedOrManualFallback) leaves the spindle parked at manualTool,
   // not at the rack slot / toolsetter exitSection above assumes —
@@ -1877,11 +1962,17 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // when toolSeatedOrManualFallback actually ran (isRackSlot with the
   // sensor configured), so only gate exitSection in that same condition
   // — checking it unconditionally would reference an undefined variable
-  // on every other path.
+  // on every other path. Post Tool Change has always run regardless of
+  // which branch fired, so when it's spliced onto the leg it needs its
+  // own copy in the o340 else — only the leg itself (an unreached
+  // position) is unsafe to run there, not the event.
   const rackFallbackActive = isRackSlot && settings.toolSeatedSensorInput >= 0;
+  const fallbackElse = (rackFallbackActive && exitSection && hasSplice)
+    ? `\n    o340 else\n      ${modalSafe(postCmd, 'post')}`
+    : '';
   const guardedExitSection = (rackFallbackActive && exitSection)
-    ? `o340 if [#<_manual_fallback> NE 1]\n      ${exitSection}\n    o340 endif`
-    : exitSection;
+    ? `o340 if [#<_manual_fallback> NE 1]\n      ${exitBody}${fallbackElse}\n    o340 endif`
+    : exitBody;
 
   // currentTool===0 means software believes the spindle is already
   // empty — nothing above (seatedPrecheckActive et al.) checks this case
@@ -1897,9 +1988,6 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // between two rack slots with the rack still deployed the whole time.
   const rackExtend = touchesRack ? extendToolRack(settings, 400) : '';
   const rackRetract = touchesRack ? retractToolRack(settings, 410) : '';
-
-  const preCmd = settings.preToolChangeGcode?.trim() || '';
-  const postCmd = settings.postToolChangeGcode?.trim() || '';
 
   const gcode = `
     (Start of PneumaticATC Plugin Sequence)
@@ -1920,7 +2008,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${rackRetract}
     G4 P0
     G[#<return_units>]
-    ${modalSafe(postCmd, 'post')}
+    ${postAtEnd ? modalSafe(postCmd, 'post') : ''}
     (End of PneumaticATC Plugin Sequence)
   `.trim();
 
@@ -2068,6 +2156,17 @@ function handleHomeCommand(commands, context, settings) {
   const rackExtend = extendToolRack(settings, 470);
   const rackRetract = retractToolRack(settings, 480);
 
+  // Post Tool Change runs before this final leg, not after it — same
+  // reasoning as buildToolChangeProgram (see postToolChangeThenLeg). A
+  // single fixed destination here (machine origin), so no splitFinalLeg
+  // needed: postToolChangeThenLeg's own Z-safe reassert before the leg
+  // covers a routine that moved the spindle elsewhere. Byte-identical to
+  // before when Post Tool Change isn't configured.
+  const finalLeg = handFinalLegToCoreCheck('G53 G0 X0 Y0');
+  const tail = postCmd
+    ? postToolChangeThenLeg(postCmd, finalLeg, settings)
+    : `G4 P0\n      ${finalLeg}`;
+
   const gcode = `
     $H
     #<return_units> = [20 + #<_metric>]
@@ -2079,9 +2178,7 @@ function handleHomeCommand(commands, context, settings) {
       G53 G0 Z${settings.zSafe}
       ${tlsExitMove}
       ${rackRetract}
-      G4 P0
-      G53 G0 X0 Y0
-      ${modalSafe(postCmd, 'post')}
+      ${tail}
     o100 ENDIF
     G[#<return_units>]
   `.trim();

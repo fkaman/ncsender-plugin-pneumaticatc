@@ -3006,6 +3006,120 @@ describe('the final exit leg is handed to the core keepout check, not blanket-by
   });
 });
 
+// === Post Tool Change runs before the final exit leg ====================
+//
+// Running the event after the return-to-origin leg means a routine that
+// goes to pick up a dust shoe drives back to the work first, then off to
+// the dust shoe, then the job moves back again. It now runs once the exit
+// routing has cleared the rack, before that last, unverified leg — which
+// still runs afterward through the core's keepout check (see the describe
+// block above). Matches a fix from siganberg's upstream
+// feat/probe-auto-loader branch (v0.1.45), adapted to this fork's own
+// exit call sites (including the o340 manual-fallback and o200
+// tool-seated pre-check gates, which upstream has no equivalent of).
+describe('Post Tool Change runs before the final exit leg, not after', () => {
+  const RACK = { ...CUP_RACK, tlsMode: 'always', toolsetter: { x: 300, y: -200 }, postToolChangeGcode: 'M8' };
+
+  test('probed rack load (M6): the event runs before the return-to-origin leg', () => {
+    const commands = [{ command: 'M6 T1', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 0, mpos: { x: 60, y: 120 } }, tools: [] }, { ...RACK });
+    const lines = motionLines(commands.map((c) => c.command).join('\n'));
+    const eventIdx = lines.indexOf('M8');
+    const finalLegIdx = lines.indexOf('G53 G0 X60 Y120');
+    assert.ok(eventIdx !== -1 && finalLegIdx !== -1, 'the event and the final leg must both be present');
+    assert.ok(eventIdx < finalLegIdx, 'the event must run before the final leg back to origin');
+  });
+
+  test('unprobed rack load (library strategy, stored TLO): same ordering', () => {
+    const LIB = { ...RACK, tlsMode: 'library' };
+    const commands = [{ command: 'M6 T1', isOriginal: true }];
+    onBeforeCommand(commands, {
+      machineState: { tool: 0, mpos: { x: 60, y: 120 } },
+      tools: [{ toolNumber: 1, offsets: { x: 0, y: 0, z: -55.014, tlsZ: 0 } }]
+    }, { ...LIB });
+    const lines = motionLines(commands.map((c) => c.command).join('\n'));
+    assert.ok(!lines.some((l) => /^G38\.2/.test(l)), 'sanity: this path must not probe');
+    const eventIdx = lines.indexOf('M8');
+    const finalLegIdx = lines.indexOf('G53 G0 X60 Y120');
+    assert.ok(eventIdx !== -1 && finalLegIdx !== -1);
+    assert.ok(eventIdx < finalLegIdx);
+  });
+
+  test('bare unload without the tool-seated pre-check: same ordering', () => {
+    const commands = [{ command: 'M6 T0', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, { ...RACK });
+    const lines = motionLines(commands.map((c) => c.command).join('\n'));
+    const eventIdx = lines.indexOf('M8');
+    const finalLegIdx = lines.indexOf('G53 G0 X60 Y120');
+    assert.ok(eventIdx !== -1 && finalLegIdx !== -1);
+    assert.ok(eventIdx < finalLegIdx);
+  });
+
+  // The tool-seated pre-check folds the bare-unload exit into its own
+  // o200 gate. The event has always run regardless of which branch fired
+  // (nothing gated it before), so it needs its own copy in the "nothing
+  // to unload" else branch too, even though the leg itself (an unreached
+  // position in that branch) does not.
+  test('bare unload WITH the tool-seated pre-check active: the event runs in both branches of the gate', () => {
+    const WITH_SEATED = { ...RACK, toolSeatedSensorInput: 5 };
+    const commands = [{ command: 'M6 T0', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, WITH_SEATED);
+    const gcode = commands.map((c) => c.command).join('\n');
+    const lines = motionLines(gcode);
+    const occurrences = lines.filter((l) => l === 'M8').length;
+    assert.equal(occurrences, 2, 'the event must appear once in the if-branch (before the leg) and once in the else');
+    const ifBranchIdx = gcode.indexOf('o200 if [#5399 EQ 1]');
+    const elseBranchIdx = gcode.indexOf('o200 else');
+    const finalLegIdx = gcode.indexOf('G53 G0 X60 Y120');
+    assert.ok(ifBranchIdx !== -1 && elseBranchIdx !== -1 && finalLegIdx !== -1,
+      'the if-branch, the leg and the else-branch must all be present');
+    assert.ok(ifBranchIdx < finalLegIdx && finalLegIdx < elseBranchIdx,
+      'the leg lives inside the if-branch, before the else-branch');
+  });
+
+  test('no Post Tool Change configured: output is unaffected, no stray o200/o340 else or marker', () => {
+    const NO_EVENT = { ...CUP_RACK, tlsMode: 'always', toolsetter: { x: 300, y: -200 }, toolSeatedSensorInput: 5 };
+    const commands = [{ command: 'M6 T0', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, NO_EVENT);
+    const gcode = commands.map((c) => c.command).join('\n');
+    assert.ok(!gcode.includes('o200 else'), 'no else branch when there is no event to run there');
+    assert.ok(!gcode.includes('ncs-checked'), 'the internal marker must never leak into the emitted program');
+  });
+
+  test('standalone $TLS with a known origin: the event runs before the return leg', () => {
+    const commands = [{ command: '$TLS', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, { ...RACK });
+    const lines = motionLines(commands.map((c) => c.command).join('\n'));
+    const eventIdx = lines.indexOf('M8');
+    const finalLegIdx = lines.indexOf('G53 G0 X60 Y120');
+    assert.ok(eventIdx !== -1 && finalLegIdx !== -1);
+    assert.ok(eventIdx < finalLegIdx);
+  });
+
+  // Measure All Tools' per-tool step (for a tool NOT already in the
+  // spindle) stays parked at the toolsetter afterward, chaining straight
+  // to the next tool (options.endAtTls) — exitSection is '' on that path,
+  // so there is no leg to split and the event keeps running at the very
+  // end, unchanged.
+  test('$MEASURE_TLO for a tool not already loaded (endAtTls, no leg): the event still runs, at the end', () => {
+    const commands = [{ command: '$MEASURE_TLO T2', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, { ...RACK });
+    const gcode = commands.map((c) => c.command).join('\n');
+    assert.ok(gcode.includes('M8'), 'the event must still run even with no leg to split');
+  });
+
+  test('$H + performTlsAfterHome: the event runs before the final leg to machine origin', () => {
+    const WITH_HOME = { ...RACK, performTlsAfterHome: true };
+    const commands = [{ command: '$H', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, WITH_HOME);
+    const lines = motionLines(commands.map((c) => c.command).join('\n'));
+    const eventIdx = lines.indexOf('M8');
+    const finalLegIdx = lines.indexOf('G53 G0 X0 Y0');
+    assert.ok(eventIdx !== -1 && finalLegIdx !== -1, 'the event and the final leg to origin must both be present');
+    assert.ok(eventIdx < finalLegIdx, 'the event must run before the final leg');
+  });
+});
+
 // === Event g-code modal containment ====================================
 //
 // Pre/Post Tool Change snippets run in the PROGRAM's units by design — they
