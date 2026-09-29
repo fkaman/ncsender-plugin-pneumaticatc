@@ -443,6 +443,11 @@ function auxOnOff(auxOutput) {
 //               remembered height of the tool that set Z0.
 // The work offset is written after the offset is active and announced, so the
 // host never mistakes it for a fresh unreferenced Z0.
+// How close the outgoing tool's reference touch must land to its library TLO
+// for the library to be trusted this boot (the kiosk repeats within a few
+// microns; a stale library entry is off by far more).
+const REF_MATCH_TOLERANCE_MM = 0.05;
+
 function zeroKeepPlan(context, currentTool) {
   const ms = (context && context.machineState) || {};
   const pending = ms.zeroSetWithoutTlr === true && ms.toolLengthSet !== true;
@@ -511,10 +516,15 @@ function createToolLengthSetRoutine(settings, toolOffsets = { x: 0, y: 0, z: 0 }
   // options.mode — see zeroKeepPlan. 'reference' only remembers the touch
   // height: no offset, no host notification and no [#] dump, so a TLO
   // writeback armed for the NEXT tool is not consumed by this measurement.
+  // 'measure' only applies the offset: used inside a controller-side if/else,
+  // where grblHAL still runs `$` lines of the branch it skips, so the host
+  // notification and [#] dump are emitted by the caller after the endif.
   const mode = options.mode || 'normal';
   const applyOffset = mode === 'reference'
     ? `(Remember the touch height of the tool that set Z0)
     #<_nc_ref_tlo> = #<_nc_last_tlo>`
+    : mode === 'measure'
+    ? `G43.1 Z[#<_nc_last_tlo>]`
     : `G43.1 Z[#<_nc_last_tlo>]
     (Notify ncSender that toolLengthSet is now set)
     $#=_tool_offset${mode === 'keepSelf' ? `
@@ -1747,8 +1757,24 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // Without a new tool to measure, fix the reference with the current tool.
   const keepZero = !!options.keepZero;
   const keepViaReference = keepZero && toolNumber !== 0 && shouldProbe;
+  // With the library strategy and no reference yet the new tool would be
+  // measured only to re-establish one — but keeping the Z0 already touches
+  // the outgoing tool off. When that touch lands where the library says
+  // (options.libraryIfRefMatches = the outgoing tool's stored TLO) the
+  // library is good for this boot, so the new tool loads its stored TLO.
+  // The touch value only exists on the controller, so the program carries
+  // both endings and the controller picks one (see swapBody below).
+  const refLibTlo = options.libraryIfRefMatches;
+  const branchOnRef = keepViaReference
+    && settings.tlsMode === 'library'
+    && hasStoredTlo
+    && isRackSlot
+    && !targetIsProbe
+    && !targetIsManual
+    && !options.forceTls
+    && typeof refLibTlo === 'number' && Math.abs(refLibTlo) > 0.0001;
   const rawTlsRoutine = shouldProbe
-    ? createToolLengthSetRoutine(settings, toolOffsets, { skipXYApproach: chainedFromRackExit, originMPos: tlsRouteFrom, mode: keepViaReference ? 'keepRef' : 'normal' }).join('\n')
+    ? createToolLengthSetRoutine(settings, toolOffsets, { skipXYApproach: chainedFromRackExit, originMPos: tlsRouteFrom, mode: branchOnRef ? 'measure' : (keepViaReference ? 'keepRef' : 'normal') }).join('\n')
     : (settings.tlsMode === 'library' && hasStoredTlo
         ? `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`
         : '');
@@ -1873,6 +1899,44 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // destination in this program the plugin cannot vouch for.
   exitSection = handFinalLegToCoreCheck(exitSection);
 
+  // Controller-side choice between the library ending and the measured one
+  // (see branchOnRef). Only g-code lives inside the branches; the `$` host
+  // notification, the Z0 carry-over and the [#] dump that feeds the TLO
+  // writeback run after the endif, for whichever ending ran. On the library
+  // ending that writeback stores the value the tool already had.
+  let swapBody = `${loadSection}
+    G53 G0 Z${settings.zSafe}
+    ${finalizeUnclamped}
+    ${exitSection}`;
+  if (branchOnRef) {
+    const libLoad = buildLoadTool(settings, toolNumber, targetSlot,
+      `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`,
+      drawbarAlreadyReleased, loadFrom, chainedFromRack);
+    const libExit = handFinalLegToCoreCheck(isCup
+      ? cupExit(targetSlot.engaged, returnTo, settings)
+      : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, returnTo, settings));
+    swapBody = `#<_nc_lib_ok> = [ABS[#<_nc_ref_tlo> - [${refLibTlo}]] LT ${REF_MATCH_TOLERANCE_MM}]
+    o7101 if [#<_nc_lib_ok>]
+    (T${currentTool} touched off where the library says: load T${toolNumber} from the library)
+    ${libLoad}
+    G53 G0 Z${settings.zSafe}
+    ${libExit}
+    o7101 else
+    (T${currentTool} touched off away from its library value: measure T${toolNumber})
+    ${loadSection}
+    G53 G0 Z${settings.zSafe}
+    ${exitSection}
+    o7101 endif
+    (Notify ncSender that toolLengthSet is now set)
+    $#=_tool_offset
+    #<_ofs_idx> = [#5220 * 20 + 5203]
+    #<_cur_wcs_z_ofs> = #[#<_ofs_idx>]
+    (Keep the Z0 that was set with the previous tool)
+    G10 L2 P[#5220] Z[#<_cur_wcs_z_ofs> - #<_nc_ref_tlo>]
+    (Trigger a full [#] dump so ncSender receives [TLO:xxx] for writeback)
+    $#`;
+  }
+
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
 
@@ -1895,10 +1959,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     G53 G0 Z${settings.zSafe}
     ${zeroKeepSection}
     ${unloadSection}
-    ${loadSection}
-    G53 G0 Z${settings.zSafe}
-    ${finalizeUnclamped}
-    ${exitSection}
+    ${swapBody}
     G4 P0
     G[#<return_units>]
     ${modalSafe(postCmd, 'post')}
@@ -2091,10 +2152,15 @@ function handleM6Command(commands, context, settings) {
   // Older hosts don't expose toolLengthSet at all (undefined) — only a
   // definite `false` means "no reference"; otherwise trust the library.
   const tlrMissing = context.machineState?.toolLengthSet === false;
+  // Only a rack or probe tool's library TLO says anything about this boot; a
+  // hand-fitted manual tool's stickout changes every time.
+  const currentIsTrusted = currentTool > 0
+    && (currentTool <= settings.slots || isProbeTool(settings, currentTool));
   const program = buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets, storedTlo, origin, {
     tlrMissing,
     keepZero: zeroKeepPlan(context, currentTool).keep,
     currentOffsets: getToolProbeOffsets(currentTool, context.tools),
+    libraryIfRefMatches: currentIsTrusted ? getStoredTlo(currentTool, context.tools) : undefined,
   });
   expandIntoCommands(commands, idx, commands[idx].command, program, settings);
 }

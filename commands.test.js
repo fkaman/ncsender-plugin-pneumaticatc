@@ -2517,6 +2517,95 @@ describe('keeps a Z0 set before any tool length reference', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Library strategy, no reference yet, Z0 pending: the outgoing tool's
+// reference touch-off validates the library for this boot, and the
+// controller picks the ending (grblHAL o-word if/else) — load the new tool
+// from the library when the touch matches, measure it when it doesn't.
+// ---------------------------------------------------------------------------
+describe('Z0 carry-over trusts the library when the reference touch matches it', () => {
+  const base = {
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5,
+    clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, tlsMode: 'library',
+  };
+  const tools = [
+    { toolNumber: 1, offsets: { x: 0, y: 0, z: -46.63, tlsZ: 0 } },
+    { toolNumber: 2, offsets: { x: 0, y: 0, z: -33.78, tlsZ: 0 } },
+    { toolNumber: 3, offsets: { x: 0, y: 0, z: 0, tlsZ: 0 } },
+    { toolNumber: 9, offsets: { x: 0, y: 0, z: -40.1, tlsZ: 0 } },
+  ];
+  const run = (command, { tool = 1, settings = {}, toolList = tools, ms = {} } = {}) => {
+    const commands = [{ command, isOriginal: true }];
+    onBeforeCommand(commands, {
+      machineState: { tool, mpos: { x: 10, y: 20 }, toolLengthSet: false, zeroSetWithoutTlr: true, zeroTool: tool, ...ms },
+      tools: toolList,
+    }, buildInitialConfig({ ...base, ...settings }));
+    return commands.map((c) => c.command.trim());
+  };
+  const idx = (lines, re) => lines.findIndex((l) => re.test(l));
+
+  test('M6 T2 branches on the reference touch against T1\'s library TLO', () => {
+    const lines = run('M6 T2');
+    const ref = idx(lines, /^#<_nc_ref_tlo> = #<_nc_last_tlo>$/);
+    const check = lines.indexOf('#<_nc_lib_ok> = [ABS[#<_nc_ref_tlo> - [-46.63]] LT 0.05]');
+    const iff = lines.indexOf('o7101 if [#<_nc_lib_ok>]');
+    const els = lines.indexOf('o7101 else');
+    const end = lines.indexOf('o7101 endif');
+    assert.ok(ref >= 0 && check > ref && iff > check && els > iff && end > els, lines.join('\n'));
+    assert.ok(idx(lines, /^M61 Q0$/) < iff, 'the unload is shared, before the branch');
+  });
+
+  test('library ending loads the stored TLO without touching off; the other ending measures', () => {
+    const lines = run('M6 T2');
+    const lib = lines.slice(lines.indexOf('o7101 if [#<_nc_lib_ok>]'), lines.indexOf('o7101 else'));
+    const meas = lines.slice(lines.indexOf('o7101 else'), lines.indexOf('o7101 endif'));
+    assert.ok(lib.includes('G43.1 Z-33.78'));
+    assert.ok(!lib.some((l) => /^G38\./.test(l)), 'no touch-off in the library ending');
+    assert.ok(lib.includes('M61 Q2') && meas.includes('M61 Q2'), 'both endings load T2');
+    assert.ok(meas.some((l) => /^G38\.2/.test(l)));
+    assert.ok(meas.includes('G43.1 Z[#<_nc_last_tlo>]'));
+    assert.ok(lib.includes('G53 G0 X10 Y20') && meas.includes('G53 G0 X10 Y20'), 'both return to the job');
+  });
+
+  test('no $ line inside the branches: grblHAL runs those even in the branch it skips', () => {
+    const lines = run('M6 T2');
+    const inside = lines.slice(lines.indexOf('o7101 if [#<_nc_lib_ok>]'), lines.indexOf('o7101 endif'));
+    const bare = inside.map((l) => l.replace(/^\$keepout_off\s+/, ''));
+    assert.deepEqual(bare.filter((l) => l.startsWith('$')), []);
+  });
+
+  test('after the endif: announce, keep Z0 by the reference, dump for the writeback', () => {
+    const lines = run('M6 T2');
+    const tail = lines.slice(lines.indexOf('o7101 endif'));
+    const notify = tail.indexOf('$#=_tool_offset');
+    const g10 = idx(tail, /^G10 L2 P\[#5220\] Z\[#<_cur_wcs_z_ofs> - #<_nc_ref_tlo>\]$/);
+    const dump = tail.indexOf('$#');
+    assert.ok(notify > 0 && g10 > notify && dump > g10, tail.join('\n'));
+    assert.equal(lines.filter((l) => /^G10 L2/.test(l)).length, 1);
+  });
+
+  test('no branch — measured as before — when the library cannot be checked or trusted', () => {
+    const cases = {
+      'outgoing tool has no library TLO': run('M6 T2', { tool: 3 }),
+      'new tool has no library TLO': run('M6 T3'),
+      'always strategy': run('M6 T2', { settings: { tlsMode: 'always' } }),
+      'outgoing tool is a hand-fitted manual tool': run('M6 T2', { tool: 9 }),
+      'no Z0 pending': run('M6 T2', { ms: { zeroSetWithoutTlr: false } }),
+    };
+    for (const [why, lines] of Object.entries(cases)) {
+      assert.ok(!lines.some((l) => /^o7101/.test(l)), why);
+    }
+    const measured = cases['outgoing tool has no library TLO'];
+    assert.ok(measured.some((l) => /^G38\.2/.test(l)), 'still measures the new tool');
+  });
+
+  test('with a reference already set nothing branches (library loads directly)', () => {
+    const lines = run('M6 T2', { ms: { toolLengthSet: true, zeroSetWithoutTlr: false } });
+    assert.ok(!lines.some((l) => /^o7101/.test(l)));
+    assert.ok(lines.includes('G43.1 Z-33.78'));
+  });
+});
+
 describe('homing', () => {
   test('$H passes through untouched: no tool setter run after homing', () => {
     const settings = buildInitialConfig({ slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5, clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, performTlsAfterHome: true });
