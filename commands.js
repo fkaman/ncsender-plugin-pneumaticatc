@@ -304,6 +304,36 @@ const getToolOffsets = getToolProbeOffsets;
 
 // === G-code helpers ===
 
+// Withholds the `$keepout_off` prefix from a single line (see formatGCode,
+// which strips the marker before the line is sent).
+const CORE_CHECKED_MARKER = '(ncs-checked)';
+
+// Every G53 leg this plugin emits is rack routing it computed itself and
+// can vouch for — except the last one. The exit legs end at `returnTo` (or
+// `origin`), wherever the operator happened to leave the spindle when they
+// typed M6, and cancelling a tool load leaves it parked INSIDE the rack.
+// Blanket-prefixing that leg with $keepout_off asserts a safety property
+// this plugin has no basis to assert, and drives the spindle back into
+// whatever's in the way.
+//
+// Hand just that leg to the core's keepout check instead: if the
+// destination is clear it runs exactly as before; if it's inside the zone
+// the core refuses it and the spindle stays at the rack edge — the
+// position the exit routing just brought it to, which is known safe.
+// Matches a fix in siganberg's upstream feat/probe-auto-loader branch
+// (v0.1.37/38), adapted to this fork's own exit call sites.
+function handFinalLegToCoreCheck(section) {
+  if (!section) return section;
+  const lines = section.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/(^|[^A-Z])G0*53(?:[^0-9]|$)/i.test(lines[i])) {
+      lines[i] = `${lines[i]} ${CORE_CHECKED_MARKER}`;
+      break;
+    }
+  }
+  return lines.join('\n');
+}
+
 function formatGCode(gcode) {
   const lines = gcode.split('\n').map((l) => l.trim()).filter((l) => l !== '');
   const formatted = [];
@@ -330,9 +360,15 @@ function formatGCode(gcode) {
     // parser, so the token would just get logged as an unknown command
     // — we omit it there.
     const isMachineMove = /(^|[^A-Z])G0*53(?:[^0-9]|$)/i.test(line);
-    const prefixed = (isMachineMove && _coreEdition === 'pro')
-      ? `$keepout_off ${line}`
+    // A leg marked by handFinalLegToCoreCheck keeps its keepout check —
+    // strip the marker and skip the bypass prefix for that one line.
+    const coreChecked = line.includes(CORE_CHECKED_MARKER);
+    const emitted = coreChecked
+      ? line.replace(CORE_CHECKED_MARKER, '').trimEnd()
       : line;
+    const prefixed = (isMachineMove && !coreChecked && _coreEdition === 'pro')
+      ? `$keepout_off ${emitted}`
+      : emitted;
     formatted.push(indent + prefixed);
     if (isOCode && (
       upperLine.includes(' IF ') || upperLine.includes(' WHILE ') ||
@@ -1637,8 +1673,14 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   //   'library' also probes when the controller has no Tool Length
   //   Reference yet (options.tlrMissing) — the first change after a boot
   //   re-establishes it even for a tool whose TLO is on file.
+  //   A manual tool (numbered above the rack) is fitted by hand, so its
+  //   stickout differs every time it goes in — a stored TLO can't be
+  //   trusted for it. Always measure it, whatever the strategy. Rack
+  //   tools still follow tlsMode.
   const hasStoredTlo = Math.abs(storedTlo || 0) > 0.0001;
+  const targetIsManual = toolNumber > settings.slots;
   const shouldProbe = !!options.forceTls
+    || targetIsManual
     || settings.tlsMode === 'always'
     || (settings.tlsMode === 'library' && (!hasStoredTlo || !!options.tlrMissing));
   const returnTo = options.returnTo || origin;
@@ -1765,9 +1807,11 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // only on the branch where the pre-check found a tool and unload
   // actually ran. Fold it into the SAME guarded block as the unload
   // instead of appending it unconditionally afterward, so it's skipped
-  // right along with the unload it depends on.
+  // right along with the unload it depends on. Same handFinalLegToCoreCheck
+  // treatment as the main exitSection below — `origin` here is operator-
+  // chosen, not plugin-computed, same as `returnTo` there.
   const bareUnloadExit = isBareUnload
-    ? (isCup
+    ? handFinalLegToCoreCheck(isCup
         ? cupExit(sourceSlot.engaged, origin, settings)
         : rackExitToOrigin(sourceSlot.engaged, /* isEmpty */ true, origin, settings))
     : '';
@@ -1821,6 +1865,9 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
       ? cupExit(targetSlot.engaged, returnTo, settings)
       : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, returnTo, settings);
   }
+  // `returnTo` is operator-chosen, not plugin-computed — the one
+  // destination in this program the plugin cannot vouch for.
+  exitSection = handFinalLegToCoreCheck(exitSection);
 
   // A rack load that fell back to buildManualLoad (see
   // toolSeatedOrManualFallback) leaves the spindle parked at manualTool,

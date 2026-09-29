@@ -2775,6 +2775,39 @@ describe('$MEASURE_TLO — measure-all batch step', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Manual tools (numbered above the rack) are fitted by hand every time, so
+// a stored TLO can't be trusted the way a rack tool's can — the stickout
+// changes with each insertion. Always measure them, whatever tlsMode says.
+// Matches a fix from siganberg's upstream feat/probe-auto-loader branch
+// (v0.1.43), adapted to this fork (no probe-tool concept to exclude).
+// ---------------------------------------------------------------------------
+describe('manual tools are always measured, regardless of tlsMode', () => {
+  const LIBRARY = buildInitialConfig({
+    slots: 2, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5,
+    clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, tlsMode: 'library',
+    manualTool: { x: 321, y: -966 }
+  });
+
+  test('library strategy + a stored TLO: rack tool loads from the library, manual tool still probes', () => {
+    const rackGcode = buildToolChangeProgram(LIBRARY, 0, 1, { x: 0, y: 0 }, -55.014, { x: 10, y: 20 }).join('\n');
+    assert.ok(!rackGcode.includes('G38.2'), 'a rack tool with a stored TLO must not probe');
+    assert.match(rackGcode, /Load stored TLO/);
+
+    const manualGcode = buildToolChangeProgram(LIBRARY, 0, 99, { x: 0, y: 0 }, -55.014, { x: 10, y: 20 }).join('\n');
+    assert.match(manualGcode, /G38\.2/, 'a manual tool must probe even though a TLO is on file');
+    assert.doesNotMatch(manualGcode, /Load stored TLO/);
+  });
+
+  test('always strategy is unaffected: both rack and manual tools already probed', () => {
+    const ALWAYS = { ...LIBRARY, tlsMode: 'always' };
+    const rackGcode = buildToolChangeProgram(ALWAYS, 0, 1, { x: 0, y: 0 }, -55.014, { x: 10, y: 20 }).join('\n');
+    const manualGcode = buildToolChangeProgram(ALWAYS, 0, 99, { x: 0, y: 0 }, -55.014, { x: 10, y: 20 }).join('\n');
+    assert.match(rackGcode, /G38\.2/);
+    assert.match(manualGcode, /G38\.2/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Retractable tool rack: a digital output extends the rack into position
 // before any load/unload, retracts it clear afterward. Two independent
 // end-stop sensors (available / unavailable), not one sensor read both
@@ -2924,6 +2957,52 @@ describe('retractable tool rack — extend/retract around rack-slot motion', () 
     assert.ok(extendIdx > 0 && retractIdx > 0, 'extend and retract must both be present');
     assert.equal(lines[extendIdx - 1], 'G4 P0', 'extend must dwell right after Z-safe, before actuating');
     assert.equal(lines[retractIdx - 1], 'G4 P0', 'retract must dwell right after Z-safe, before actuating');
+  });
+});
+
+// === Final exit leg handed to the core's keepout check =================
+//
+// Every G53 move an exit path emits (besides the very last one) is rack
+// routing this plugin computed and can vouch for. The last one goes to
+// `returnTo`/`origin` — wherever the operator left the spindle when they
+// typed M6 — and a cancelled load can leave that inside the rack.
+// Blanket-prefixing it with $keepout_off asserted a safety property this
+// plugin has no basis to assert. That leg is now marked so formatGCode
+// withholds the prefix and hands it to the core's own keepout check
+// instead. Matches a fix from siganberg's upstream feat/probe-auto-loader
+// branch (v0.1.37/38), adapted to this fork's own exit call sites.
+describe('the final exit leg is handed to the core keepout check, not blanket-bypassed', () => {
+  test('pro edition: rack-computed routing keeps $keepout_off, the final leg to origin does not', () => {
+    const commands = [{ command: 'M6 T0', isOriginal: true }];
+    onBeforeCommand(commands, { edition: 'pro', machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, { ...CUP_RACK });
+    const lines = motionLines(commands.map((c) => c.command).join('\n'));
+    assert.ok(lines.includes('$keepout_off G53 G0 X-55 Y40'), 'rack-computed routing must still carry the bypass');
+    assert.ok(lines.includes('G53 G0 X60 Y120'), 'the final leg to origin must be present');
+    assert.ok(!lines.includes('$keepout_off G53 G0 X60 Y120'), 'the final leg must NOT carry the keepout bypass');
+  });
+
+  test('community/unknown edition: no bypass anywhere, and the internal marker never reaches the program', () => {
+    const commands = [{ command: 'M6 T0', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, { ...CUP_RACK });
+    const gcode = commands.map((c) => c.command).join('\n');
+    assert.ok(!gcode.includes('keepout_off'), 'no bypass at all outside the pro core');
+    assert.ok(!gcode.includes('ncs-checked'), 'the internal marker must never leak into the emitted program');
+    const lines = motionLines(gcode);
+    assert.ok(lines.includes('G53 G0 X-55 Y40') && lines.includes('G53 G0 X60 Y120'),
+      'both moves must still be present, just unprefixed');
+  });
+
+  // The seated-precheck path folds its own exit into the guarded unload
+  // block (see wrapUnloadWithSeatedCheck) instead of the main exitSection
+  // above — a separate call site that needs the same treatment.
+  test('pro edition, tool-seated pre-check active: the folded bare-unload exit is also protected', () => {
+    const WITH_SEATED = { ...CUP_RACK, toolSeatedSensorInput: 5 };
+    const commands = [{ command: 'M6 T0', isOriginal: true }];
+    onBeforeCommand(commands, { edition: 'pro', machineState: { tool: 1, mpos: { x: 60, y: 120 } }, tools: [] }, WITH_SEATED);
+    const lines = motionLines(commands.map((c) => c.command).join('\n'));
+    assert.ok(lines.includes('$keepout_off G53 G0 X-55 Y40'), 'rack-computed routing must still carry the bypass');
+    assert.ok(lines.includes('G53 G0 X60 Y120'), 'the final leg to origin must be present');
+    assert.ok(!lines.includes('$keepout_off G53 G0 X60 Y120'), 'the final leg must NOT carry the keepout bypass');
   });
 });
 
