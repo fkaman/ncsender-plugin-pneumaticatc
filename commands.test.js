@@ -2606,6 +2606,63 @@ describe('Z0 carry-over trusts the library when the reference touch matches it',
   });
 });
 
+// ---------------------------------------------------------------------------
+// Post Tool Change runs after the new tool is in and the spindle has left the
+// rack / tool setter, BEFORE the final leg back to where the change started —
+// not after it (a dust-shoe pickup used to drive back to the work first).
+// ---------------------------------------------------------------------------
+describe('Post Tool Change runs before the return to origin', () => {
+  const base = {
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5,
+    clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, tlsMode: 'library',
+    postToolChangeGcode: '(POST TC)\nG53 G0 X500 Y500',
+  };
+  const tools = [
+    { toolNumber: 1, offsets: { x: 0, y: 0, z: -46.63, tlsZ: 0 } },
+    { toolNumber: 2, offsets: { x: 0, y: 0, z: -33.78, tlsZ: 0 } },
+  ];
+  const run = (command, { settings = {}, ms = {} } = {}) => {
+    const commands = [{ command, isOriginal: true }];
+    onBeforeCommand(commands, {
+      machineState: { tool: 1, mpos: { x: 10, y: 20 }, toolLengthSet: true, ...ms }, tools,
+    }, buildInitialConfig({ ...base, ...settings }));
+    return commands.map((c) => c.command.trim());
+  };
+  const leg = (l) => /G53 G0 X10 Y20$/.test(l);
+  const post = (lines) => lines.indexOf('(POST TC)');
+  const lastLeg = (lines) => lines.map((l, i) => (leg(l) ? i : -1)).filter((i) => i >= 0).pop();
+
+  const check = (lines, why) => {
+    const p = post(lines);
+    const back = lastLeg(lines);
+    assert.ok(p >= 0 && back > p, `${why}: event before the final leg\n${lines.join('\n')}`);
+    const between = lines.slice(p, back);
+    assert.ok(between.some((l) => /^G21$/.test(l)), `${why}: back to mm after the event`);
+    assert.ok(between.some((l) => /G53 G0 Z-5$/.test(l)), `${why}: safe Z before the final leg`);
+    assert.equal(lines.filter(leg).length, 1, `${why}: one return to origin`);
+    assert.ok(!/^\$keepout_off/.test(lines[back]), `${why}: the final leg keeps the core keepout check`);
+  };
+
+  test('library load (no touch-off)', () => check(run('M6 T2'), 'library'));
+  test('measured load', () => check(run('M6 T2', { settings: { tlsMode: 'always' } }), 'always'));
+  test('standalone $TLS', () => check(run('$TLS'), '$TLS'));
+
+  test('Z0 carry-over branch: event and final leg after the endif, never inside a branch', () => {
+    const lines = run('M6 T2', { ms: { toolLengthSet: false, zeroSetWithoutTlr: true, zeroTool: 1 } });
+    const end = lines.indexOf('o7101 endif');
+    assert.ok(end >= 0);
+    assert.ok(post(lines) > end, 'event after the endif');
+    assert.ok(!lines.slice(0, end).some(leg), 'no return to origin inside the branches');
+    check(lines, 'branch');
+  });
+
+  test('with no event the program is unchanged: the return is the last move', () => {
+    const lines = run('M6 T2', { settings: { postToolChangeGcode: '' } });
+    assert.equal(post(lines), -1);
+    assert.equal(lines.filter(leg).length, 1);
+  });
+});
+
 describe('homing', () => {
   test('$H passes through untouched: no tool setter run after homing', () => {
     const settings = buildInitialConfig({ slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5, clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, performTlsAfterHome: true });

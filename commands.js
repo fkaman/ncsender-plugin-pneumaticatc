@@ -645,11 +645,52 @@ function modalSafe(snippet, tag) {
     G[#<${tag}_dist>]`;
 }
 
+// Post Tool Change runs once the new tool is in and the spindle has left the
+// rack (or the tool setter) at safe Z, BEFORE the final leg back to where the
+// change started. It used to run after that leg: a routine that picks up a
+// dust shoe drove back to the work first, went off to the dust shoe, and the
+// job then moved back again. The final leg is the one handed to the core's
+// keepout check (handFinalLegToCoreCheck), so the trip back from wherever the
+// routine leaves the spindle is still checked.
+//
+// splitFinalLeg separates that leg from the rest of an exit; leg is '' when
+// the exit has none (manual / probe-holder paths, endAtTls), and then the
+// event keeps running at the very end as before.
+function splitFinalLeg(exit) {
+  if (!exit) return { body: exit || '', leg: '' };
+  const lines = exit.split('\n');
+  const i = lines.findIndex((l) => l.includes(CORE_CHECKED_MARKER));
+  if (i < 0) return { body: exit, leg: '' };
+  return { body: lines.slice(0, i).join('\n'), leg: lines.slice(i).join('\n') };
+}
+
+// The event in the program's units (see modalSafe), then back to millimetres,
+// safe Z, and the final leg.
+function postToolChangeThenLeg(postCmd, leg, settings) {
+  return `G4 P0
+    G[#<return_units>]
+    ${modalSafe(postCmd, 'post')}
+    G21
+    G53 G0 Z${settings.zSafe}
+    ${leg.trim()}`;
+}
+
 function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }, options = {}) {
   const tlsRoutine = createToolLengthSetRoutine(settings, toolOffsets, options).join('\n');
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
-  const tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets, options);
+  let tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets, options);
+  // With the origin known the exit ends there; run Post Tool Change before
+  // that last move, which then goes through the core's keepout check.
+  let postAtEnd = !!postCmd;
+  if (postCmd && options.originMPos && tlsExitMove) {
+    const { body, leg } = splitFinalLeg(handFinalLegToCoreCheck(tlsExitMove));
+    if (leg) {
+      tlsExitMove = `${body}
+    ${postToolChangeThenLeg(postCmd, leg, settings)}`;
+      postAtEnd = false;
+    }
+  }
 
   const gcode = `
     (Start of Tool Length Setter)
@@ -661,7 +702,7 @@ function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     ${tlsExitMove}
     G4 P0
     G[#<return_units>]
-    ${modalSafe(postCmd, 'post')}
+    ${postAtEnd ? modalSafe(postCmd, 'post') : ''}
     (End of Tool Length Setter)
   `.trim();
   return formatGCode(gcode);
@@ -1899,15 +1940,27 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // destination in this program the plugin cannot vouch for.
   exitSection = handFinalLegToCoreCheck(exitSection);
 
+  const preCmd = settings.preToolChangeGcode?.trim() || '';
+  const postCmd = settings.postToolChangeGcode?.trim() || '';
+  // Post Tool Change goes in front of the final leg (see splitFinalLeg).
+  const exitSplit = splitFinalLeg(exitSection);
+  let postAtEnd = !!postCmd;
+
   // Controller-side choice between the library ending and the measured one
   // (see branchOnRef). Only g-code lives inside the branches; the `$` host
   // notification, the Z0 carry-over and the [#] dump that feeds the TLO
   // writeback run after the endif, for whichever ending ran. On the library
   // ending that writeback stores the value the tool already had.
+  let exitWithPost = exitSection;
+  if (postCmd && exitSplit.leg) {
+    exitWithPost = `${exitSplit.body}
+    ${postToolChangeThenLeg(postCmd, exitSplit.leg, settings)}`;
+    postAtEnd = false;
+  }
   let swapBody = `${loadSection}
     G53 G0 Z${settings.zSafe}
     ${finalizeUnclamped}
-    ${exitSection}`;
+    ${exitWithPost}`;
   if (branchOnRef) {
     const libLoad = buildLoadTool(settings, toolNumber, targetSlot,
       `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`,
@@ -1915,17 +1968,26 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     const libExit = handFinalLegToCoreCheck(isCup
       ? cupExit(targetSlot.engaged, returnTo, settings)
       : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, returnTo, settings));
+    // Both endings finish with the same final leg to returnTo. Keep it, and
+    // Post Tool Change, out of the branches and run them after the endif:
+    // grblHAL executes `$` lines even inside the branch it skips, and the
+    // event is the operator's own g-code.
+    const libSplit = splitFinalLeg(libExit);
+    const shareLeg = !!postCmd && !!exitSplit.leg && libSplit.leg.trim() === exitSplit.leg.trim();
+    const libEnding = shareLeg ? libSplit.body : libExit;
+    const measuredEnding = shareLeg ? exitSplit.body : exitSection;
+    postAtEnd = !!postCmd && !shareLeg;
     swapBody = `#<_nc_lib_ok> = [ABS[#<_nc_ref_tlo> - [${refLibTlo}]] LT ${REF_MATCH_TOLERANCE_MM}]
     o7101 if [#<_nc_lib_ok>]
     (T${currentTool} touched off where the library says: load T${toolNumber} from the library)
     ${libLoad}
     G53 G0 Z${settings.zSafe}
-    ${libExit}
+    ${libEnding}
     o7101 else
     (T${currentTool} touched off away from its library value: measure T${toolNumber})
     ${loadSection}
     G53 G0 Z${settings.zSafe}
-    ${exitSection}
+    ${measuredEnding}
     o7101 endif
     (Notify ncSender that toolLengthSet is now set)
     $#=_tool_offset
@@ -1934,11 +1996,9 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     (Keep the Z0 that was set with the previous tool)
     G10 L2 P[#5220] Z[#<_cur_wcs_z_ofs> - #<_nc_ref_tlo>]
     (Trigger a full [#] dump so ncSender receives [TLO:xxx] for writeback)
-    $#`;
+    $#${shareLeg ? `
+    ${postToolChangeThenLeg(postCmd, exitSplit.leg, settings)}` : ''}`;
   }
-
-  const preCmd = settings.preToolChangeGcode?.trim() || '';
-  const postCmd = settings.postToolChangeGcode?.trim() || '';
 
   // Out to the toolsetter; the unload below routes on from there (swapFrom).
   const zeroKeepSection = keepZero
@@ -1962,7 +2022,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${swapBody}
     G4 P0
     G[#<return_units>]
-    ${modalSafe(postCmd, 'post')}
+    ${postAtEnd ? modalSafe(postCmd, 'post') : ''}
     (End of PneumaticATC Plugin Sequence)
   `.trim();
 
