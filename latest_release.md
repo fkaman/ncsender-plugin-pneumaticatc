@@ -1,4 +1,4 @@
 ## What's Changed
 
 ### 🔧 Improvements
-- Manual tools are now always measured, whichever tool length setter strategy you use
+- The new tool is now loaded from the tool library once the Z0 reference touch confirms it
