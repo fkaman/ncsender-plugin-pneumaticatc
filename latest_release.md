@@ -1,4 +1,4 @@
 ## What's Changed
 
 ### 🔧 Improvements
-- The new tool is now loaded from the tool library once the Z0 reference touch confirms it
+- The Post Tool Change routine now runs before the machine returns to the position where the tool change started
