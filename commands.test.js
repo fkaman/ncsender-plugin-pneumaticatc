@@ -2738,3 +2738,12 @@ describe('Sienci profile turns the Sienci keepout off around rack moves', () => 
     assert.ok(!lines.some((l) => l.startsWith('M960 P1')));
   });
 });
+
+describe('Sienci profile slide speed', () => {
+  test('uses the kit value even when an imperial save stored 50800', () => {
+    assert.equal(buildInitialConfig({ atcProfile: 'sienci', slideSpeed: 50800 }).slideSpeed, 2000);
+  });
+  test('other profiles keep their own value', () => {
+    assert.equal(buildInitialConfig({ slideSpeed: 900 }).slideSpeed, 900);
+  });
+});
