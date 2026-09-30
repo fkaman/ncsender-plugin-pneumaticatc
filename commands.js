@@ -262,6 +262,10 @@ const buildInitialConfig = (raw = {}) => {
     postToolChangeGcode: raw.postToolChangeGcode ?? '',
     abortEventGcode: raw.abortEventGcode ?? '',
 
+    // Rack preset picked in Advanced (e.g. 'sienci'). Only read for
+    // firmware-specific behaviour such as Sienci's keepout (see sienciKeepout).
+    atcProfile: typeof raw.atcProfile === 'string' ? raw.atcProfile : '',
+
     // Pre/Post TLS run right around the G38.2 probe. Backward-compat:
     // if legacy `tlsAuxOutput` is set but the new gcode fields are
     // empty, translate the old aux ON/OFF into equivalent gcode so an
@@ -2045,18 +2049,33 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     #<return_units> = [20 + #<_metric>]
     G21
     M5
+    ${sienciKeepout(settings).off}
     ${pressureGuard(settings, 120)}
     G53 G0 Z${settings.zSafe}
     ${zeroKeepSection}
     ${unloadSection}
     ${swapBody}
     G4 P0
+    ${sienciKeepout(settings).on}
     G[#<return_units>]
     ${postAtEnd ? modalSafe(postCmd, 'post') : ''}
     (End of PneumaticATC Plugin Sequence)
   `.trim();
 
   return formatGCode(gcode);
+}
+
+// Sienci's grblHAL build has its own keepout zone around the rack (turned
+// on and off with M960 P1 / M960 P0) and alarms when the ATC moves into it.
+// With the Sienci profile the plugin turns it off before any move into the
+// rack and back on when the change is done, so users don't have to add
+// those lines to the Pre/Post Tool Change events themselves.
+function sienciKeepout(settings) {
+  const on = settings.atcProfile === 'sienci';
+  return {
+    off: on ? 'M960 P0 (Sienci keepout off for the rack)' : '',
+    on:  on ? 'M960 P1 (Sienci keepout back on)' : '',
+  };
 }
 
 // === Command handlers ===
@@ -2192,8 +2211,11 @@ function buildSlotNav(settings, slotNum, origin = { x: 0, y: 0 }) {
     ? cupEntrance(engaged, origin, settings)
     : `${rackEntrance(engaged, origin, settings)}
        G53 G0 X${engaged.x} Y${engaged.y}`;
+  // Parks in the rack, so the Sienci keepout is only turned off here; the
+  // next tool change turns it back on when it finishes.
   return `
     G53 G21 G90 G0 Z${settings.zSafe}
+    ${sienciKeepout(settings).off}
     ${entrance}
   `.trim();
 }
