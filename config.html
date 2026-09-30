@@ -2231,7 +2231,9 @@
       }
       if (Number.isFinite(p.slideSpeed)) {
         var slideS = $('pa-slide-speed');
-        if (slideS) slideS.value = String(p.slideSpeed);
+        // Profile values are mm/min: show them in the operator's units like
+        // every other field, or saving in imperial multiplies them by 25.4.
+        if (slideS) slideS.value = fmtCoord(p.slideSpeed);
       }
       if (Number.isFinite(p.keepoutPadding)) {
         var kp = $('pa-keepout-padding');

@@ -217,6 +217,8 @@ function migrateLegacyTlsAux(auxOutput, action) {
   return cmd ? `G4 P0\n${cmd}\nG4 P0` : '';
 }
 
+const SIENCI_SLIDE_SPEED = 2000;   // mm/min, Sienci's published fork-slide feed
+
 const buildInitialConfig = (raw = {}) => {
   const slots = clampSlots(raw.slots ?? raw.pockets);
   // Slot 1 coords — accept new (`slot1`) or legacy (`pocket1`) keys, and the
@@ -231,7 +233,11 @@ const buildInitialConfig = (raw = {}) => {
     direction: sanitizeDirection(raw.direction),
     slideDirection: sanitizeSlideDirection(raw.slideDirection),
     slideDistance: toFiniteNumber(raw.slideDistance, 40),
-    slideSpeed: toFiniteNumber(raw.slideSpeed, 500),
+    // The Sienci kit's slide speed is fixed (the field is locked). Imperial
+    // configs saved before the settings screen converted the profile value
+    // hold 2000 x 25.4 = 50800 mm/min, so the kit value is used, not the
+    // stored one.
+    slideSpeed: raw.atcProfile === 'sienci' ? SIENCI_SLIDE_SPEED : toFiniteNumber(raw.slideSpeed, 500),
     // Slot Distance default bumped to 60 — 45 is too tight for the 80 mm
     // spindles common on ATC-equipped machines (tools would collide).
     slotDistance: toFiniteNumber(raw.slotDistance ?? raw.pocketDistance, 60),
