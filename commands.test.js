@@ -2704,3 +2704,37 @@ describe('manual tools always measure', () => {
     assert.ok(lines.some((l) => /Load stored TLO/.test(l)));
   });
 });
+
+describe('Sienci profile turns the Sienci keepout off around rack moves', () => {
+  const base = { slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5, clampAuxOutput: 1 };
+  const runM6 = (extra, tool = 0) => {
+    const commands = [{ command: 'M6 T2', isOriginal: true }];
+    onBeforeCommand(commands, { edition: 'pro', machineState: { tool, mpos: { x: 10, y: 20 } }, tools: [] },
+      buildInitialConfig({ ...base, ...extra }));
+    return commands.map((c) => c.command.trim());
+  };
+
+  test('off before the first rack move, back on after the change', () => {
+    const lines = runM6({ atcProfile: 'sienci' }, 1);
+    const off = lines.findIndex((l) => l.startsWith('M960 P0'));
+    const on = lines.findIndex((l) => l.startsWith('M960 P1'));
+    const firstXY = lines.findIndex((l) => /^G53 G0 X/.test(l));
+    assert.ok(off >= 0 && on > off, 'both present, off first');
+    assert.ok(off < firstXY, 'off before any XY move');
+    assert.ok(on > lines.findIndex((l) => l.startsWith('M61 Q2')), 'on after the new tool is in');
+  });
+
+  test('other profiles send no M960', () => {
+    assert.ok(!runM6({ atcProfile: 'custom' }, 1).some((l) => l.startsWith('M960')));
+    assert.ok(!runM6({}, 1).some((l) => l.startsWith('M960')));
+  });
+
+  test('$slotN (parks in the rack) only turns it off', () => {
+    const commands = [{ command: '$slot2', isOriginal: true }];
+    onBeforeCommand(commands, { edition: 'pro', machineState: { tool: 0, mpos: { x: 10, y: 20 } }, tools: [] },
+      buildInitialConfig({ ...base, atcProfile: 'sienci' }));
+    const lines = commands.map((c) => c.command.trim());
+    assert.ok(lines.some((l) => l.startsWith('M960 P0')));
+    assert.ok(!lines.some((l) => l.startsWith('M960 P1')));
+  });
+});
