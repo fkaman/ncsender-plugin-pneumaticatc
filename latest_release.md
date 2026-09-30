@@ -1,4 +1,4 @@
 ## What's Changed
 
-### ✨ New Features
-- On Sienci machines, the plugin now turns off Sienci's keepout while the machine moves to and from the tool rack
+### 🐛 Bug Fixes
+- Fixed the Sienci slide speed being saved 25.4 times too fast when using imperial units
