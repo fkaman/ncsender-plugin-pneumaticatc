@@ -1,4 +1,4 @@
 ## What's Changed
 
-### 🔧 Improvements
-- The Post Tool Change routine now runs before the machine returns to the position where the tool change started
+### ✨ New Features
+- On Sienci machines, the plugin now turns off Sienci's keepout while the machine moves to and from the tool rack
