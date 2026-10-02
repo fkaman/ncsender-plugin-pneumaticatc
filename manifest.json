@@ -60,6 +60,26 @@
       "message": "The spindle lifted away from the slot but the tool sensor still detects a tool, so the tool did not stay behind in the rack.<br><br>Check that the holder dropped cleanly into the slot and is not hung up on the cup or fork, and that the drawbar is fully open.<br><br>Click <em>\"Continue\"</em> to carry on from here, or <em>\"Abort\"</em> to stop the tool change.",
       "continueLabel": "Continue"
     },
+    "TOOLRACK_FAULT": {
+      "title": "Tool Rack Not Available",
+      "message": "The tool rack was told to extend, but its <em>available</em> sensor does not confirm it reached the loading position, so the tool change cannot safely continue.<br><br>Check that the rack can travel freely, nothing is blocking it, and the actuator has air. Once it is out, click <em>\"Re-check\"</em> — the macro reads the sensor again and only carries on if it now reads good. Click <em>\"Abort\"</em> to stop the tool change.",
+      "continueLabel": "Re-check"
+    },
+    "TOOLRACK_FAULT_UNVERIFIED": {
+      "title": "Tool Rack Still Not Available",
+      "message": "The rack has been re-checked twice and the <em>available</em> sensor still does not confirm it is extended.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The spindle will move to a rack position that may not be where the rack actually is, which risks a crash or a dropped tool. Only continue if you have a reason to believe the sensor is wrong rather than the rack.<br><br>Click <em>\"Abort\"</em> to stop the tool change, which is the safe choice.",
+      "continueLabel": "Continue anyway"
+    },
+    "TOOLRACK_RETRACT_FAULT": {
+      "title": "Tool Rack Not Retracted",
+      "message": "The tool rack was told to retract, but its <em>unavailable</em> sensor does not confirm it is clear of the machining area.<br><br>Check that the rack can travel freely and nothing is blocking it. Once it is back, click <em>\"Re-check\"</em> — the macro reads the sensor again and only carries on if it now reads good. Click <em>\"Abort\"</em> to stop.",
+      "continueLabel": "Re-check"
+    },
+    "TOOLRACK_RETRACT_FAULT_UNVERIFIED": {
+      "title": "Tool Rack Still Not Retracted",
+      "message": "The rack has been re-checked twice and the <em>unavailable</em> sensor still does not confirm it is retracted.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The job will resume with the rack possibly still in the machining area, which risks a crash. Only continue if you have a reason to believe the sensor is wrong rather than the rack.<br><br>Click <em>\"Abort\"</em> to stop, which is the safe choice.",
+      "continueLabel": "Continue anyway"
+    },
     "FAILED_UNLOAD_TOOL": {
       "title": "Unload Failed",
       "message": "Failed to unload {toolNumber}. Please manually remove the bit, then click <em>\"Continue\"</em> to proceed or <em>\"Abort\"</em> to cancel.",

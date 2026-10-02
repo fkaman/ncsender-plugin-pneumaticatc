@@ -2747,3 +2747,303 @@ describe('Sienci profile slide speed', () => {
     assert.equal(buildInitialConfig({ slideSpeed: 900 }).slideSpeed, 900);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Retractable tool rack: a digital output extends the rack into position
+// before any load/unload and retracts it clear afterward, so it is out of the
+// machining envelope the rest of the time. Two independent end-stop sensors
+// (available / unavailable), each its own optional guard. Off unless the
+// "Moving tool rack" switch is on AND an output is chosen.
+// ---------------------------------------------------------------------------
+describe('retractable tool rack', () => {
+  // Earlier tests leave the module in Pro mode, which prefixes G53 legs with
+  // $keepout_off; the rack assertions are about order, not about that prefix.
+  const mLines = (gcode) => motionLines(gcode).map((l) => l.replace(/^\$keepout_off\s+/, ''));
+  const BASE = {
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: 0,
+    clampAuxOutput: 2, rackHolding: 'Cup', toolsetter: { x: 300, y: -200 },
+    manualTool: { x: 321, y: -966 }, tlsMode: 'always',
+  };
+  const PINS = { toolRackAuxOutput: 3, toolRackAvailableSensorInput: 6, toolRackUnavailableSensorInput: 7 };
+  const NO_RACK = buildInitialConfig({ ...BASE });
+  const LEGACY = buildInitialConfig({ ...BASE, ...PINS });                      // pins, no switch field
+  const ON = buildInitialConfig({ ...BASE, ...PINS, toolRackEnabled: true });
+  const OFF = buildInitialConfig({ ...BASE, ...PINS, toolRackEnabled: false });
+  const ORIGIN = { x: 60, y: 120 };
+  const program = (s, from, to, opts = {}) =>
+    buildToolChangeProgram(s, from, to, { x: 0, y: 0 }, 0, ORIGIN, opts).join('\n');
+  const expand = (command, settings, tool = 1, ctx = {}) => {
+    const commands = [{ command, isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool, mpos: ORIGIN }, tools: [], ...ctx }, { ...settings });
+    return commands.map((c) => c.command).join('\n');
+  };
+  const TRANSITIONS = [[0, 1], [1, 2], [2, 1], [1, 0], [0, 4], [4, 5], [4, 1], [1, 4]];
+
+  describe('settings', () => {
+    test('with nothing configured the rack is off and every pin is -1', () => {
+      assert.equal(NO_RACK.toolRackEnabled, false);
+      assert.equal(NO_RACK.toolRackAuxOutput, -1);
+      assert.equal(NO_RACK.toolRackAvailableSensorInput, -1);
+      assert.equal(NO_RACK.toolRackUnavailableSensorInput, -1);
+      assert.equal(buildInitialConfig({ toolRackAuxOutput: 'M8' }).toolRackAuxOutput, 'M8');
+      assert.equal(buildInitialConfig({ toolRackAvailableSensorInput: '6' }).toolRackAvailableSensorInput, 6);
+    });
+
+    test('a config with an output but no switch is on; an explicit value always wins', () => {
+      assert.equal(LEGACY.toolRackEnabled, true, 'saved before the switch existed: on exactly because an output was set');
+      assert.equal(buildInitialConfig({ toolRackAuxOutput: 'M8' }).toolRackEnabled, true);
+      assert.equal(buildInitialConfig({ toolRackAuxOutput: -1 }).toolRackEnabled, false);
+      assert.equal(OFF.toolRackEnabled, false);
+      assert.equal(buildInitialConfig({ toolRackEnabled: true }).toolRackEnabled, true, 'on with no output may be stored');
+    });
+
+    test('off keeps the pins', () => {
+      assert.equal(OFF.toolRackAuxOutput, 3);
+      assert.equal(OFF.toolRackAvailableSensorInput, 6);
+      assert.equal(OFF.toolRackUnavailableSensorInput, 7);
+    });
+  });
+
+  describe('off', () => {
+    test('no output chosen: no rack lines, no dialogs', () => {
+      const p = program(NO_RACK, 0, 1);
+      assert.ok(!p.includes('M64 P3') && !p.includes('M65 P3'));
+      assert.ok(!p.includes('TOOLRACK'));
+    });
+
+    test('switched off with pins configured: every program equals one with no rack at all', () => {
+      for (const [from, to] of TRANSITIONS) {
+        assert.equal(program(OFF, from, to), program(NO_RACK, from, to), `T${from}->T${to}`);
+      }
+      const p = program(OFF, 0, 1);
+      assert.ok(!p.includes('M64 P3') && !p.includes('M65 P3') && !p.includes('TOOLRACK') && !p.includes('M66 P6'));
+    });
+
+    test('switched on but no output chosen: nothing to drive, programs equal no rack at all', () => {
+      const noOutput = buildInitialConfig({ ...BASE, toolRackEnabled: true, toolRackAvailableSensorInput: 6, toolRackUnavailableSensorInput: 7 });
+      for (const [from, to] of TRANSITIONS) {
+        assert.equal(program(noOutput, from, to), program(NO_RACK, from, to), `T${from}->T${to}`);
+      }
+    });
+
+    test('a config saved before the switch existed behaves exactly like an explicitly switched-on rack', () => {
+      for (const [from, to] of TRANSITIONS) {
+        assert.equal(program(LEGACY, from, to), program(ON, from, to), `T${from}->T${to}`);
+      }
+    });
+
+    test('an unsanitized settings object keeps the old meaning: on when an output is set, only an explicit false switches it off', () => {
+      const raw = { ...BASE, ...PINS };
+      assert.ok(program(raw, 0, 1).includes('M64 P3'));
+      assert.ok(!program({ ...BASE }, 0, 1).includes('M64 P3'));
+      assert.ok(!program({ ...raw, toolRackEnabled: false }, 0, 1).includes('M64 P3'));
+    });
+
+    test('switching off and back on loses nothing: the settings round-trip to the same program', () => {
+      assert.equal(program(buildInitialConfig({ ...OFF, toolRackEnabled: true }), 1, 2), program(ON, 1, 2));
+    });
+  });
+
+  describe('M6', () => {
+    test('output configured, sensors not: fires the aux lines with no M66 verification', () => {
+      const outputOnly = buildInitialConfig({ ...BASE, toolRackAuxOutput: 3 });
+      const p = program(outputOnly, 0, 1);
+      assert.ok(p.includes('M64 P3') && p.includes('M65 P3'));
+      assert.doesNotMatch(p, /M66/);
+    });
+
+    test('an unsanitized settings object never builds M66 Pundefined', () => {
+      const p = program({ ...BASE, toolRackAuxOutput: 3 }, 0, 1);
+      assert.doesNotMatch(p, /Pundefined|M66/);
+    });
+
+    test('M7/M8 outputs: extend is the M-code, retract is M9', () => {
+      const lines = mLines(program(buildInitialConfig({ ...BASE, toolRackAuxOutput: 'M8' }), 0, 1));
+      assert.ok(lines.includes('M8') && lines.includes('M9'));
+    });
+
+    test('extend fires and is verified before any unload/load motion', () => {
+      const p = program(ON, 0, 1);
+      const lines = mLines(p);
+      const extendIdx = lines.indexOf('M64 P3');
+      const readIdx = lines.indexOf('M66 P6 L3 Q0.01');
+      const firstMotion = lines.findIndex((l) => /^G53 G[01] [XY]/.test(l));
+      assert.ok(extendIdx !== -1 && readIdx !== -1 && firstMotion !== -1);
+      assert.ok(extendIdx < readIdx && readIdx < firstMotion, 'rack extends and verifies before any approach motion');
+      assert.ok(p.includes('(MSG, PLUGIN_PNEUMATICATC:TOOLRACK_FAULT)'));
+    });
+
+    test('retract fires after everything rack-related and is verified', () => {
+      const p = program(ON, 0, 1);
+      const lines = mLines(p);
+      const retractIdx = lines.indexOf('M65 P3');
+      assert.ok(retractIdx !== -1);
+      assert.ok(lines.indexOf('M66 P7 L3 Q0.01', retractIdx) > retractIdx, 'verification follows the retract line');
+      assert.ok(p.includes('(MSG, PLUGIN_PNEUMATICATC:TOOLRACK_RETRACT_FAULT)'));
+      let lastM61 = -1;
+      lines.forEach((l, i) => { if (/^M61 Q/.test(l)) lastM61 = i; });
+      assert.ok(retractIdx > lastM61, 'after the change has reported its outcome');
+    });
+
+    test('a rack-to-rack swap extends once and retracts once, not between unload and load', () => {
+      const lines = mLines(program(ON, 1, 2));
+      assert.equal(lines.filter((l) => l === 'M64 P3').length, 1);
+      assert.equal(lines.filter((l) => l === 'M65 P3').length, 1);
+    });
+
+    test('pure manual-to-manual never touches the rack', () => {
+      const p = program(ON, 4, 5);
+      assert.ok(!p.includes('M64 P3') && !p.includes('M65 P3'));
+    });
+
+    test('a bare unload to T0 from a rack slot still extends and retracts', () => {
+      const p = program(ON, 1, 0);
+      assert.ok(p.includes('M64 P3') && p.includes('M65 P3'));
+    });
+
+    test('extend and retract each force their own Z-safe move, then a G4 P0 planner sync, before actuating', () => {
+      const lines = mLines(program(ON, 0, 1));
+      const extendIdx = lines.indexOf('M64 P3');
+      const retractIdx = lines.indexOf('M65 P3');
+      assert.ok(extendIdx > 1 && retractIdx > 1);
+      assert.equal(lines[extendIdx - 2], `G53 G0 Z${ON.zSafe}`);
+      assert.equal(lines[extendIdx - 1], 'G4 P0', 'a zero dwell so the planner fully stops first');
+      assert.equal(lines[retractIdx - 2], `G53 G0 Z${ON.zSafe}`);
+      assert.equal(lines[retractIdx - 1], 'G4 P0');
+    });
+  });
+
+  describe('other commands', () => {
+    test('$SLOT<n> extends before jogging to the slot but does NOT retract afterward', () => {
+      const lines = mLines(buildSlotNav(ON, 1, ORIGIN));
+      const extendIdx = lines.indexOf('M64 P3');
+      const firstXY = lines.findIndex((l) => /^G53 G0 X/.test(l));
+      assert.ok(extendIdx !== -1 && extendIdx < firstXY);
+      assert.ok(!lines.includes('M65 P3'), 'the operator jogged here deliberately');
+    });
+
+    test('$TLS extends before the probe and retracts after', () => {
+      const lines = mLines(expand('$TLS', ON));
+      const extendIdx = lines.indexOf('M64 P3');
+      const probeIdx = lines.findIndex((l) => /^G38\.2/.test(l));
+      const retractIdx = lines.indexOf('M65 P3');
+      assert.ok(extendIdx !== -1 && probeIdx !== -1 && retractIdx !== -1);
+      assert.ok(extendIdx < probeIdx && probeIdx < retractIdx);
+    });
+
+    test('$MEASURE_TLO Tn with n already in the spindle extends before the probe and retracts after', () => {
+      const lines = mLines(expand('$MEASURE_TLO T1', ON, 1));
+      const extendIdx = lines.indexOf('M64 P3');
+      const probeIdx = lines.findIndex((l) => /^G38\.2/.test(l));
+      const retractIdx = lines.indexOf('M65 P3');
+      assert.ok(extendIdx !== -1 && probeIdx !== -1 && retractIdx !== -1);
+      assert.ok(extendIdx < probeIdx && probeIdx < retractIdx);
+    });
+
+    test('$H is not touched: there is no post-home TLS to bracket', () => {
+      const commands = [{ command: '$H', isOriginal: true }];
+      onBeforeCommand(commands, { machineState: { tool: 1, mpos: ORIGIN }, tools: [] }, { ...ON });
+      assert.deepEqual(commands.map((c) => c.command.trim()), ['$H']);
+    });
+
+    test('with the switch off, $SLOT, $TLS and Measure All Tools never drive it', () => {
+      assert.ok(!buildSlotNav(OFF, 1, ORIGIN).includes('M64 P3'));
+      assert.ok(!expand('$TLS', OFF).includes('M64 P3'));
+      assert.ok(!expand('$MEASURE_TLO T1', OFF, 1).includes('M64 P3'));
+      assert.ok(!expand('$MEASURE_TLO T2', OFF, 1).includes('M64 P3'));
+    });
+
+    test('$MEASURE_TLO that swaps a rack tool extends and retracts like an M6', () => {
+      const p = expand('$MEASURE_TLO T2', ON, 1);
+      assert.ok(p.includes('M64 P3'));
+      assert.ok(!p.includes('M65 P3') || p.indexOf('M65 P3') > p.indexOf('G38.2'));
+    });
+  });
+
+  // Where the rack sits in a v0.1.48 program: the Z0 carry-over touch-off,
+  // Post Tool Change and the final leg all share the swap with it.
+  describe('with the v0.1.48 sequence', () => {
+    const post = '(POST TC)\nG53 G0 X500 Y500';
+    const withPost = buildInitialConfig({ ...BASE, ...PINS, toolRackEnabled: true, postToolChangeGcode: post, tlsMode: 'library' });
+    const tools = [
+      { toolNumber: 1, offsets: { x: 0, y: 0, z: -46.63, tlsZ: 0 } },
+      { toolNumber: 2, offsets: { x: 0, y: 0, z: -33.78, tlsZ: 0 } },
+    ];
+    const run = (settings, command, ms = {}) => {
+      const commands = [{ command, isOriginal: true }];
+      onBeforeCommand(commands, {
+        machineState: { tool: 1, mpos: ORIGIN, toolLengthSet: true, ...ms }, tools,
+      }, { ...settings });
+      return commands.map((c) => c.command.trim());
+    };
+    const leg = (l) => /G53 G0 X60 Y120$/.test(l);
+
+    test('the retract comes after Post Tool Change and the final leg back to the start', () => {
+      const lines = run(withPost, 'M6 T2');
+      const p = lines.indexOf('(POST TC)');
+      const back = lines.findIndex(leg);
+      const retract = lines.indexOf('M65 P3');
+      assert.ok(p >= 0 && back > p && retract > back, `post < leg < retract\n${lines.join('\n')}`);
+    });
+
+    test('Z0 carry-over: the rack is out for the touch-off, and retracts only after the shared endif', () => {
+      const lines = run(withPost, 'M6 T2', { toolLengthSet: false, zeroSetWithoutTlr: true, zeroTool: 1 });
+      const extend = lines.indexOf('M64 P3');
+      const start = lines.findIndex((l) => l.includes('ZERO_KEEP_START'));
+      const end = lines.indexOf('o7101 endif');
+      const retract = lines.indexOf('M65 P3');
+      assert.ok(extend >= 0 && start > extend, 'extended before the touch-off starts');
+      assert.ok(end >= 0 && retract > end, 'retracted after both endings');
+      assert.equal(lines.filter((l) => l === 'M64 P3').length, 1);
+      assert.equal(lines.filter((l) => l === 'M65 P3').length, 1, 'once, outside the branches');
+    });
+
+    test('the probe holder is not the rack: T0 to the probe never touches it', () => {
+      const cfg = buildInitialConfig({ ...BASE, ...PINS, toolRackEnabled: true,
+        probe: { enabled: true, toolNumber: 99, x: 300, y: -500, z: -100, holding: 'Cup' } });
+      const p = program(cfg, 0, 99);
+      assert.ok(p.includes('probeLoad'), 'sanity: this is the probe pickup');
+      assert.ok(!p.includes('M64 P3') && !p.includes('M65 P3'));
+      assert.ok(!program(cfg, 99, 0).includes('M64 P3'), 'nor does putting it back');
+    });
+
+    test('a rack tool swapped for the probe extends once and retracts once', () => {
+      const cfg = buildInitialConfig({ ...BASE, ...PINS, toolRackEnabled: true,
+        probe: { enabled: true, toolNumber: 99, x: 300, y: -500, z: -100, holding: 'Cup' } });
+      const lines = mLines(program(cfg, 1, 99));
+      assert.equal(lines.filter((l) => l === 'M64 P3').length, 1);
+      assert.equal(lines.filter((l) => l === 'M65 P3').length, 1);
+    });
+
+    test('Tool ID: a tool that the library puts in a rack pocket drives the rack; an unmapped one is manual and does not', () => {
+      const lib = [{ toolId: 7, toolNumber: 2, offsets: { x: 0, y: 0, z: -30, tlsZ: 0 } }];
+      const mapped = [{ command: 'M6 T7', isOriginal: true }];
+      onBeforeCommand(mapped, { machineState: { tool: 0, mpos: ORIGIN }, tools: lib }, { ...ON });
+      const mappedText = mapped.map((c) => c.command).join('\n');
+      assert.ok(mappedText.includes('M64 P3') && mappedText.includes('M65 P3'), 'Tool ID 7 sits in pocket 2');
+      assert.ok(mappedText.includes('M61 Q7'), 'M61 still reports the Tool ID');
+
+      const unmapped = [{ command: 'M6 T8', isOriginal: true }];
+      onBeforeCommand(unmapped, { machineState: { tool: 0, mpos: ORIGIN }, tools: lib }, { ...ON });
+      const unmappedText = unmapped.map((c) => c.command).join('\n');
+      assert.ok(!unmappedText.includes('M64 P3') && !unmappedText.includes('M65 P3'), 'a hand-loaded tool never touches the rack');
+    });
+  });
+
+  // Every guard needs its own o-word numbers; a collision inside one macro
+  // makes the controller mis-match if/endif.
+  test('o-word labels are unique with every sensor and the rack guards on, across every command', () => {
+    const everything = buildInitialConfig({ ...BASE, pressureInput: 2, drawbarInput: 4, toolSensorInput: 5,
+      ...PINS, toolRackEnabled: true, taperBlow: true,
+      probe: { enabled: true, toolNumber: 99, x: 300, y: -500, z: -100, holding: 'Cup' } });
+    const labels = (text) => (text.match(/\bo\d+\s+if\b/gi) || []).map((l) => l.split(/\s+/)[0].toLowerCase());
+    const programs = [
+      program(everything, 1, 2), program(everything, 0, 1), program(everything, 1, 99), program(everything, 99, 2),
+      expand('$TLS', everything), expand('$MEASURE_TLO T1', everything), expand('$SLOT1', everything),
+    ];
+    for (const text of programs) {
+      const found = labels(text);
+      assert.equal(new Set(found).size, found.length, `duplicate o-word label in: ${found.join(', ')}`);
+    }
+  });
+});

@@ -289,6 +289,21 @@ const buildInitialConfig = (raw = {}) => {
     // grblHAL aux INPUT carrying the tool-in-spindle sensor (Sienci's
     // _tc_input_tis — pullstud / spindle proximity). -1 = not wired.
     toolSensorInput: sanitizeAuxInput(raw.toolSensorInput),
+    // Retractable tool rack: a digital output extends the rack into position
+    // for a load/unload and retracts it clear afterward, so it doesn't sit in
+    // the machining envelope during a job. Only driven when switched on AND an
+    // output is chosen (see rackActive). A config saved without the switch
+    // keeps its old meaning: on exactly when an output was set.
+    // Two independent end-stop sensors, NOT one sensor read both ways — a
+    // single sensor can't tell "stuck mid-travel" from either confirmed end.
+    // Each is optional on its own; skipping one just leaves that actuation
+    // unverified. Both read OK = HIGH; invert via $370 if wired the other way.
+    toolRackEnabled: raw.toolRackEnabled === undefined
+      ? sanitizeAuxOutput(raw.toolRackAuxOutput) !== -1
+      : !!raw.toolRackEnabled,
+    toolRackAuxOutput: sanitizeAuxOutput(raw.toolRackAuxOutput),
+    toolRackAvailableSensorInput: sanitizeAuxInput(raw.toolRackAvailableSensorInput),
+    toolRackUnavailableSensorInput: sanitizeAuxInput(raw.toolRackUnavailableSensorInput),
     // Taper blow / cone clean plumbed off the drawbar valve (Sienci kit).
     // See DEDUST_* above for what it changes in the sequence.
     taperBlow: !!raw.taperBlow,
@@ -719,6 +734,12 @@ function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }
   const tlsRoutine = createToolLengthSetRoutine(settings, toolOffsets, options).join('\n');
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
+  // Both callers ($TLS and Measure All Tools' "already in the spindle" step)
+  // probe on the toolsetter, which needs the rack extended the same as any
+  // rack-slot interaction — baked in here once rather than in each caller.
+  // No-ops when the rack isn't switched on and configured.
+  const rackExtend = extendToolRack(settings, 430);
+  const rackRetract = retractToolRack(settings, 440);
   let tlsExitMove = createToolLengthSetExitMove(settings, toolOffsets, options);
   // With the origin known the exit ends there; run Post Tool Change before
   // that last move, which then goes through the core's keepout check.
@@ -737,9 +758,11 @@ function createToolLengthSetProgram(settings, toolOffsets = { x: 0, y: 0, z: 0 }
     ${modalSafe(preCmd, 'pre')}
     #<return_units> = [20 + #<_metric>]
     G21
+    ${rackExtend}
     ${tlsRoutine}
     G53 G0 Z${settings.zSafe}
     ${tlsExitMove}
+    ${rackRetract}
     G4 P0
     G[#<return_units>]
     ${postAtEnd ? modalSafe(postCmd, 'post') : ''}
@@ -1372,6 +1395,101 @@ function toolGuard(settings, oNum, expect, retreat) {
   );
 }
 
+// === Retractable tool rack ===
+//
+// A rack mounted on an actuator that extends it into position for a
+// load/unload and retracts it clear of the machining envelope the rest of
+// the time. One digital output drives it (ON extends, OFF retracts); two
+// independent end-stop inputs confirm each end of travel. The whole feature
+// is off unless it is switched on (toolRackEnabled) and the output is
+// configured.
+
+// Unlike the drawbar and tool checks above, a rack actuator takes real time
+// and can be helped along by hand, so this guard keeps the unrolled read /
+// Re-check / Re-check / "continue unverified" shape of pressureGuard (see
+// there for why it can't be a `while`). `oNum..oNum+2` are its o-word
+// numbers; every call site needs its own, spaced to not collide in one macro.
+// Returns '' for an unwired input.
+function rackSensorGuard(input, faultMsg, unverifiedMsg, oNum) {
+  if (!auxInputConfigured(input)) return '';
+  const read = `M66 P${input} L3 Q0.01\n    G4 P0.1`;
+  const retry = (n) => `
+    o${n} if [#5399 EQ -1]
+      (MSG, PLUGIN_PNEUMATICATC:${faultMsg})
+      M0
+      ${read}
+    o${n} endif`;
+  return `
+    ${read}
+    ${retry(oNum).trim()}
+    ${retry(oNum + 1).trim()}
+    o${oNum + 2} if [#5399 EQ -1]
+      (MSG, PLUGIN_PNEUMATICATC:${unverifiedMsg})
+      M0
+    o${oNum + 2} endif
+  `.trim();
+}
+
+// Two separate guards with their own dialogs: "rack didn't confirm
+// available" and "rack didn't confirm retracted" mean different things to the
+// operator. Both OK = HIGH (L3 waits for HIGH).
+function toolRackAvailableGuard(settings, oNum) {
+  return rackSensorGuard(settings.toolRackAvailableSensorInput, 'TOOLRACK_FAULT', 'TOOLRACK_FAULT_UNVERIFIED', oNum);
+}
+function toolRackUnavailableGuard(settings, oNum) {
+  return rackSensorGuard(settings.toolRackUnavailableSensorInput, 'TOOLRACK_RETRACT_FAULT', 'TOOLRACK_RETRACT_FAULT_UNVERIFIED', oNum);
+}
+
+function rackOutputConfigured(settings) {
+  return settings.toolRackAuxOutput === 'M7' || settings.toolRackAuxOutput === 'M8'
+    || (typeof settings.toolRackAuxOutput === 'number' && settings.toolRackAuxOutput >= 0);
+}
+
+// The rack is only driven when it is switched on AND an output is chosen —
+// an enabled rack with no output has nothing to drive. Only an explicit
+// `false` switches it off: an unsanitized settings object that predates the
+// toggle has no toolRackEnabled at all and keeps its old meaning (on exactly
+// when an output is configured).
+function rackActive(settings) {
+  return settings.toolRackEnabled !== false && rackOutputConfigured(settings);
+}
+
+// Fire the rack actuator, then verify it got there if that end's sensor is
+// wired. Each forces its own Z-safe move first rather than trusting the
+// caller to already be at a safe height: moving the rack while the spindle is
+// still down near slot depth risks the rack travelling into its path. A
+// harmless no-op when the spindle is already there.
+//
+// G4 P0 forces a hard planner sync point: unlike two consecutive G0 moves,
+// which the controller can blend instead of fully stopping in between, a
+// dwell (even a zero-length one) can't start until all queued motion has
+// truly come to rest. That's what keeps the rack from actuating while the
+// Z-safe move above is still in flight — reported on hardware as the rack
+// retracting while the spindle was still on its way up. The dwell time itself
+// is moot, so there's nothing to configure.
+//
+// Returns '' entirely when the rack isn't switched on and configured.
+function extendToolRack(settings, oNum) {
+  if (!rackActive(settings)) return '';
+  const { on } = auxOnOff(settings.toolRackAuxOutput);
+  return `
+    G53 G0 Z${settings.zSafe}
+    G4 P0
+    ${on}
+    ${toolRackAvailableGuard(settings, oNum)}
+  `.trim();
+}
+function retractToolRack(settings, oNum) {
+  if (!rackActive(settings)) return '';
+  const { off } = auxOnOff(settings.toolRackAuxOutput);
+  return `
+    G53 G0 Z${settings.zSafe}
+    G4 P0
+    ${off}
+    ${toolRackUnavailableGuard(settings, oNum)}
+  `.trim();
+}
+
 function slideFeedrate(settings) {
   return settings.slideSpeed > 0 ? settings.slideSpeed : 500;
 }
@@ -1980,6 +2098,18 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   // destination in this program the plugin cannot vouch for.
   exitSection = handFinalLegToCoreCheck(exitSection);
 
+  // Retractable rack: extend once, before any motion toward a rack slot;
+  // retract once, after everything is done, including the exit / toolsetter
+  // routing and the final leg — NOT between unload and load, since a chained
+  // Tm→Tn swap par-walks between two rack slots with the rack deployed the
+  // whole time. Either side of the change touching a rack slot is enough; a
+  // pure manual / probe-holder change never needs it. Extend goes in front of
+  // the Z0 carry-over touch-off too, so the whole swap runs with the rack out.
+  const touchesRack = (currentTool > 0 && currentTool <= settings.slots)
+    || (toolNumber > 0 && toolNumber <= settings.slots);
+  const rackExtend = touchesRack ? extendToolRack(settings, 400) : '';
+  const rackRetract = touchesRack ? retractToolRack(settings, 410) : '';
+
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
   // Post Tool Change goes in front of the final leg (see splitFinalLeg).
@@ -2058,9 +2188,11 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${sienciKeepout(settings).off}
     ${pressureGuard(settings, 120)}
     G53 G0 Z${settings.zSafe}
+    ${rackExtend}
     ${zeroKeepSection}
     ${unloadSection}
     ${swapBody}
+    ${rackRetract}
     G4 P0
     ${sienciKeepout(settings).on}
     G[#<return_units>]
@@ -2219,8 +2351,13 @@ function buildSlotNav(settings, slotNum, origin = { x: 0, y: 0 }) {
        G53 G0 X${engaged.x} Y${engaged.y}`;
   // Parks in the rack, so the Sienci keepout is only turned off here; the
   // next tool change turns it back on when it finishes.
+  // Extend before jogging over the slot — same reasoning as the M6 path. No
+  // retract afterward: the operator jogged here deliberately (setup /
+  // inspection) and likely wants to stay, unlike a tool change where the rack
+  // has to be clear again before the job resumes.
   return `
     G53 G21 G90 G0 Z${settings.zSafe}
+    ${extendToolRack(settings, 420)}
     ${sienciKeepout(settings).off}
     ${entrance}
   `.trim();

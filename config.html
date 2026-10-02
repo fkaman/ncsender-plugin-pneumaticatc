@@ -1759,7 +1759,7 @@
           </svg>
           <div>
             <strong>Every check here is optional.</strong>
-            Leave a pin on <em>N/A</em> and that check is not added to the tool change at all — a machine with no sensors wired runs exactly as it did before. Inputs are read with <code>M66</code> and are <b>asserted when LOW</b> (the convention Sienci's macros assume); invert the port with <code>$370</code> if yours reads the other way round. Any fault stops the program with a dialog.
+            Leave a pin on <em>N/A</em> and that check is not added to the tool change at all — a machine with no sensors wired runs exactly as it did before. Inputs are read with <code>M66</code> and are <b>asserted when LOW</b> (the convention Sienci's macros assume; the Retractable Tool Rack end-stops are the exception and read OK when HIGH); invert the port with <code>$370</code> if yours reads the other way round. Any fault stops the program with a dialog.
           </div>
         </div>
 
@@ -1825,6 +1825,54 @@
             <select id="pa-adv-input-toolsense" class="pa-select pa-adv-pin">
               <option value="">N/A</option>
             </select>
+          </div>
+        </div>
+
+        <div class="pa-card" id="pa-adv-toolrack-card">
+          <h3 class="pa-card-title">Retractable Tool Rack</h3>
+          <p class="pa-card-help">
+            For a rack mounted on an actuator that extends it into position for a load/unload and retracts it clear for the rest of the job. Switch <em>Moving tool rack</em> on, pick the aux output that drives it, and (optionally) the two aux inputs confirming each end of travel — a separate sensor for available and for unavailable, not one sensor read both ways, so a rack stuck mid-travel is caught instead of read as either end. Unlike the sensors above, both of these read as <b>OK when the input is HIGH</b> — invert the port in firmware (<code>$370</code>) if wired the other way round. Leave it off if your rack doesn't move: nothing changes, and the pins you pick are kept for when you switch it back on.
+          </p>
+
+          <div class="pa-field-inline">
+            <label for="pa-adv-toolrack-enabled">
+              Moving tool rack
+              <span class="pa-help-tip" title="On: the rack is extended before any rack-slot motion and retracted afterwards. Off: the rack is never driven and the pins below are ignored (but remembered).">?</span>
+            </label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-adv-toolrack-enabled">
+              <span class="pa-toggle-slider"></span>
+            </label>
+          </div>
+
+          <div id="pa-adv-toolrack-fields">
+            <div class="pa-form-row">
+              <label class="pa-form-label" for="pa-adv-toolrack-output">
+                Tool Rack Aux Output
+                <span class="pa-help-tip" title="Drives the rack extend/retract actuator. ON extends it into position, OFF retracts it clear. Required when the rack is switched on.">?</span>
+              </label>
+              <select id="pa-adv-toolrack-output" class="pa-select"></select>
+            </div>
+
+            <div class="pa-form-row">
+              <label class="pa-form-label" for="pa-adv-input-toolrack-available">
+                Rack Available Sensor
+                <span class="pa-help-tip" title="Confirms the rack is extended and available for a load/unload. Checked before approaching any slot.">?</span>
+              </label>
+              <select id="pa-adv-input-toolrack-available" class="pa-select pa-adv-pin">
+                <option value="">N/A</option>
+              </select>
+            </div>
+
+            <div class="pa-form-row">
+              <label class="pa-form-label" for="pa-adv-input-toolrack-unavailable">
+                Rack Unavailable Sensor
+                <span class="pa-help-tip" title="Confirms the rack is retracted clear of the machining envelope. Checked after a tool change finishes.">?</span>
+              </label>
+              <select id="pa-adv-input-toolrack-unavailable" class="pa-select pa-adv-pin">
+                <option value="">N/A</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -2010,7 +2058,7 @@
   var AUX_INPUT_FALLBACK = 8;
   var auxInputCount = null;
   var auxOutputCount = null;
-  var PIN_SELECT_IDS = ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolsense'];
+  var PIN_SELECT_IDS = ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolsense', 'pa-adv-input-toolrack-available', 'pa-adv-input-toolrack-unavailable'];
 
   function pinOptionExists(sel, value) {
     return qsa('option', sel).some(function(o) { return o.value === String(value); });
@@ -2584,6 +2632,20 @@
   var rackHoldingSelect = $('pa-rack-holding');
   if (rackHoldingSelect) rackHoldingSelect.addEventListener('change', updateRackHoldingVisibility);
 
+  // Moving tool rack switch: dim and disable the pin fields while it's off.
+  // The values stay in the selects (a disabled select still reports its
+  // value), so gatherFormData keeps saving them and they're still there when
+  // the switch is turned back on.
+  function updateToolRackEnabled() {
+    var box = $('pa-adv-toolrack-enabled');
+    var fields = $('pa-adv-toolrack-fields');
+    if (!box || !fields) return;
+    fields.style.opacity = box.checked ? '' : '0.5';
+    qsa('select', fields).forEach(function(s) { s.disabled = !box.checked; });
+  }
+  var toolRackBox = $('pa-adv-toolrack-enabled');
+  if (toolRackBox) toolRackBox.addEventListener('change', updateToolRackEnabled);
+
   // Probe holder: same rule — Cup drops top-down, Fork slides.
   var segProbeSlideAxis = initSegment('pa-probe-slide-axis');
   var segProbeSlideDir  = initSegment('pa-probe-slide-direction');
@@ -2857,7 +2919,10 @@
         while (select.firstChild) select.removeChild(select.firstChild);
         if (includeDisabled) {
           var opt = document.createElement('option');
-          opt.value = '-1'; opt.textContent = 'Disabled';
+          // Only the tool rack asks for this. "Disabled" would read as a second
+          // on/off next to the Moving tool rack switch; this is just "nothing
+          // chosen yet".
+          opt.value = '-1'; opt.textContent = 'Select output…';
           select.appendChild(opt);
         }
         ['M8', 'M7'].forEach(function(code) {
@@ -2882,6 +2947,7 @@
         }
       }
       fill($('pa-clamp-aux'), false, initialConfig.clampAuxOutput);
+      fill($('pa-adv-toolrack-output'), true, initialConfig.toolRackAuxOutput);
       // Re-apply the profile now the real option names exist, so a locked
       // field shows "Aux Out P1" (or the user's alias) rather than a
       // placeholder — and so the value survives the list being rebuilt.
@@ -2981,6 +3047,46 @@
     setPinValue('pa-adv-input-drawbar', (typeof savedDrawbar === 'number' && savedDrawbar >= 0) ? savedDrawbar : '');
     var savedToolSense = initialConfig.toolSensorInput;
     setPinValue('pa-adv-input-toolsense', (typeof savedToolSense === 'number' && savedToolSense >= 0) ? savedToolSense : '');
+    // Retractable tool rack — two independent end-stop sensors, same
+    // -1/missing = blank convention. The output itself is seeded by
+    // populateAuxOutputs(), once its option list actually exists.
+    var savedRackAvailable = initialConfig.toolRackAvailableSensorInput;
+    setPinValue('pa-adv-input-toolrack-available', (typeof savedRackAvailable === 'number' && savedRackAvailable >= 0) ? savedRackAvailable : '');
+    var savedRackUnavailable = initialConfig.toolRackUnavailableSensorInput;
+    setPinValue('pa-adv-input-toolrack-unavailable', (typeof savedRackUnavailable === 'number' && savedRackUnavailable >= 0) ? savedRackUnavailable : '');
+    // Seed the saved rack output now, not only from populateAuxOutputs(): if
+    // the controller's output list never loads (offline), an empty select
+    // would save as -1 and silently turn a configured rack off. The later
+    // fill() replaces these placeholders with the properly named options.
+    // Skipped when fill() already won the race and built the real list.
+    (function seedRackOutput() {
+      var sel = $('pa-adv-toolrack-output');
+      if (!sel || sel.options.length > 0) return;
+      var saved = initialConfig.toolRackAuxOutput;
+      var none = document.createElement('option');
+      none.value = '-1'; none.textContent = 'Select output…';
+      sel.appendChild(none);
+      if (saved === 'M7' || saved === 'M8' || (typeof saved === 'number' && saved >= 0)) {
+        var cur = document.createElement('option');
+        cur.value = String(saved);
+        cur.textContent = /^M[78]$/.test(String(saved)) ? String(saved) : ('Aux Out P' + saved);
+        sel.appendChild(cur);
+        sel.value = String(saved);
+      }
+    })();
+    // The switch. A config saved before it existed has no toolRackEnabled:
+    // the rack was on exactly when an output was configured, so show it that
+    // way (commands.js derives the same default) instead of switching an
+    // existing rack off on the next save.
+    (function loadToolRackToggle() {
+      var box = $('pa-adv-toolrack-enabled');
+      if (!box) return;
+      var saved = initialConfig.toolRackEnabled;
+      var out = initialConfig.toolRackAuxOutput;
+      var hasOutput = out === 'M7' || out === 'M8' || (typeof out === 'number' && out >= 0);
+      box.checked = (typeof saved === 'boolean') ? saved : hasOutput;
+      updateToolRackEnabled();
+    })();
     $('pa-adv-taper-blow').checked = !!initialConfig.taperBlow;
 
     // Profile last, so it can lock/overwrite the pin fields it owns. Silent:
@@ -3181,6 +3287,21 @@
       })(),
       toolSensorInput: (function() {
         var sel = $('pa-adv-input-toolsense');
+        var n = Number.parseInt(sel ? sel.value : '', 10);
+        return Number.isFinite(n) && n >= 0 ? n : -1;
+      })(),
+      // Retractable tool rack: the on/off switch, plus the aux output and two
+      // independent end-stop sensors. The pins are saved even while the
+      // switch is off, so turning it back on doesn't mean picking them again.
+      toolRackEnabled: !!($('pa-adv-toolrack-enabled') && $('pa-adv-toolrack-enabled').checked),
+      toolRackAuxOutput: parseAuxValue($('pa-adv-toolrack-output')),
+      toolRackAvailableSensorInput: (function() {
+        var sel = $('pa-adv-input-toolrack-available');
+        var n = Number.parseInt(sel ? sel.value : '', 10);
+        return Number.isFinite(n) && n >= 0 ? n : -1;
+      })(),
+      toolRackUnavailableSensorInput: (function() {
+        var sel = $('pa-adv-input-toolrack-unavailable');
         var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
@@ -3398,6 +3519,12 @@
   }
 
   async function doSave() {
+    // A rack that is switched on but has no output has nothing to drive:
+    // saving it would look enabled and quietly do nothing on every change.
+    var rackSwitch = $('pa-adv-toolrack-enabled');
+    if (rackSwitch && rackSwitch.checked && parseAuxValue($('pa-adv-toolrack-output')) === -1) {
+      throw new Error('The moving tool rack is switched on but no aux output is selected. Pick the output that drives it (Advanced tab), or switch the rack off.');
+    }
     var payload = gatherFormData();
     var res = await fetch(BASE_URL + '/api/plugins/com.ncsender.pneumaticatc/settings', {
       method: 'PUT',

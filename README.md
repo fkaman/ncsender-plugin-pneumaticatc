@@ -18,6 +18,15 @@ Automatic tool changer support for pneumatic ATC systems that use a single aux o
 - **Linear array** – uniform spacing driven by Slot 1 position + orientation (X/Y) + direction (±) + slot distance
 - **Custom** – per-slot X/Y coordinates in a table, useful for multi-row racks or non-uniform spacing. Switching from Linear to Custom offers to auto-populate the table from the Linear values so you can start close and fine-tune
 
+### Retractable Tool Rack
+For a rack mounted on an actuator that extends it into position for a load/unload and retracts it clear of the machining area for the rest of the job.
+- One aux output drives it (**ON extends, OFF retracts**), switched on with the **Moving tool rack** toggle in **Advanced**. With the toggle off the rack is never driven and the pins are ignored (but remembered).
+- The rack is extended once, before the first motion toward a rack slot, and retracted once after the whole change, including the toolsetter trip, Post Tool Change and the final leg back to where the change started. A rack-to-rack swap does not retract between the unload and the load; a manual-to-manual or probe-holder change never touches the rack.
+- Both moves first go to Z-safe and wait for the planner to stop (`G4 P0`), so the rack never moves while the spindle is still travelling up.
+- Two optional end-stop inputs confirm each end of travel: **Rack Available** after extending, **Rack Unavailable** after retracting. They are separate sensors, not one read both ways, so a rack stuck mid-travel is caught. Both read **OK when HIGH** (invert the port with `$370` if yours reads the other way). A miss pauses the job with a Re-check / Abort dialog; after two re-checks the dialog says plainly that continuing is unverified.
+- `$SLOT1` … `$SLOT8` extend the rack but never retract it, since you jogged there on purpose. `$TLS` and Measure All Tools extend before the probe and retract after.
+- Nothing changes for machines that don't use it: with no rack configured, the generated programs are identical to a stock install.
+
 ### Tool Length Setter (TLS)
 - **Probe after every tool change** – always runs TLS on `M6`
 - **Use tool library offset (probe when missing)** – reuses the stored TLO from the tool library; probes only when a tool has no offset yet, then writes the value back so subsequent swaps skip the probe
@@ -62,6 +71,14 @@ Open **Plugins → Pneumatic ATC** from the toolbar. The dialog uses a left-side
 | Seek Distance / Feedrate | Probe motion parameters |
 | TLS Aux Output | Optional signal to enable the probe |
 | Perform TLS after first `$H` | Run TLS once per session after the first home |
+
+### Advanced → Retractable Tool Rack
+| Setting | Notes |
+|---------|-------|
+| Moving tool rack | Master switch. Off = the rack is never driven; the pins below are kept |
+| Tool Rack Aux Output | `M7` / `M8` / numeric aux pin. ON extends, OFF retracts. Required when the switch is on |
+| Rack Available Sensor | Optional aux input; must read HIGH after the rack extends |
+| Rack Unavailable Sensor | Optional aux input; must read HIGH after the rack retracts |
 
 ### Manual
 Machine XY where the spindle parks and prompts the operator when the requested tool number is outside the rack.
