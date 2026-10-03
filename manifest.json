@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.48-rack.2",
+  "version": "0.1.48-rack.3",
   "minAppVersion": "2.0.164",
   "commands": "commands.js",
   "configUi": "config.html",
@@ -82,16 +82,13 @@
     },
     "UNEXPECTED_TOOL_DETECTED": {
       "title": "Tool Found In Spindle",
-      "message": "The tool sensor reports a tool in the spindle, but ncSender thinks the spindle is empty (T0). This usually happens after a restart with a tool left loaded.<br><br><strong>If you know which tool it is:</strong> click <em>\"Abort\"</em>, send <code>M61 Q&lt;n&gt;</code> (its Tool ID) in the terminal, then run the tool change again. The tool is then put back in its own slot. Only do this if you are certain of the number — a wrong one puts the tool into a slot that may already be occupied.<br><br><strong>If you are not sure:</strong> click <em>\"Release\"</em> to open the drawbar, take the tool out by hand, then click <em>\"Continue\"</em>. The change carries on with an empty spindle.",
-      "continueLabel": "Continue",
-      "buttons": [
-        {
-          "label": "Release",
-          "gcode": [
-            "~"
-          ]
-        }
-      ]
+      "message": "The tool sensor reports a tool in the spindle, but ncSender thinks the spindle is empty (T0). This usually happens after a restart with a tool left loaded.<br><br><strong>If you know which tool it is:</strong> click <em>\"Abort\"</em>, send <em>M61 Q&lt;n&gt;</em> (its Tool ID) in the terminal, then run the tool change again. The tool is then put back in its own slot. Only do this if you are certain of the number — a wrong one puts the tool into a slot that may already be occupied.<br><br><strong>If you are not sure:</strong> hold the tool, then click <em>\"Continue\"</em>. The drawbar opens and you take the tool out by hand.",
+      "continueLabel": "Continue"
+    },
+    "UNEXPECTED_TOOL_REMOVE": {
+      "title": "Remove The Tool",
+      "message": "The drawbar is open. Take the tool out of the spindle, then click <em>\"Continue\"</em>. The tool change carries on with an empty spindle. Click <em>\"Abort\"</em> to stop.",
+      "continueLabel": "Continue"
     },
     "FAILED_UNLOAD_TOOL": {
       "title": "Unload Failed",

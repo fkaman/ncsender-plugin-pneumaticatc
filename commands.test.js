@@ -3111,7 +3111,7 @@ describe('tool found in the spindle when ncSender believes it is empty', () => {
     assert.ok(read < firstXY || l.indexOf('o250 if [#5399 EQ 0]') < firstXY, 'nothing moves before the read');
   });
 
-  test('dialog flow: park, dialog, Release (aux ON), Continue, then back to where the change started', () => {
+  test('dialog flow: park, dialog, Continue opens the drawbar, second dialog, Continue, then back to the start', () => {
     const l = lines(program(WITH, 0, 1));
     const start = l.indexOf('o250 if [#5399 EQ 0]');
     const end = l.indexOf('o250 endif');
@@ -3120,9 +3120,11 @@ describe('tool found in the spindle when ncSender believes it is empty', () => {
     const msg = block.findIndex((x) => x.includes(GUARD));
     const firstM0 = block.indexOf('M0');
     const unclamp = block.indexOf('M64 P2');
+    const remove = block.findIndex((x) => x.includes('UNEXPECTED_TOOL_REMOVE'));
     const secondM0 = block.indexOf('M0', firstM0 + 1);
     assert.ok(msg > 0 && firstM0 > msg, 'dialog, then pause');
-    assert.ok(unclamp > firstM0 && secondM0 > unclamp, 'Release opens the drawbar between the two pauses');
+    assert.ok(unclamp > firstM0, 'the drawbar opens only after the first Continue');
+    assert.ok(remove > unclamp && secondM0 > remove, 'then a second dialog asks for the tool to be taken out');
     assert.ok(block.slice(0, msg).some((x) => /^G53 G0 X321 Y-966$/.test(x)), 'parks at the manual station first');
     const back = block.slice(secondM0 + 1).filter((x) => /^G53 G0 X/.test(x));
     assert.ok(back.length > 0 && back[back.length - 1] === 'G53 G0 X60 Y120', 'ends back at the starting point');

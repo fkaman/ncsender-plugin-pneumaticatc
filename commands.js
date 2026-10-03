@@ -1405,11 +1405,17 @@ function toolGuard(settings, oNum, expect, retreat) {
 //
 // The plugin cannot tell WHICH tool it is, so it cannot put it back in the
 // rack by itself. The operator has two ways out:
-//   * Release: the spindle parks at the manual station, the drawbar opens for
-//     the tool to be taken out by hand, and the change carries on from empty.
+//   * Continue: the spindle parks at the manual station and the first dialog
+//     asks them to support the tool; Continue opens the drawbar, a second
+//     dialog asks them to take the tool out, and the change carries on from
+//     empty.
 //   * Abort, tell the controller which tool it is (M61 Q<n>, the Tool ID),
 //     and run the change again: the tool is then unloaded into its own slot.
 //     That is trust-based — nothing senses which slot a tool belongs to.
+//
+// Neither dialog has a custom button. The wireless pendant skips any dialog
+// that does, and a Release button only ever sent `~` — the same resume that
+// Continue does — so the release is a step of its own instead.
 //
 // Same polarity as toolGuard: present reads LOW, so `M66 L0` (an immediate
 // read, no waiting) gives 0 when a tool is gripped. Both trips go around the
@@ -1428,6 +1434,8 @@ function unexpectedToolGuard(settings, oNum, origin) {
       (MSG, PLUGIN_PNEUMATICATC:UNEXPECTED_TOOL_DETECTED)
       M0
       ${auxLineFor(settings, 'unclamp')}
+      G4 P0.5
+      (MSG, PLUGIN_PNEUMATICATC:UNEXPECTED_TOOL_REMOVE)
       M0
       ${home}
     o${oNum} endif
