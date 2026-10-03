@@ -3124,10 +3124,28 @@ describe('tool found in the spindle when ncSender believes it is empty', () => {
     const secondM0 = block.indexOf('M0', firstM0 + 1);
     assert.ok(msg > 0 && firstM0 > msg, 'dialog, then pause');
     assert.ok(unclamp > firstM0, 'the drawbar opens only after the first Continue');
+    const wait = block.indexOf('G4 P5');
+    assert.ok(wait > firstM0 && wait < unclamp, 'a 5 s hold-the-tool delay sits between Continue and the release');
     assert.ok(remove > unclamp && secondM0 > remove, 'then a second dialog asks for the tool to be taken out');
     assert.ok(block.slice(0, msg).some((x) => /^G53 G0 X321 Y-966$/.test(x)), 'parks at the manual station first');
     const back = block.slice(secondM0 + 1).filter((x) => /^G53 G0 X/.test(x));
     assert.ok(back.length > 0 && back[back.length - 1] === 'G53 G0 X60 Y120', 'ends back at the starting point');
+  });
+
+  test('the delay before the drawbar opens follows the configured Countdown, kept within 1-30 s', () => {
+    const delay = (countdownSec) => {
+      const cfg = buildInitialConfig({ ...BASE, ...SENSOR, dialogBehavior: { countdownSec } });
+      const block = lines(program(cfg, 0, 1));
+      const firstM0 = block.indexOf('M0', block.indexOf('o250 if [#5399 EQ 0]'));
+      return block.slice(firstM0).find((x) => /^G4 P\d+$/.test(x));
+    };
+    assert.equal(delay(8), 'G4 P8');
+    assert.equal(delay(1), 'G4 P1');
+    assert.equal(delay(99), 'G4 P30', 'capped at the dialog setting maximum');
+    assert.equal(delay(0), 'G4 P1', 'never zero: that would be no time to get a hand on the tool');
+    // An unsanitized settings object has no dialogBehavior at all.
+    const raw = { ...BASE, ...SENSOR };
+    assert.ok(program(raw, 0, 1).includes('G4 P5'));
   });
 
   test('the trips go around the rack, not straight through it', () => {

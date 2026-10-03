@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.48-rack.3",
+  "version": "0.1.48-rack.4",
   "minAppVersion": "2.0.164",
   "commands": "commands.js",
   "configUi": "config.html",
@@ -82,7 +82,7 @@
     },
     "UNEXPECTED_TOOL_DETECTED": {
       "title": "Tool Found In Spindle",
-      "message": "The tool sensor reports a tool in the spindle, but ncSender thinks the spindle is empty (T0). This usually happens after a restart with a tool left loaded.<br><br><strong>If you know which tool it is:</strong> click <em>\"Abort\"</em>, send <em>M61 Q&lt;n&gt;</em> (its Tool ID) in the terminal, then run the tool change again. The tool is then put back in its own slot. Only do this if you are certain of the number — a wrong one puts the tool into a slot that may already be occupied.<br><br><strong>If you are not sure:</strong> hold the tool, then click <em>\"Continue\"</em>. The drawbar opens and you take the tool out by hand.",
+      "message": "The tool sensor reports a tool in the spindle, but ncSender thinks the spindle is empty (T0). This usually happens after a restart with a tool left loaded.<br><br><strong>If you know which tool it is:</strong> click <em>\"Abort\"</em>, send <em>M61 Q&lt;n&gt;</em> (its Tool ID) in the terminal, then run the tool change again. The tool is then put back in its own slot. Only do this if you are certain of the number — a wrong one puts the tool into a slot that may already be occupied.<br><br><strong>If you are not sure:</strong> click <em>\"Continue\"</em> and get a hand on the tool. The drawbar opens after the dialog countdown (5 seconds unless you changed it in the plugin's dialog settings), so be holding the tool by then or it will fall. Click <em>\"Abort\"</em> instead to stop.",
       "continueLabel": "Continue"
     },
     "UNEXPECTED_TOOL_REMOVE": {

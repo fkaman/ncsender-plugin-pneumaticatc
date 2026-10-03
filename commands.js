@@ -1417,6 +1417,13 @@ function toolGuard(settings, oNum, expect, retreat) {
 // that does, and a Release button only ever sent `~` — the same resume that
 // Continue does — so the release is a step of its own instead.
 //
+// What a button-free dialog lacks is ncSender's hold-to-arm countdown on
+// custom buttons, which is what gave the operator time to get a hand on the
+// tool before the drawbar opened. Continue would otherwise open it at once and
+// a taper tool simply falls out. So the macro waits the same Countdown
+// (dialogBehavior.countdownSec, 5 s unless changed) before releasing. A dwell
+// can still be cut short with Abort.
+//
 // Same polarity as toolGuard: present reads LOW, so `M66 L0` (an immediate
 // read, no waiting) gives 0 when a tool is gripped. Both trips go around the
 // rack keepout the way the probe holder's do, so the rest of the change still
@@ -1426,6 +1433,7 @@ function unexpectedToolGuard(settings, oNum, origin) {
   if (!auxInputConfigured(settings.toolSensorInput)) return '';
   const park = probeRoute(origin, settings.manualTool, settings);
   const home = probeRoute(settings.manualTool, origin, settings, true);
+  const countdown = Math.min(30, Math.max(1, Math.round(toFiniteNumber(settings.dialogBehavior?.countdownSec, 5))));
   return `
     M66 P${settings.toolSensorInput} L0 Q0
     o${oNum} if [#5399 EQ 0]
@@ -1433,6 +1441,7 @@ function unexpectedToolGuard(settings, oNum, origin) {
       G4 P0
       (MSG, PLUGIN_PNEUMATICATC:UNEXPECTED_TOOL_DETECTED)
       M0
+      G4 P${countdown}
       ${auxLineFor(settings, 'unclamp')}
       G4 P0.5
       (MSG, PLUGIN_PNEUMATICATC:UNEXPECTED_TOOL_REMOVE)
