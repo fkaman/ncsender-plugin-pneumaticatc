@@ -32,7 +32,11 @@ After a restart the controller boots as T0 even if a tool was left in the collet
 - **Continue** parks at the manual station (routed around the rack). Hold the tool, then **Continue** again opens the drawbar; a second dialog asks you to take the tool out, and **Continue** carries on from an empty spindle.
 - **Abort**, then send `M61 Q<n>` (the tool's Tool ID) in the terminal and run the change again: the tool is unloaded into its own slot. The plugin can't tell which tool it is, so only do this if you're certain of the number; a wrong one puts it into a slot that may already be occupied.
 
+The drawbar opens only after the dialog **Countdown** (5 seconds unless changed in the plugin's dialog settings), so be holding the tool by then or it will fall.
+
 With no Tool Sensor pin set nothing is checked.
+
+The dialogs this plugin adds (tool found, rack faults) are plain text of at most 96 characters with no custom buttons, so they fit and show on the wireless pendant. Upstream's longer messages and the four manual-tool dialogs (which have buttons) are unchanged.
 
 ### Tool Length Setter (TLS)
 - **Probe after every tool change** – always runs TLS on `M6`

@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.48-rack.4",
+  "version": "0.1.48-rack.5",
   "minAppVersion": "2.0.164",
   "commands": "commands.js",
   "configUi": "config.html",
@@ -62,32 +62,32 @@
     },
     "TOOLRACK_FAULT": {
       "title": "Tool Rack Not Available",
-      "message": "The tool rack was told to extend, but its <em>available</em> sensor does not confirm it reached the loading position, so the tool change cannot safely continue.<br><br>Check that the rack can travel freely, nothing is blocking it, and the actuator has air. Once it is out, click <em>\"Re-check\"</em> — the macro reads the sensor again and only carries on if it now reads good. Click <em>\"Abort\"</em> to stop the tool change.",
+      "message": "Rack not confirmed out by its sensor. Check it moves freely, then Re-check, or Abort.",
       "continueLabel": "Re-check"
     },
     "TOOLRACK_FAULT_UNVERIFIED": {
       "title": "Tool Rack Still Not Available",
-      "message": "The rack has been re-checked twice and the <em>available</em> sensor still does not confirm it is extended.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The spindle will move to a rack position that may not be where the rack actually is, which risks a crash or a dropped tool. Only continue if you have a reason to believe the sensor is wrong rather than the rack.<br><br>Click <em>\"Abort\"</em> to stop the tool change, which is the safe choice.",
+      "message": "Rack still not confirmed out. Continuing is unverified and may crash. Abort is safe.",
       "continueLabel": "Continue anyway"
     },
     "TOOLRACK_RETRACT_FAULT": {
       "title": "Tool Rack Not Retracted",
-      "message": "The tool rack was told to retract, but its <em>unavailable</em> sensor does not confirm it is clear of the machining area.<br><br>Check that the rack can travel freely and nothing is blocking it. Once it is back, click <em>\"Re-check\"</em> — the macro reads the sensor again and only carries on if it now reads good. Click <em>\"Abort\"</em> to stop.",
+      "message": "Rack not confirmed retracted. Check it moves freely, then Re-check, or Abort.",
       "continueLabel": "Re-check"
     },
     "TOOLRACK_RETRACT_FAULT_UNVERIFIED": {
       "title": "Tool Rack Still Not Retracted",
-      "message": "The rack has been re-checked twice and the <em>unavailable</em> sensor still does not confirm it is retracted.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The job will resume with the rack possibly still in the machining area, which risks a crash. Only continue if you have a reason to believe the sensor is wrong rather than the rack.<br><br>Click <em>\"Abort\"</em> to stop, which is the safe choice.",
+      "message": "Rack still not confirmed retracted. Continuing is unverified and may crash. Abort is safe.",
       "continueLabel": "Continue anyway"
     },
     "UNEXPECTED_TOOL_DETECTED": {
       "title": "Tool Found In Spindle",
-      "message": "The tool sensor reports a tool in the spindle, but ncSender thinks the spindle is empty (T0). This usually happens after a restart with a tool left loaded.<br><br><strong>If you know which tool it is:</strong> click <em>\"Abort\"</em>, send <em>M61 Q&lt;n&gt;</em> (its Tool ID) in the terminal, then run the tool change again. The tool is then put back in its own slot. Only do this if you are certain of the number — a wrong one puts the tool into a slot that may already be occupied.<br><br><strong>If you are not sure:</strong> click <em>\"Continue\"</em> and get a hand on the tool. The drawbar opens after the dialog countdown (5 seconds unless you changed it in the plugin's dialog settings), so be holding the tool by then or it will fall. Click <em>\"Abort\"</em> instead to stop.",
+      "message": "Tool in spindle but T0 assumed. Hold it, Continue opens drawbar. Or Abort, M61 Qn, rerun.",
       "continueLabel": "Continue"
     },
     "UNEXPECTED_TOOL_REMOVE": {
       "title": "Remove The Tool",
-      "message": "The drawbar is open. Take the tool out of the spindle, then click <em>\"Continue\"</em>. The tool change carries on with an empty spindle. Click <em>\"Abort\"</em> to stop.",
+      "message": "Drawbar open. Remove the tool, then Continue. Abort to stop.",
       "continueLabel": "Continue"
     },
     "FAILED_UNLOAD_TOOL": {
