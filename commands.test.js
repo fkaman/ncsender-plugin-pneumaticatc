@@ -1737,10 +1737,14 @@ describe('taperBlow — Sienci-style drawbar handling around the traverse', () =
     const lines = buildUnloadTool(on, 1, calculateSlotPosition(on, 1), { x: 0, y: 0 }).split('\n').map((l) => l.trim());
     const lift = lines.findIndex((l) => l === 'G53 G0 Z-80');
     assert.ok(lift > 0, 'expected a lift to slot Z + 20');
-    assert.match(lines[lift + 1], /^M6[45] P1$/);
-    assert.notEqual(auxOf(lines[lift + 1]), auxOf(lines.find((l) => /^M6[45] P1$/.test(l))), 'the aux after lift-off must be the clamp, i.e. the opposite of the release');
+    // M65 acts the moment the line is read, so a G4 P0 must hold it back until
+    // the lift has actually finished; without it the drawbar closed on the
+    // tool just released.
+    assert.equal(lines[lift + 1], 'G4 P0', 'planner sync between the lift and the clamp');
+    assert.match(lines[lift + 2], /^M6[45] P1$/);
+    assert.notEqual(auxOf(lines[lift + 2]), auxOf(lines.find((l) => /^M6[45] P1$/.test(l))), 'the aux after lift-off must be the clamp, i.e. the opposite of the release');
     const safe = lines.findIndex((l) => l === 'G53 G0 Z-5');
-    assert.ok(safe > lift + 1, 'the clamp happens before the rapid to Z-safe');
+    assert.ok(safe > lift + 2, 'the clamp happens before the rapid to Z-safe');
   });
 
   test('off: the unload leaves the drawbar open and goes straight to Z-safe', () => {
@@ -3158,5 +3162,71 @@ describe('tool found in the spindle when ncSender believes it is empty', () => {
     const there = l.slice(start, msgIdx).filter((x) => /^G53 G0 X/.test(x));
     assert.ok(there.length >= 2, `expected a detour, got: ${there.join(' | ')}`);
     assert.equal(there[there.length - 1], 'G53 G0 X-300 Y-40');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M64/M65 act the moment the line is read, not when queued motion reaches it.
+// A clamp or unclamp straight after a move therefore fires BEFORE that move
+// happens. With the taper blow on, the unload lifted off the holder and then
+// closed the drawbar with nothing in between, so it closed while the spindle
+// was still down at the holder and gripped the tool it had just released.
+// ---------------------------------------------------------------------------
+describe('clamp and unclamp never fire straight after a move (planner sync)', () => {
+  const BASE = {
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: 0,
+    clampAuxOutput: 2, toolsetter: { x: 300, y: -200 }, manualTool: { x: 321, y: -966 }, tlsMode: 'always',
+  };
+  const PROBE = { enabled: true, toolNumber: 99, x: 300, y: -500, z: -100, holding: 'Cup' };
+  const ORIGIN = { x: 60, y: 120 };
+  const program = (s, from, to) => buildToolChangeProgram(s, from, to, { x: 0, y: 0 }, 0, ORIGIN).join('\n');
+  const body = (g) => g.split(/\r?\n/).map((l) => l.trim().replace(/^\$keepout_off\s+/, '')).filter((l) => l && !l.startsWith('('));
+  const isMotion = (l) => /^G53 G[01]\b/.test(l) || /^G0?[01]\b/.test(l);
+  const isClampLine = (l) => /^M6[45] P2$/.test(l);
+
+  // Every line that switches the clamp output, with the line before it.
+  const offenders = (g) => {
+    const l = body(g);
+    return l.map((x, i) => (isClampLine(x) && i > 0 && isMotion(l[i - 1]) ? `${l[i - 1]}  ->  ${x}` : null)).filter(Boolean);
+  };
+
+  const cases = [];
+  for (const rackHolding of ['Cup', 'Fork'])
+    for (const taperBlow of [false, true])
+      for (const withProbe of [false, true])
+        cases.push({ rackHolding, taperBlow, withProbe });
+
+  test('no clamp output change directly follows a motion line, in any unload, load or swap', () => {
+    for (const c of cases) {
+      const cfg = buildInitialConfig({ ...BASE, rackHolding: c.rackHolding, taperBlow: c.taperBlow,
+        ...(c.withProbe ? { probe: PROBE } : {}) });
+      const moves = [[0, 1], [1, 0], [1, 2], [2, 1], [1, 4], [4, 1], [0, 4], [4, 0], [4, 5]];
+      if (c.withProbe) moves.push([0, 99], [99, 0], [99, 1], [1, 99]);
+      for (const [from, to] of moves) {
+        const bad = offenders(program(cfg, from, to));
+        assert.deepEqual(bad, [], `${c.rackHolding} taper=${c.taperBlow} probe=${c.withProbe} T${from}->T${to}`);
+      }
+    }
+  });
+
+  test('taper blow: the lift off the holder finishes (G4 P0) before the drawbar closes', () => {
+    for (const rackHolding of ['Cup', 'Fork']) {
+      const cfg = buildInitialConfig({ ...BASE, rackHolding, taperBlow: true });
+      const l = body(buildUnloadTool(cfg, 1, calculateSlotPosition(cfg, 1), ORIGIN));
+      const lift = l.indexOf(`G53 G0 Z${cfg.slot1.z + 20}`);
+      const clamp = l.indexOf('M65 P2');
+      assert.ok(lift !== -1 && clamp > lift, `${rackHolding}: lift then clamp`);
+      assert.equal(l[lift + 1], 'G4 P0', `${rackHolding}: planner sync between the lift and the clamp`);
+      assert.equal(l[lift + 2], 'M65 P2');
+    }
+  });
+
+  test('taper blow: the same holds when the probe is put back in its holder', () => {
+    const cfg = buildInitialConfig({ ...BASE, taperBlow: true, probe: PROBE });
+    const l = body(program(cfg, 99, 0));
+    const lift = l.indexOf(`G53 G0 Z${PROBE.z + 20}`);
+    assert.ok(lift !== -1);
+    assert.equal(l[lift + 1], 'G4 P0');
+    assert.equal(l[lift + 2], 'M65 P2');
   });
 });

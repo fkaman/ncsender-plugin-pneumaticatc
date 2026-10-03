@@ -1578,8 +1578,13 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
 
   // Taper blow: lift clear of the holder, then close the drawbar so the
   // blow stops here instead of venting all the way to the next slot.
+  // M64/M65 act the moment the line is read, not when queued motion gets
+  // there. Without the G4 P0 the clamp fires while the lift is still only
+  // queued, closing the drawbar on the tool just released. The dwell is a
+  // planner sync point: it waits for the lift to finish first.
   const closeAfterLiftOff = settings.taperBlow ? `
       G53 G0 Z${settings.slot1.z + DEDUST_LIFT_MM}
+      G4 P0
       ${auxLineFor(settings, 'clamp')}
       G4 P0.5` : '';
 
@@ -1814,8 +1819,11 @@ function buildProbeUnload(settings, from) {
   const h = probeHolderPosition(settings);
   const drawbarBackoff = `
       G53 G1 Z${h.z + DRAWBAR_OFFSET_MM} F${DRAWBAR_FEEDRATE_MMPM}`;
+  // Same planner sync as buildUnloadTool: M65 is immediate, so wait for the
+  // lift to finish before closing the drawbar.
   const closeAfterLiftOff = settings.taperBlow ? `
       G53 G0 Z${h.z + DEDUST_LIFT_MM}
+      G4 P0
       ${auxLineFor(settings, 'clamp')}
       G4 P0.5` : '';
 
