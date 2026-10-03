@@ -2747,3 +2747,43 @@ describe('Sienci profile slide speed', () => {
     assert.equal(buildInitialConfig({ slideSpeed: 900 }).slideSpeed, 900);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tool Numbering (set in the app): the plugin resolves T through the tool list
+// the app hands it. Slot numbering hands Tool N in slot N (the library's tool
+// for that slot keeps T = N); Tool ID numbering hands the library as stored.
+// ---------------------------------------------------------------------------
+describe('Tool Numbering: what M6 T<n> loads', () => {
+  const settings = buildInitialConfig({
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5,
+    clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, tlsMode: 'always',
+  });
+  const run = (command, tools, tool = 0) => {
+    const commands = [{ command, isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool, mpos: { x: 10, y: 20 } }, tools }, { ...settings });
+    return commands.map((c) => c.command.trim()).join('\n');
+  };
+  const slotList = [1, 2, 3].map((n) => ({ toolId: n, toolNumber: n }));
+
+  test('Slot numbering: T2 is slot 2 from the rack', () => {
+    const out = run('M6 T2', slotList);
+    assert.match(out, /M61 Q2\b/);
+    assert.doesNotMatch(out, /MANUAL_CLAMP_TOOL_/);
+  });
+
+  test('Slot numbering: the Manual button\'s T<size + 1> is a hand load', () => {
+    const out = run('M6 T4', slotList);
+    assert.match(out, /MANUAL_CLAMP_TOOL_4\b/);
+  });
+
+  test('Tool ID numbering: a tool in a slot loads from the rack by its ID', () => {
+    const out = run('M6 T300', [{ toolId: 300, toolNumber: 2 }, { toolId: 50, toolNumber: null }]);
+    assert.match(out, /M61 Q300\b/);
+    assert.doesNotMatch(out, /MANUAL_CLAMP_TOOL_/);
+  });
+
+  test('Tool ID numbering: a tool in no slot is a hand load', () => {
+    const out = run('M6 T50', [{ toolId: 300, toolNumber: 2 }, { toolId: 50, toolNumber: null }]);
+    assert.match(out, /MANUAL_CLAMP_TOOL_50\b/);
+  });
+});
