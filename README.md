@@ -27,6 +27,13 @@ For a rack mounted on an actuator that extends it into position for a load/unloa
 - `$SLOT1` … `$SLOT8` extend the rack but never retract it, since you jogged there on purpose. `$TLS` and Measure All Tools extend before the probe and retract after.
 - Nothing changes for machines that don't use it: with no rack configured, the generated programs are identical to a stock install.
 
+### Tool Found In The Spindle
+After a restart the controller boots as T0 even if a tool was left in the collet. When a **Tool Sensor** pin is set (Advanced), every tool change that starts from T0 first reads it, before the rack extends or anything moves. If it reports a tool (LOW = present), the change stops with a **Tool Found In Spindle** dialog:
+- **Release** parks at the manual station (routed around the rack), opens the drawbar so you can take the tool out by hand, and **Continue** carries on from an empty spindle.
+- **Abort**, then send `M61 Q<n>` (the tool's Tool ID) in the terminal and run the change again: the tool is unloaded into its own slot. The plugin can't tell which tool it is, so only do this if you're certain of the number; a wrong one puts it into a slot that may already be occupied.
+
+With no Tool Sensor pin set nothing is checked.
+
 ### Tool Length Setter (TLS)
 - **Probe after every tool change** – always runs TLS on `M6`
 - **Use tool library offset (probe when missing)** – reuses the stored TLO from the tool library; probes only when a tool has no offset yet, then writes the value back so subsequent swaps skip the probe

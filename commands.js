@@ -1395,6 +1395,45 @@ function toolGuard(settings, oNum, expect, retreat) {
   );
 }
 
+// ncSender believes the spindle is empty (T0) while a tool is still seated —
+// the usual case is a restart: the controller forgets the tool number on
+// power-off, so it boots as T0 with whatever was left in the collet. Carrying
+// on as if empty would release the drawbar and take a NEW tool into an
+// occupied spindle. So a change that starts from T0 reads the tool sensor
+// first, before anything else moves (and before the rack extends), and if a
+// tool is there stops with a dialog.
+//
+// The plugin cannot tell WHICH tool it is, so it cannot put it back in the
+// rack by itself. The operator has two ways out:
+//   * Release: the spindle parks at the manual station, the drawbar opens for
+//     the tool to be taken out by hand, and the change carries on from empty.
+//   * Abort, tell the controller which tool it is (M61 Q<n>, the Tool ID),
+//     and run the change again: the tool is then unloaded into its own slot.
+//     That is trust-based — nothing senses which slot a tool belongs to.
+//
+// Same polarity as toolGuard: present reads LOW, so `M66 L0` (an immediate
+// read, no waiting) gives 0 when a tool is gripped. Both trips go around the
+// rack keepout the way the probe holder's do, so the rest of the change still
+// starts from `origin` as it assumes. Not emitted when no tool sensor pin is
+// configured, or for a change that does nothing physical (T0 -> T0).
+function unexpectedToolGuard(settings, oNum, origin) {
+  if (!auxInputConfigured(settings.toolSensorInput)) return '';
+  const park = probeRoute(origin, settings.manualTool, settings);
+  const home = probeRoute(settings.manualTool, origin, settings, true);
+  return `
+    M66 P${settings.toolSensorInput} L0 Q0
+    o${oNum} if [#5399 EQ 0]
+      ${park}
+      G4 P0
+      (MSG, PLUGIN_PNEUMATICATC:UNEXPECTED_TOOL_DETECTED)
+      M0
+      ${auxLineFor(settings, 'unclamp')}
+      M0
+      ${home}
+    o${oNum} endif
+  `.trim();
+}
+
 // === Retractable tool rack ===
 //
 // A rack mounted on an actuator that extends it into position for a
@@ -2109,6 +2148,11 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     || (toolNumber > 0 && toolNumber <= settings.slots);
   const rackExtend = touchesRack ? extendToolRack(settings, 400) : '';
   const rackRetract = touchesRack ? retractToolRack(settings, 410) : '';
+  // A change that starts from "empty" checks that it really is (see
+  // unexpectedToolGuard). Before the rack extends, so no dialog shows with it out.
+  const unexpectedTool = (currentTool === 0 && toolNumber !== 0)
+    ? unexpectedToolGuard(settings, 250, origin)
+    : '';
 
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
@@ -2188,6 +2232,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${sienciKeepout(settings).off}
     ${pressureGuard(settings, 120)}
     G53 G0 Z${settings.zSafe}
+    ${unexpectedTool}
     ${rackExtend}
     ${zeroKeepSection}
     ${unloadSection}

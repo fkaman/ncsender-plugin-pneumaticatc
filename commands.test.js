@@ -3047,3 +3047,96 @@ describe('retractable tool rack', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// A change that starts from T0 first checks the tool sensor: after a restart
+// the controller boots as T0 with whatever was left in the collet, and going on
+// as if empty would take a new tool into an occupied spindle. If a tool is
+// there the operator either releases it by hand (the dialog's Release button)
+// or aborts, tells the controller the tool number (M61) and runs the change
+// again. The plugin cannot tell which tool it is, so it never puts it away
+// itself.
+// ---------------------------------------------------------------------------
+describe('tool found in the spindle when ncSender believes it is empty', () => {
+  const BASE = {
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: 0,
+    clampAuxOutput: 2, rackHolding: 'Cup', toolsetter: { x: 300, y: -200 },
+    manualTool: { x: 321, y: -966 }, tlsMode: 'always',
+  };
+  const SENSOR = { toolSensorInput: 1 };
+  const RACK = { toolRackAuxOutput: 3, toolRackAvailableSensorInput: 6, toolRackUnavailableSensorInput: 7, toolRackEnabled: true };
+  const ORIGIN = { x: 60, y: 120 };
+  const WITH = buildInitialConfig({ ...BASE, ...SENSOR });
+  const WITHOUT = buildInitialConfig({ ...BASE });
+  const PROBE = { enabled: true, toolNumber: 99, x: 300, y: -500, z: -100, holding: 'Cup' };
+  const program = (s, from, to) => buildToolChangeProgram(s, from, to, { x: 0, y: 0 }, 0, ORIGIN).join('\n');
+  const GUARD = 'UNEXPECTED_TOOL_DETECTED';
+  // Keeps comment lines: the dialog trigger is a (MSG, ...) comment.
+  const lines = (g) => g.split(/\r?\n/).map((l) => l.trim().replace(/^\$keepout_off\s+/, '')).filter(Boolean);
+
+  test('no tool sensor configured: no check, no dialog', () => {
+    const p = program(WITHOUT, 0, 1);
+    assert.ok(!p.includes(GUARD) && !p.includes('o250'));
+    assert.doesNotMatch(p, /M66 P\d+ L0/);
+  });
+
+  test('every change that starts from T0 checks: rack tool, manual tool and probe', () => {
+    const cfg = buildInitialConfig({ ...BASE, ...SENSOR, probe: PROBE });
+    for (const to of [1, 3, 4, 99]) {
+      assert.ok(program(cfg, 0, to).includes(GUARD), `T0 -> T${to}`);
+    }
+  });
+
+  test('changes that already know what is in the spindle never check', () => {
+    const cfg = buildInitialConfig({ ...BASE, ...SENSOR, probe: PROBE });
+    for (const [from, to] of [[1, 2], [2, 1], [1, 0], [4, 5], [4, 1], [1, 4], [99, 0], [0, 0]]) {
+      assert.ok(!program(cfg, from, to).includes(GUARD), `T${from} -> T${to}`);
+    }
+  });
+
+  test('reads the sensor with an immediate read, and treats LOW as "tool present"', () => {
+    const p = program(WITH, 0, 1);
+    assert.ok(p.includes('M66 P1 L0 Q0'), 'immediate read of the tool sensor pin');
+    assert.ok(p.includes('o250 if [#5399 EQ 0]'), 'present reads LOW, same convention as the tool checks');
+  });
+
+  test('the check comes before the rack extends and before any rack motion', () => {
+    const cfg = buildInitialConfig({ ...BASE, ...SENSOR, ...RACK });
+    const l = lines(program(cfg, 0, 1));
+    const read = l.indexOf('M66 P1 L0 Q0');
+    const extend = l.indexOf('M64 P3');
+    const firstXY = l.findIndex((x) => /^G53 G0 X/.test(x));
+    assert.ok(read !== -1 && extend !== -1);
+    assert.ok(read < extend, 'no dialog with the rack out');
+    assert.ok(read < firstXY || l.indexOf('o250 if [#5399 EQ 0]') < firstXY, 'nothing moves before the read');
+  });
+
+  test('dialog flow: park, dialog, Release (aux ON), Continue, then back to where the change started', () => {
+    const l = lines(program(WITH, 0, 1));
+    const start = l.indexOf('o250 if [#5399 EQ 0]');
+    const end = l.indexOf('o250 endif');
+    assert.ok(start !== -1 && end > start);
+    const block = l.slice(start, end);
+    const msg = block.findIndex((x) => x.includes(GUARD));
+    const firstM0 = block.indexOf('M0');
+    const unclamp = block.indexOf('M64 P2');
+    const secondM0 = block.indexOf('M0', firstM0 + 1);
+    assert.ok(msg > 0 && firstM0 > msg, 'dialog, then pause');
+    assert.ok(unclamp > firstM0 && secondM0 > unclamp, 'Release opens the drawbar between the two pauses');
+    assert.ok(block.slice(0, msg).some((x) => /^G53 G0 X321 Y-966$/.test(x)), 'parks at the manual station first');
+    const back = block.slice(secondM0 + 1).filter((x) => /^G53 G0 X/.test(x));
+    assert.ok(back.length > 0 && back[back.length - 1] === 'G53 G0 X60 Y120', 'ends back at the starting point');
+  });
+
+  test('the trips go around the rack, not straight through it', () => {
+    // Slots run from Y=40 downward at X=-115, so a straight run along Y=-40
+    // from the east to a manual station in the west goes through the rack.
+    const cfg = buildInitialConfig({ ...BASE, ...SENSOR, manualTool: { x: -300, y: -40 } });
+    const l = lines(buildToolChangeProgram(cfg, 0, 1, { x: 0, y: 0 }, 0, { x: 60, y: -40 }).join('\n'));
+    const start = l.indexOf('o250 if [#5399 EQ 0]');
+    const msgIdx = l.findIndex((x) => x.includes(GUARD));
+    const there = l.slice(start, msgIdx).filter((x) => /^G53 G0 X/.test(x));
+    assert.ok(there.length >= 2, `expected a detour, got: ${there.join(' | ')}`);
+    assert.equal(there[there.length - 1], 'G53 G0 X-300 Y-40');
+  });
+});

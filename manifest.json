@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.48-rack.1",
+  "version": "0.1.48-rack.2",
   "minAppVersion": "2.0.164",
   "commands": "commands.js",
   "configUi": "config.html",
@@ -79,6 +79,19 @@
       "title": "Tool Rack Still Not Retracted",
       "message": "The rack has been re-checked twice and the <em>unavailable</em> sensor still does not confirm it is retracted.<br><br><strong>Continuing does not mean the problem is fixed.</strong> The job will resume with the rack possibly still in the machining area, which risks a crash. Only continue if you have a reason to believe the sensor is wrong rather than the rack.<br><br>Click <em>\"Abort\"</em> to stop, which is the safe choice.",
       "continueLabel": "Continue anyway"
+    },
+    "UNEXPECTED_TOOL_DETECTED": {
+      "title": "Tool Found In Spindle",
+      "message": "The tool sensor reports a tool in the spindle, but ncSender thinks the spindle is empty (T0). This usually happens after a restart with a tool left loaded.<br><br><strong>If you know which tool it is:</strong> click <em>\"Abort\"</em>, send <code>M61 Q&lt;n&gt;</code> (its Tool ID) in the terminal, then run the tool change again. The tool is then put back in its own slot. Only do this if you are certain of the number — a wrong one puts the tool into a slot that may already be occupied.<br><br><strong>If you are not sure:</strong> click <em>\"Release\"</em> to open the drawbar, take the tool out by hand, then click <em>\"Continue\"</em>. The change carries on with an empty spindle.",
+      "continueLabel": "Continue",
+      "buttons": [
+        {
+          "label": "Release",
+          "gcode": [
+            "~"
+          ]
+        }
+      ]
     },
     "FAILED_UNLOAD_TOOL": {
       "title": "Unload Failed",
