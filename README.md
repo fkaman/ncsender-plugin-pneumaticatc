@@ -34,6 +34,10 @@ After a restart the controller boots as T0 even if a tool was left in the collet
 
 The drawbar opens only after the dialog **Countdown** (5 seconds unless changed in the plugin's dialog settings), so be holding the tool by then or it will fall.
 
+**The spindle must be empty before anything is loaded.** With a Tool Sensor pin set, every change that loads a tool reads the sensor again right before the spindle moves to pick it up, after any unload and after the dialogs above. A tool still in the spindle stops the change with a **Spindle Not Empty** dialog; **Re-check** reads the sensor again and only carries on once it reads empty. After two re-checks the last dialog says plainly that carrying on may crash into the rack. Upstream's own check after an unload only warns once, and Continue carries on regardless; this one does not let go until the sensor agrees. A manual-to-manual swap is not gated, since the old tool is meant to be there.
+
+The sensor must read LOW with a tool present and HIGH when the spindle is empty. If it is wired the other way round, invert that input in grblHAL (`$370`); otherwise none of these checks will see a tool.
+
 With no Tool Sensor pin set nothing is checked.
 
 The dialogs this plugin adds (tool found, rack faults) are plain text of at most 96 characters with no custom buttons, so they fit and show on the wireless pendant. Upstream's longer messages and the four manual-tool dialogs (which have buttons) are unchanged.

@@ -3230,3 +3230,80 @@ describe('clamp and unclamp never fire straight after a move (planner sync)', ()
     assert.equal(l[lift + 2], 'M65 P2');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Nothing may travel to pick up a tool while one is still in the spindle. The
+// checks around the unload fault once and Continue carries on, so a tool that
+// stayed in the spindle could still be driven to the rack. A gate right before
+// the load reads the tool sensor and will not go on until it reads empty.
+// ---------------------------------------------------------------------------
+describe('spindle must be empty before a load', () => {
+  const BASE = {
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: 0,
+    clampAuxOutput: 2, rackHolding: 'Cup', toolsetter: { x: 300, y: -200 },
+    manualTool: { x: 321, y: -966 }, tlsMode: 'always',
+  };
+  const PROBE = { enabled: true, toolNumber: 99, x: 300, y: -500, z: -100, holding: 'Cup' };
+  const WITH = buildInitialConfig({ ...BASE, toolSensorInput: 1, probe: PROBE });
+  const WITHOUT = buildInitialConfig({ ...BASE, probe: PROBE });
+  const ORIGIN = { x: 60, y: 120 };
+  const program = (s, from, to) => buildToolChangeProgram(s, from, to, { x: 0, y: 0 }, 0, ORIGIN).join('\n');
+  const lines = (g) => g.split(/\r?\n/).map((l) => l.trim().replace(/^\$keepout_off\s+/, '')).filter(Boolean);
+  const READ = 'M66 P1 L3 Q0.01';
+
+  test('without a tool sensor pin nothing can be read, so no gate is emitted', () => {
+    const p = program(WITHOUT, 2, 1);
+    assert.ok(!p.includes('SPINDLE_NOT_EMPTY') && !p.includes('o260'));
+  });
+
+  test('every change that loads something is gated, whatever it unloaded first', () => {
+    for (const [from, to] of [[0, 1], [2, 1], [1, 2], [4, 1], [1, 4], [0, 4], [1, 99], [99, 1], [0, 99]]) {
+      assert.ok(program(WITH, from, to).includes('(MSG, PLUGIN_PNEUMATICATC:SPINDLE_NOT_EMPTY)'), `T${from} -> T${to}`);
+    }
+  });
+
+  test('changes that load nothing, or deliberately keep a tool in, are not gated', () => {
+    assert.ok(!program(WITH, 1, 0).includes('SPINDLE_NOT_EMPTY'), 'unload only: nothing is loaded');
+    assert.ok(!program(WITH, 99, 0).includes('SPINDLE_NOT_EMPTY'));
+    assert.ok(!program(WITH, 4, 5).includes('SPINDLE_NOT_EMPTY'), 'manual to manual: the old tool is meant to be there');
+  });
+
+  test('it sits after the unload and before any load motion', () => {
+    const l = lines(program(WITH, 2, 1));
+    const unloaded = l.indexOf('M61 Q0');
+    const gate = l.indexOf(READ);
+    assert.ok(unloaded !== -1 && gate !== -1);
+    assert.ok(gate > unloaded, 'only once the unload has finished');
+    const approach = l.findIndex((x, i) => i > unloaded && /^G53 G0 X/.test(x));
+    assert.ok(approach === -1 || gate < approach, 'before the spindle moves toward the tool to load');
+    const loaded = l.indexOf('M61 Q1');
+    assert.ok(gate < loaded);
+  });
+
+  test('from an empty-believed spindle it re-reads after the tool-found dialogs, before the release for the load', () => {
+    const l = lines(program(WITH, 0, 1));
+    const endif = l.indexOf('o250 endif');
+    const gate = l.indexOf(READ);
+    const release = l.indexOf('M64 P2', endif);
+    assert.ok(endif !== -1 && gate > endif, 'after the operator has been through the tool-found dialogs');
+    assert.ok(release > gate, 'before the drawbar is released to load');
+  });
+
+  test('it is fail-closed: a read that sees a tool stops, Continue re-reads, and only the last dialog allows carrying on', () => {
+    const l = lines(program(WITH, 2, 1));
+    const start = l.indexOf(READ);
+    const block = l.slice(start, l.indexOf('o262 endif') + 1);
+    assert.ok(block.length > 6);
+    assert.equal(block.filter((x) => x === READ).length, 3, 'read, then a re-read after each of the first two dialogs');
+    assert.deepEqual(block.filter((x) => /^o26\d (if|endif)/.test(x)),
+      ['o260 if [#5399 EQ -1]', 'o260 endif', 'o261 if [#5399 EQ -1]', 'o261 endif', 'o262 if [#5399 EQ -1]', 'o262 endif']);
+    assert.equal(block.filter((x) => x.includes('(MSG, PLUGIN_PNEUMATICATC:SPINDLE_NOT_EMPTY)')).length, 2);
+    assert.equal(block.filter((x) => x.includes('SPINDLE_NOT_EMPTY_UNVERIFIED')).length, 1);
+    assert.ok(block.every((x) => !x.startsWith('M64 P2') && !x.startsWith('M65 P2')), 'the gate never touches the drawbar itself');
+  });
+
+  test('empty reads HIGH: a tool in the spindle (LOW) is what times out the read', () => {
+    assert.ok(program(WITH, 2, 1).includes('M66 P1 L3 Q0.01'), 'L3 waits for HIGH');
+    assert.ok(!program(WITH, 2, 1).includes('M66 P1 L4 Q0.01'));
+  });
+});

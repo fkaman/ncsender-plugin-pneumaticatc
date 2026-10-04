@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.48-rack.6",
+  "version": "0.1.48-rack.7",
   "minAppVersion": "2.0.164",
   "commands": "commands.js",
   "configUi": "config.html",
@@ -89,6 +89,16 @@
       "title": "Remove The Tool",
       "message": "Drawbar open. Remove the tool, then Continue. Abort to stop.",
       "continueLabel": "Continue"
+    },
+    "SPINDLE_NOT_EMPTY": {
+      "title": "Spindle Not Empty",
+      "message": "Tool sensor still sees a tool. Release the drawbar and remove it, then Re-check. Abort to stop.",
+      "continueLabel": "Re-check"
+    },
+    "SPINDLE_NOT_EMPTY_UNVERIFIED": {
+      "title": "Spindle Still Not Empty",
+      "message": "Still sees a tool. Carrying on may crash into the rack. Abort is the safe choice.",
+      "continueLabel": "Continue anyway"
     },
     "FAILED_UNLOAD_TOOL": {
       "title": "Unload Failed",

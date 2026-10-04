@@ -1460,13 +1460,17 @@ function unexpectedToolGuard(settings, oNum, origin) {
 // is off unless it is switched on (toolRackEnabled) and the output is
 // configured.
 
-// Unlike the drawbar and tool checks above, a rack actuator takes real time
-// and can be helped along by hand, so this guard keeps the unrolled read /
-// Re-check / Re-check / "continue unverified" shape of pressureGuard (see
-// there for why it can't be a `while`). `oNum..oNum+2` are its o-word
-// numbers; every call site needs its own, spaced to not collide in one macro.
-// Returns '' for an unwired input.
-function rackSensorGuard(input, faultMsg, unverifiedMsg, oNum) {
+// Unlike the drawbar and tool checks above, which fault once and let Continue
+// carry on, this guard keeps the unrolled read / Re-check / Re-check /
+// "continue unverified" shape of pressureGuard (see there for why it can't be
+// a `while`): Continue re-reads the sensor, so the operator cannot get past it
+// without the input actually reading HIGH, and only the third dialog says
+// plainly that carrying on is unverified. Used where moving on with the wrong
+// state is dangerous and can be put right by hand: a rack that has not reached
+// its end of travel, a tool that is still in the spindle. `oNum..oNum+2` are
+// its o-word numbers; every call site needs its own, spaced to not collide in
+// one macro. Returns '' for an unwired input.
+function recheckSensorGuard(input, faultMsg, unverifiedMsg, oNum) {
   if (!auxInputConfigured(input)) return '';
   const read = `M66 P${input} L3 Q0.01\n    G4 P0.1`;
   const retry = (n) => `
@@ -1486,14 +1490,25 @@ function rackSensorGuard(input, faultMsg, unverifiedMsg, oNum) {
   `.trim();
 }
 
+// The spindle must be empty before it travels to pick anything up. The checks
+// around the unload (toolGuard 'empty') fault once and Continue carries on, so
+// a tool that stayed in the spindle, or one the operator was told to remove,
+// could still be driven to the rack. This gate sits right before the first load
+// motion, reads the same tool sensor and will not let the change go on until it
+// reads empty (HIGH, the opposite of "tool present", which reads LOW). Without a
+// tool sensor pin nothing can be read, so nothing is emitted.
+function spindleEmptyGate(settings, oNum) {
+  return recheckSensorGuard(settings.toolSensorInput, 'SPINDLE_NOT_EMPTY', 'SPINDLE_NOT_EMPTY_UNVERIFIED', oNum);
+}
+
 // Two separate guards with their own dialogs: "rack didn't confirm
 // available" and "rack didn't confirm retracted" mean different things to the
 // operator. Both OK = HIGH (L3 waits for HIGH).
 function toolRackAvailableGuard(settings, oNum) {
-  return rackSensorGuard(settings.toolRackAvailableSensorInput, 'TOOLRACK_FAULT', 'TOOLRACK_FAULT_UNVERIFIED', oNum);
+  return recheckSensorGuard(settings.toolRackAvailableSensorInput, 'TOOLRACK_FAULT', 'TOOLRACK_FAULT_UNVERIFIED', oNum);
 }
 function toolRackUnavailableGuard(settings, oNum) {
-  return rackSensorGuard(settings.toolRackUnavailableSensorInput, 'TOOLRACK_RETRACT_FAULT', 'TOOLRACK_RETRACT_FAULT_UNVERIFIED', oNum);
+  return recheckSensorGuard(settings.toolRackUnavailableSensorInput, 'TOOLRACK_RETRACT_FAULT', 'TOOLRACK_RETRACT_FAULT_UNVERIFIED', oNum);
 }
 
 function rackOutputConfigured(settings) {
@@ -2178,6 +2193,12 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   const unexpectedTool = (currentTool === 0 && toolNumber !== 0)
     ? unexpectedToolGuard(settings, 250, origin)
     : '';
+  // Whatever happened above, nothing travels to pick up a tool while one is
+  // still in the spindle: re-read the sensor right before the load. A
+  // manual-to-manual swap is the exception: the old tool is meant to be there.
+  const emptyGate = (toolNumber !== 0 && !isManualToManual)
+    ? spindleEmptyGate(settings, 260)
+    : '';
 
   const preCmd = settings.preToolChangeGcode?.trim() || '';
   const postCmd = settings.postToolChangeGcode?.trim() || '';
@@ -2261,6 +2282,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ${rackExtend}
     ${zeroKeepSection}
     ${unloadSection}
+    ${emptyGate}
     ${swapBody}
     ${rackRetract}
     G4 P0
