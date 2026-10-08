@@ -27,6 +27,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   onBeforeCommand,
+  onToolChangeEnd,
   buildInitialConfig,
   computeKeepoutZone,
   slotEntryPoint,
@@ -2785,5 +2786,166 @@ describe('Tool Numbering: what M6 T<n> loads', () => {
   test('Tool ID numbering: a tool in no slot is a hand load', () => {
     const out = run('M6 T50', [{ toolId: 300, toolNumber: 2 }, { toolId: 50, toolNumber: null }]);
     assert.match(out, /MANUAL_CLAMP_TOOL_50\b/);
+  });
+});
+
+// Wireless I/O as the clamp output ("bridge:0" = board OUT1). The
+// valve is switched over the radio, so the release is a (DONGLE:xio:out …)
+// line after G4 P0 (moves finished first, like the wired M64), the bridge's
+// link-loss fail-safe is armed on that output, and a change with the bridge
+// offline is refused instead of run with a clamp that would go nowhere.
+describe('Wireless I/O clamp output', () => {
+  const settings = buildInitialConfig({
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5,
+    clampAuxOutput: 'bridge:0',
+  });
+  const setBridge = (connected) => {
+    globalThis.pluginContext = { dongle: { getDevices: () => (connected === null ? [] : [{ name: 'xio', connected }]) } };
+  };
+  const runM6 = () => {
+    const commands = [{ command: 'M6 T1', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 2, mpos: { x: 10, y: 20 } }, tools: [] }, { ...settings });
+    return commands.map((c) => c.command.trim()).join('\n').split('\n').map((l) => l.trim());
+  };
+
+  test('keeps the bridge output through settings', () => {
+    assert.equal(settings.clampAuxOutput, 'bridge:0');
+    assert.equal(buildInitialConfig({ clampAuxOutput: 'bridge:9' }).clampAuxOutput, -1);
+  });
+
+  test('release and clamp switch OUT1 over the radio, each after G4 P0', () => {
+    setBridge(true);
+    const lines = runM6();
+    const release = lines.indexOf('(DONGLE:xio:out 0 1)');
+    const clamp = lines.indexOf('(DONGLE:xio:out 0 0)');
+    assert.ok(release > 0 && clamp > 0, 'expected both a release and a clamp');
+    assert.equal(lines[release - 1], 'G4 P0');
+    assert.equal(lines[clamp - 1], 'G4 P0');
+    assert.ok(!lines.some((l) => /^M6[45]\b/.test(l)), 'no wired M64/M65 for a bridge clamp');
+  });
+
+  test('arms the fail-safe on OUT1 at the start of the change', () => {
+    setBridge(true);
+    const lines = runM6();
+    const start = lines.indexOf('(Start of PneumaticATC Plugin Sequence)');
+    const failsafe = lines.indexOf('(DONGLE:xio:failsafe 0 1)');
+    assert.ok(start >= 0 && failsafe > start, 'fail-safe right after the sequence start');
+    assert.ok(failsafe < lines.indexOf('(DONGLE:xio:out 0 1)'), 'armed before the first release');
+    const role = lines.indexOf('(DONGLE:xio:role 0 drawbar)');
+    assert.ok(role > start && role < lines.indexOf('(DONGLE:xio:out 0 1)'), 'drawbar role assigned before the first release');
+  });
+
+  test('refuses the change when the bridge is offline or not paired', () => {
+    for (const state of [false, null]) {
+      setBridge(state);
+      assert.throws(runM6, /Wireless I\/O is not connected/);
+    }
+  });
+
+  test('a refused release raises a popup the operator dismisses', () => {
+    const notices = [];
+    globalThis.pluginContext = { showNotice: (title, message, details) => notices.push({ title, details }) };
+    const cmds = [{ command: '(DONGLE:xio:out 0 1)', isOriginal: true }];
+    gateSpindleUnclamp(cmds, { machineState: { spindleActive: true } }, settings);
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].title, 'Drawbar Release Blocked');
+    assert.deepEqual(notices[0].details, { Command: '(DONGLE:xio:out 0 1)', Output: 'Wireless I/O OUT1' });
+  });
+
+  test('a release while the spindle runs is refused with one flat comment', () => {
+    const cmds = [{ command: '(DONGLE:xio:out 0 1)', isOriginal: true }];
+    gateSpindleUnclamp(cmds, { machineState: { spindleActive: true } }, settings);
+    assert.equal(cmds[0].command, '(BLOCKED: spindle active - unclamp refused: DONGLE:xio:out 0 1)');
+    assert.ok(!/^\(DONGLE:/.test(cmds[0].command), 'must not still read as a bridge command');
+    // Another bridge output is not the clamp and passes untouched.
+    const other = [{ command: '(DONGLE:xio:out 1 1)', isOriginal: true }];
+    gateSpindleUnclamp(other, { machineState: { spindleActive: true } }, settings);
+    assert.equal(other[0].command, '(DONGLE:xio:out 1 1)');
+  });
+});
+
+// Wireless I/O inputs (ncSender Wireless ATC: drawbar on board INPUT1 =
+// "bridge:0", tool sensor on INPUT2 = "bridge:1"). ncSender, not grblHAL,
+// reads them: a DONGLE_WAIT with a failure block the host runs only when the
+// input never arrived. Same lift / message / M0 / return as the wired M66.
+describe('Wireless I/O sensor inputs', () => {
+  const settings = buildInitialConfig({
+    slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5,
+    clampAuxOutput: 'bridge:0', drawbarInput: 'bridge:0', toolSensorInput: 'bridge:1',
+  });
+  const runM6 = (from) => {
+    globalThis.pluginContext = { dongle: { getDevices: () => [{ name: 'xio', connected: true }] } };
+    const commands = [{ command: 'M6 T1', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: from, mpos: { x: 10, y: 20 } }, tools: [] }, { ...settings });
+    return commands.map((c) => c.command.trim()).join('\n').split('\n').map((l) => l.trim()).filter(Boolean);
+  };
+
+  test('keeps bridge inputs through settings; pressure stays wired-only', () => {
+    assert.equal(settings.drawbarInput, 'bridge:0');
+    assert.equal(settings.toolSensorInput, 'bridge:1');
+    assert.equal(buildInitialConfig({ pressureInput: 'bridge:2' }).pressureInput, -1);
+  });
+
+  test('after the release, waits for the drawbar to open on IN1, with a failure block', () => {
+    const lines = runM6(2);
+    const release = lines.indexOf('(DONGLE:xio:out 0 1)');
+    const wait = lines.indexOf('(DONGLE_WAIT:xio:in0=1:0:1:else)', release);
+    assert.ok(release > 0 && wait > release, 'drawbar-open wait follows the release');
+    assert.equal(lines[wait + 1], '(DONGLE_ELSE)');
+    const end = lines.indexOf('(DONGLE_END)', wait);
+    const block = lines.slice(wait + 2, end);
+    assert.ok(block.includes('(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAILED_TO_OPEN)'));
+    assert.ok(block.includes('M0'));
+    assert.ok(!lines.some((l) => /^M66\b/.test(l)), 'no M66 for bridge inputs');
+  });
+
+  test('after the clamp, waits for the drawbar to close and the tool to be seated', () => {
+    const lines = runM6(0);
+    assert.ok(lines.includes('(DONGLE_WAIT:xio:in0=0:0:1:else)'), 'drawbar closed (IN1 off)');
+    assert.ok(lines.includes('(DONGLE_WAIT:xio:in1=1:0:0.5:else)'), 'tool present (IN2 on)');
+  });
+
+  test('every failure block is closed', () => {
+    const lines = runM6(2);
+    assert.equal(lines.filter((l) => l === '(DONGLE_ELSE)').length, lines.filter((l) => l === '(DONGLE_END)').length);
+    assert.equal(lines.filter((l) => /:else\)$/.test(l)).length, lines.filter((l) => l === '(DONGLE_ELSE)').length);
+  });
+
+  test('a bridge input alone also needs the bridge connected', () => {
+    globalThis.pluginContext = { dongle: { getDevices: () => [] } };
+    const wiredClamp = buildInitialConfig({ slots: 3, clampAuxOutput: 1, drawbarInput: 'bridge:0' });
+    assert.throws(() => onBeforeCommand([{ command: 'M6 T1', isOriginal: true }],
+      { machineState: { tool: 2, mpos: { x: 0, y: 0 } }, tools: [] }, wiredClamp), /Wireless I\/O is not connected/);
+  });
+});
+
+// Abort (a soft reset) never reaches the bridge, so an aborted change must
+// put the bridge clamp back to clamped itself, or the valve stays released
+// and the drawbar opens as soon as air returns.
+describe('aborted tool change re-clamps a bridge clamp output', () => {
+  const sent = [];
+  // Set per test: other tests replace the shared pluginContext as they run.
+  const capture = () => {
+    sent.length = 0;
+    globalThis.pluginContext = { dongle: { send: (name, payload) => sent.push(`${name}:${payload}`), getDevices: () => [{ name: 'xio', connected: true }] } };
+  };
+  const bridge = buildInitialConfig({ clampAuxOutput: 'bridge:0' });
+
+  test('aborted: clamp output off on the bridge', () => {
+    capture();
+    onToolChangeEnd({ kind: 'M6', outcome: 'aborted', reason: 'stopped' }, bridge);
+    assert.deepEqual(sent, ['xio:out 0 0']);
+  });
+
+  test('completed: nothing sent', () => {
+    capture();
+    onToolChangeEnd({ kind: 'M6', outcome: 'completed' }, bridge);
+    assert.deepEqual(sent, []);
+  });
+
+  test('wired clamp: nothing sent to any accessory', () => {
+    capture();
+    onToolChangeEnd({ kind: 'M6', outcome: 'aborted', reason: 'stopped' }, buildInitialConfig({ clampAuxOutput: 1 }));
+    assert.deepEqual(sent, []);
   });
 });
