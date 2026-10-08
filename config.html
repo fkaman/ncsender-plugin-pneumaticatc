@@ -2189,7 +2189,10 @@
     // like Generic.
     'ncsender-wireless': {
       clampOut: 'bridge:0', pres: '', drawbar: 'bridge:0', toolSense: 'bridge:1', locked: true,
-      taperBlow: false,
+      // Off by default, but the builder's to choose: whether the blow port is
+      // plumbed off the drawbar valve depends on the spindle, and turning it
+      // off saves compressor air.
+      taperBlow: false, taperBlowEditable: true,
       names: { 'pa-clamp-aux': 'Clamp valve', 'pa-adv-input-drawbar': 'Drawbar', 'pa-adv-input-toolsense': 'Tool sensor' }
     }
   };
@@ -2217,19 +2220,24 @@
       // real tool sensor by whoever wired one.
       setAdvPin('pa-adv-input-toolsense', p.toolSense);
       if (p.clampOut !== null) setClampAux(p.clampOut);
-      if (typeof p.taperBlow === 'boolean') $('pa-adv-taper-blow').checked = p.taperBlow;
+      // An editable taper blow is only a default for someone picking the
+      // profile, never re-imposed over their saved choice.
+      if (typeof p.taperBlow === 'boolean' && (fromUser || !p.taperBlowEditable))
+        $('pa-adv-taper-blow').checked = p.taperBlow;
     }
 
     var locked = !!p.locked;
 
     // Taper blow follows the profile lock like the pins do: a known kit's
-    // plumbing decides it, so it isn't editable there.
+    // plumbing decides it, so it isn't editable there (unless the profile
+    // leaves it to the builder).
     (function() {
       var tb = $('pa-adv-taper-blow');
       if (!tb) return;
-      tb.disabled = locked;
+      var tbLocked = locked && !p.taperBlowEditable;
+      tb.disabled = tbLocked;
       var wrap = tb.closest('.pa-toggle');
-      if (wrap) wrap.classList.toggle('pa-locked', locked);
+      if (wrap) wrap.classList.toggle('pa-locked', tbLocked);
     })();
     ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolsense', 'pa-clamp-aux']
       .forEach(function(id) {

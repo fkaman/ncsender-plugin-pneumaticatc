@@ -1496,11 +1496,34 @@ function inputFor(value) {
 // it. Straight up means anything that comes free lands in or beside its own
 // slot. The return is fed at drawbar speed rather than rapided because it can
 // be descending onto a holder.
+//
+// `retreat.abort` (optional) is what Abort does instead of a bare soft reset:
+// ncSender resumes the M0, runs only these lines, then resets (see the host's
+// GateAbortBlock). Continue skips them. The lines start from the lift, so
+// they leave the rack from safe Z the way a finished change would.
 function sensorGuard(pin, oNum, waitSec, asserted, msgId, retreat) {
   const lift = retreat ? `G53 G0 Z${retreat.safeZ}` : '';
-  const back = retreat ? `G53 G1 Z${retreat.returnZ} F${DRAWBAR_FEEDRATE_MMPM}` : '';
-  const message = `(MSG, PLUGIN_PNEUMATICATC:${msgId})`;
+  const returnLine = retreat && retreat.returnZ != null ? `G53 G1 Z${retreat.returnZ} F${DRAWBAR_FEEDRATE_MMPM}` : '';
+  const abort = retreat && retreat.abort ? retreat.abort.trim() : '';
+  const msgLine = `(MSG, PLUGIN_PNEUMATICATC:${msgId})`;
+  const message = abort ? `(GATE_ABORT_OFFERED)\n      ${msgLine}` : msgLine;
+  const back = abort
+    ? `(GATE_ABORT)\n      ${abort}\n      G4 P0\n      (GATE_END)${returnLine ? `\n      ${returnLine}` : ''}`
+    : returnLine;
   return inputFor(pin).guard({ oNum, waitSec, asserted, lift, message, back });
+}
+
+// Abort from a rack slot: leave along the slot's normal exit route to where
+// the change started. After a failed release the drawbar is clamped first,
+// so whatever is in the spindle stays held on the way out. The last leg goes
+// through the core's keepout check like every other return.
+function rackAbortExit(settings, slotPos, abortTo, reclamp) {
+  if (!abortTo) return undefined;
+  const route = settings.rackHolding === 'Cup'
+    ? cupExit(slotPos.engaged, abortTo, settings)
+    : rackExit(slotPos.engaged, abortTo, settings);
+  const clamp = reclamp ? `${auxLineFor(settings, 'clamp')}\n      G4 P0.5\n      ` : '';
+  return `${clamp}${handFinalLegToCoreCheck(route)}`;
 }
 
 // expect: 'open' after an unclamp, 'closed' after a clamp.
@@ -1530,7 +1553,7 @@ function slideFeedrate(settings) {
   return settings.slideSpeed > 0 ? settings.slideSpeed : 500;
 }
 
-function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }) {
+function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }, abortTo = undefined) {
   if (currentTool === 0) return '';
 
   if (currentTool > settings.slots) {
@@ -1570,7 +1593,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
-      ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM })}${closeAfterLiftOff}
+      ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM, abort: rackAbortExit(settings, slotPos, abortTo, true) })}${closeAfterLiftOff}
       G53 G0 Z${settings.zSafe}
       ${toolGuard(settings, 201, 'empty')}
       M61 Q0
@@ -1585,14 +1608,14 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     G4 P0.5
     ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
-    ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM })}${closeAfterLiftOff}
+    ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM, abort: rackAbortExit(settings, slotPos, abortTo, true) })}${closeAfterLiftOff}
     G53 G0 Z${settings.zSafe}
     ${toolGuard(settings, 201, 'empty')}
     M61 Q0
   `.trim();
 }
 
-function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlreadyReleased = false, origin = { x: 0, y: 0 }, chainedFromRack = false) {
+function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlreadyReleased = false, origin = { x: 0, y: 0 }, chainedFromRack = false, abortTo = undefined) {
   if (toolNumber === 0) return '';
 
   if (toolNumber > settings.slots) {
@@ -1672,19 +1695,22 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G4 P0.1
       ${auxLineFor(settings, 'unclamp')}
       G4 P${DEDUST_VENT_SEC}
-      ${drawbarGuard(settings, 210, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DEDUST_LIFT_MM })}
+      ${drawbarGuard(settings, 210, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DEDUST_LIFT_MM, abort: rackAbortExit(settings, slotPos, abortTo, true) })}
       G53 G1 Z${approachZ} F${DEDUST_FEEDRATE_MMPM}` : `${releaseFirst}
       G53 G0 Z${approachZ}`;
   const clampSettle = settings.taperBlow ? DEDUST_CLAMP_SETTLE_SEC : 0.5;
 
   if (settings.rackHolding === 'Cup') {
+    // A cup load leaves straight up (the next move is the rise to safe Z),
+    // so Continue after a failed check carries on from the lift instead of
+    // feeding all the way back down into the rack first.
     return `
       ${approachToEngaged}${descend}
       G4 P0.5
       ${auxLineFor(settings, 'clamp')}${drawbarSeat}
       G4 P${clampSettle}
-      ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
-      ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
+      ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
+      ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
       G53 G0 Z${settings.zSafe}
       M61 Q${idOf(toolNumber)}
       ${tlsRoutine}
@@ -1697,8 +1723,8 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     G4 P0.5
     ${auxLineFor(settings, 'clamp')}${drawbarSeat}
     G4 P${clampSettle}
-    ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
-    ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
+    ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, returnZ: settings.slot1.z, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
+    ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, returnZ: settings.slot1.z, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
     G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
     G53 G0 Z${settings.zSafe}
     M61 Q${idOf(toolNumber)}
@@ -2055,7 +2081,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ? ''
     : sourceIsProbe
       ? buildProbeUnload(settings, swapFrom)
-      : buildUnloadTool(settings, currentTool, sourceSlot, swapFrom);
+      : buildUnloadTool(settings, currentTool, sourceSlot, swapFrom, returnTo);
 
   // Chained rack swap: an unload just placed the machine at the source
   // slot's engaged position at Z-safe. Slot N's engaged sits in the
@@ -2087,7 +2113,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
       : probeRoute(fromXY, holder.approach, settings);
     loadSection = buildProbeLoad(settings, entrance, tlsRoutine, drawbarAlreadyReleased);
   } else {
-    loadSection = buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased, loadFrom, chainedFromRack);
+    loadSection = buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased, loadFrom, chainedFromRack, returnTo);
   }
 
   // Tx → T0 leaves the drawbar released after the unload (there is no
@@ -2158,7 +2184,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   if (branchOnRef) {
     const libLoad = buildLoadTool(settings, toolNumber, targetSlot,
       `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`,
-      drawbarAlreadyReleased, loadFrom, chainedFromRack);
+      drawbarAlreadyReleased, loadFrom, chainedFromRack, returnTo);
     const libExit = handFinalLegToCoreCheck(isCup
       ? cupExit(targetSlot.engaged, returnTo, settings)
       : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, returnTo, settings));

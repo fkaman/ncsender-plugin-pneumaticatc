@@ -2919,6 +2919,118 @@ describe('Wireless I/O sensor inputs', () => {
   });
 });
 
+// Continue after a failed load check: the failure block lifts to safe Z. On a
+// Cup rack the load then leaves straight up, so it must not feed back down
+// into the rack first. On a Fork rack the next move slides sideways out of
+// the fork, so it still returns to the slot height.
+describe('Continue after a failed load check', () => {
+  const failureBlock = (rackHolding) => {
+    const settings = buildInitialConfig({
+      slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5, rackHolding,
+      clampAuxOutput: 'bridge:0', drawbarInput: 'bridge:0', toolSensorInput: 'bridge:1',
+    });
+    globalThis.pluginContext = { dongle: { getDevices: () => [{ name: 'xio', connected: true }] } };
+    const commands = [{ command: 'M6 T1', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 0, mpos: { x: 10, y: 20 } }, tools: [] }, settings);
+    const lines = commands.map((c) => c.command.trim()).join('\n').split('\n').map((l) => l.trim()).filter(Boolean);
+    const wait = lines.indexOf('(DONGLE_WAIT:xio:in1=1:0:0.5:else)');
+    assert.ok(wait > 0, 'tool-present check');
+    return lines.slice(wait + 2, lines.indexOf('(DONGLE_END)', wait));
+  };
+
+  // Lines run on Continue: everything outside the abort block.
+  const continueLines = (block) => {
+    const start = block.indexOf('(GATE_ABORT)'), end = block.indexOf('(GATE_END)');
+    return start < 0 ? block : [...block.slice(0, start), ...block.slice(end + 1)];
+  };
+
+  test('Cup: lifts, asks, and carries on from the lift', () => {
+    assert.deepEqual(continueLines(failureBlock('Cup')),
+      ['G53 G0 Z-5', '(GATE_ABORT_OFFERED)', '(MSG, PLUGIN_PNEUMATICATC:TOOL_FAILED_TO_SEAT)', 'M0']);
+  });
+
+  test('Fork: still feeds back down to the slot before sliding out', () => {
+    const block = continueLines(failureBlock('Fork'));
+    assert.equal(block[block.length - 1], 'G53 G1 Z-100 F300');
+  });
+});
+
+// Abort at a drawbar or tool-sensor prompt: ncSender resumes the M0, runs
+// only the (GATE_ABORT)…(GATE_END) lines, then soft-resets. They leave the
+// rack the normal way and end where the change started, so the spindle is
+// never left parked in the rack.
+describe('Abort at a drawbar or tool-sensor prompt returns to origin', () => {
+  const origin = { x: 300, y: 200 };
+  const program = (overrides, from = 2) => {
+    const settings = buildInitialConfig({
+      slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5, ...overrides,
+    });
+    globalThis.pluginContext = { dongle: { getDevices: () => [{ name: 'xio', connected: true }] } };
+    const commands = [{ command: 'M6 T1', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: from, mpos: origin }, tools: [] }, settings);
+    return commands.map((c) => c.command.trim()).join('\n').split('\n').map((l) => l.trim()).filter(Boolean);
+  };
+  const abortBlocks = (lines) => {
+    const blocks = [];
+    for (let i = lines.indexOf('(GATE_ABORT)'); i >= 0; i = lines.indexOf('(GATE_ABORT)', i + 1))
+      blocks.push(lines.slice(i + 1, lines.indexOf('(GATE_END)', i)));
+    return blocks;
+  };
+  const bridge = { clampAuxOutput: 'bridge:0', drawbarInput: 'bridge:0', toolSensorInput: 'bridge:1' };
+
+  for (const rackHolding of ['Cup', 'Fork']) {
+    test(`${rackHolding}: every drawbar / tool-sensor prompt offers an abort that ends at the origin`, () => {
+      const lines = program({ ...bridge, rackHolding });
+      const blocks = abortBlocks(lines);
+      // unload: drawbar open; load: drawbar closed + tool present
+      assert.equal(blocks.length, 3);
+      assert.equal(lines.filter((l) => l === '(GATE_ABORT_OFFERED)').length, 3);
+      for (const b of blocks) {
+        const moves = b.filter((l) => /^G53 G0 X/.test(l));
+        assert.equal(moves[moves.length - 1], 'G53 G0 X300 Y200', 'ends at the origin');
+        assert.ok(!b.some((l) => /^\$keepout_off/.test(l) && /X300 Y200/.test(l)), 'last leg keeps its keepout check');
+        assert.equal(b[b.length - 1], 'G4 P0', 'motion finished before the reset');
+        assert.ok(!b.some((l) => /^G53 G[01] Z-1/.test(l)), 'never goes back down into the rack');
+      }
+    });
+  }
+
+  test('a failed release re-clamps before leaving; a failed load does not need to', () => {
+    const [unload, closed, present] = abortBlocks(program({ ...bridge, rackHolding: 'Cup' }));
+    assert.equal(unload.find((l) => /DONGLE:xio:out/.test(l)), '(DONGLE:xio:out 0 0)');
+    assert.ok(unload.indexOf('(DONGLE:xio:out 0 0)') < unload.findIndex((l) => /^G53 G0 X/.test(l)));
+    assert.ok(!closed.some((l) => /DONGLE:xio:out/.test(l)));
+    assert.ok(!present.some((l) => /DONGLE:xio:out/.test(l)));
+  });
+
+  test('the offer precedes the message, the block follows the M0', () => {
+    const lines = program({ ...bridge, rackHolding: 'Cup' });
+    const msg = lines.indexOf('(MSG, PLUGIN_PNEUMATICATC:TOOL_FAILED_TO_SEAT)');
+    assert.equal(lines[msg - 1], '(GATE_ABORT_OFFERED)');
+    assert.equal(lines[msg + 1], 'M0');
+    assert.equal(lines[msg + 2], '(GATE_ABORT)');
+  });
+
+  test('wired sensors get the same abort, inside their o-word if', () => {
+    const lines = program({ clampAuxOutput: 1, drawbarInput: 2, toolSensorInput: 3, rackHolding: 'Cup' });
+    assert.equal(abortBlocks(lines).length, 3);
+    const gate = lines.indexOf('(GATE_ABORT)');
+    assert.ok(lines.slice(0, gate).reverse().find((l) => /^o\d+ (if|endif)/i.test(l))?.includes(' if'), 'block sits inside the if');
+  });
+
+  test('air pressure keeps the plain reset', () => {
+    const lines = program({ ...bridge, pressureInput: 4, rackHolding: 'Cup' });
+    const msg = lines.findIndex((l) => /LOW_AIR|PRESSURE/i.test(l) && /MSG/.test(l));
+    assert.ok(msg > 0, 'pressure prompt present');
+    assert.notEqual(lines[msg - 1], '(GATE_ABORT_OFFERED)');
+  });
+
+  test('no sensors: nothing changes', () => {
+    const lines = program({ clampAuxOutput: 1, rackHolding: 'Cup' });
+    assert.ok(!lines.some((l) => /^\(GATE_/.test(l)));
+  });
+});
+
 // Abort (a soft reset) never reaches the bridge, so an aborted change must
 // put the bridge clamp back to clamped itself, or the valve stays released
 // and the drawbar opens as soon as air returns.
