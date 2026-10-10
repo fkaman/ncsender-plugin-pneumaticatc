@@ -1,8 +1,8 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.48-rack.7",
-  "minAppVersion": "2.0.164",
+  "version": "0.1.49-rack.1",
+  "minAppVersion": "2.0.182",
   "commands": "commands.js",
   "configUi": "config.html",
   "author": "ncSender",
@@ -16,7 +16,8 @@
     "pro-v2": "2.0.149"
   },
   "events": [
-    "onBeforeCommand"
+    "onBeforeCommand",
+    "onToolChangeEnd"
   ],
   "permissions": [
     "gcode.modify"

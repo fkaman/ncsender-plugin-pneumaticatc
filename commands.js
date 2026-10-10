@@ -181,6 +181,7 @@ const sanitizeCoords3D = (coords = {}) => ({
 
 const sanitizeAuxOutput = (value) => {
   if (value === 'M7' || value === 'M8') return value;
+  if (OUTPUT_PROVIDERS.some((p) => p.match(value) && typeof value === 'string')) return value;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : -1;
 };
@@ -189,8 +190,21 @@ const sanitizeAuxOutput = (value) => {
 // that depends on it is skipped — M66 against a port the board doesn't have
 // is not an error the operator can act on, it just leaves #5399 stale.
 const sanitizeAuxInput = (value) => {
+  if (typeof value === 'string' && INPUT_PROVIDERS.some((p) => p.match(value))) return value;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : -1;
+};
+
+// The same, for settings whose code can only drive or read the controller's
+// own pins: a wireless ("bridge:<n>") value is not usable there, so it is
+// treated as not set (-1) instead of being passed on.
+const wiredInput = (value) => {
+  const v = sanitizeAuxInput(value);
+  return Number.isInteger(v) ? v : -1;
+};
+const wiredOutput = (value) => {
+  const v = sanitizeAuxOutput(value);
+  return typeof v === 'string' && /^bridge:/.test(v) ? -1 : v;
 };
 
 // Custom-mode per-slot XY. Returns a Map keyed by slot number for O(1) lookup.
@@ -282,7 +296,8 @@ const buildInitialConfig = (raw = {}) => {
     clampAuxOutput: sanitizeAuxOutput(raw.clampAuxOutput),
     // grblHAL aux INPUT carrying the air-pressure switch. -1 = no sensor
     // wired, which disables every pressure check.
-    pressureInput: sanitizeAuxInput(raw.pressureInput),
+    // Pressure has its own retry sequence built on M66, so it stays wired-only.
+    pressureInput: Number.isInteger(sanitizeAuxInput(raw.pressureInput)) ? sanitizeAuxInput(raw.pressureInput) : -1,
     // grblHAL aux INPUT carrying the drawbar-position switch (Sienci's
     // _tc_input_db — a reed switch on the cylinder). -1 = not wired.
     drawbarInput: sanitizeAuxInput(raw.drawbarInput),
@@ -298,12 +313,14 @@ const buildInitialConfig = (raw = {}) => {
     // single sensor can't tell "stuck mid-travel" from either confirmed end.
     // Each is optional on its own; skipping one just leaves that actuation
     // unverified. Both read OK = HIGH; invert via $370 if wired the other way.
+    // Wired only, like the pressure input: the rack is driven with M64/M65
+    // and read with M66, so a wireless value is treated as not set.
     toolRackEnabled: raw.toolRackEnabled === undefined
-      ? sanitizeAuxOutput(raw.toolRackAuxOutput) !== -1
+      ? wiredOutput(raw.toolRackAuxOutput) !== -1
       : !!raw.toolRackEnabled,
-    toolRackAuxOutput: sanitizeAuxOutput(raw.toolRackAuxOutput),
-    toolRackAvailableSensorInput: sanitizeAuxInput(raw.toolRackAvailableSensorInput),
-    toolRackUnavailableSensorInput: sanitizeAuxInput(raw.toolRackUnavailableSensorInput),
+    toolRackAuxOutput: wiredOutput(raw.toolRackAuxOutput),
+    toolRackAvailableSensorInput: wiredInput(raw.toolRackAvailableSensorInput),
+    toolRackUnavailableSensorInput: wiredInput(raw.toolRackUnavailableSensorInput),
     // Taper blow / cone clean plumbed off the drawbar valve (Sienci kit).
     // See DEDUST_* above for what it changes in the sequence.
     taperBlow: !!raw.taperBlow,
@@ -472,12 +489,112 @@ function indentBlock(text) {
   return lines.join('\n    ');
 }
 
+// === Output providers ===
+//
+// Every output this plugin drives (the clamp, and the aux outputs a
+// legacy TLS setting migrates from) is one of the kinds below. The rest of
+// the plugin only ever asks outputFor(value) for:
+//   on / off       the G-code that switches it
+//   setup          G-code to send once at the start of a tool change ('' if none)
+//   device         an accessory that must be connected for it to work, or null
+//   isRelease(cmd) whether a command switches it ON (a clamp release)
+//   blockedComment(original, reason)  a safe G-code comment replacing a refused release
+//   onAbort()      put it back to clamped after an aborted tool change, if
+//                  the controller's own reset doesn't (absent if it does)
+// A new kind of output (another accessory) is a new entry here, nothing else.
+// Inputs will get the same treatment when sensors move off M66.
+const BRIDGE_DEVICE = 'xio';
+
+const OUTPUT_PROVIDERS = [
+  // Controller coolant pins.
+  {
+    match: (v) => v === 'M7' || v === 'M8',
+    create: (v) => ({ on: v, off: 'M9', setup: '', device: null, isRelease: () => false }),
+  },
+  // Controller aux output: M64/M65 P<n>.
+  {
+    match: (v) => typeof v === 'number' && Number.isFinite(v),
+    create: (n) => {
+      const release = new RegExp('(^|[^A-Z])M0*64(\\s+P0*' + n + ')(\\s|$|;|\\()', 'i');
+      return {
+        on: n >= 0 ? `M64 P${n}` : '',
+        off: n >= 0 ? `M65 P${n}` : '',
+        setup: '',
+        device: null,
+        isRelease: (cmd) => release.test(cmd),
+        blockedComment: (original, reason) => `(${original} ${reason})`,
+        label: `Aux Out P${n}`,
+      };
+    },
+  },
+  // Wireless I/O output: "bridge:<n>" is board OUT<n+1>. Switched over
+  // the radio at serial-write time, so G4 P0 first: like the wired M64, the
+  // valve moves only after every queued move has finished.
+  {
+    match: (v) => /^bridge:[0-3]$/.test(String(v ?? '')),
+    create: (v) => {
+      const n = Number(String(v).slice('bridge:'.length));
+      const release = new RegExp('\\(DONGLE:' + BRIDGE_DEVICE + ':out\\s+' + n + '\\s+1\\)', 'i');
+      return {
+        on: `G4 P0\n(DONGLE:${BRIDGE_DEVICE}:out ${n} 1)`,
+        off: `G4 P0\n(DONGLE:${BRIDGE_DEVICE}:out ${n} 0)`,
+        // Both stored on the bridge, so sending them at every change also
+        // covers a replaced or reset one:
+        //  - link-loss fail-safe: radio silent 10 s -> output off = clamped;
+        //  - drawbar role: the bridge keeps this output off whenever the
+        //    spindle turns (it reads the RPM from ncSender's machine-state
+        //    feed) and refuses to switch it on, and ncSender refuses too.
+        setup: `(DONGLE:${BRIDGE_DEVICE}:failsafe ${n} 1)\n(DONGLE:${BRIDGE_DEVICE}:role ${n} drawbar)`,
+        device: { name: BRIDGE_DEVICE, label: 'Wireless I/O' },
+        // Also what an Auxiliary Output switch on this bridge output sends.
+        isRelease: (cmd) => release.test(cmd),
+        // The reason leads and the original loses its parentheses: a G-code
+        // comment can't nest (grblHAL then rejects every line until a reset),
+        // and one still starting "(DONGLE:" would be relayed to the bridge as
+        // the very release it refuses.
+        blockedComment: (original, reason) => `(${reason}: ${original.replace(/[()]/g, '')})`,
+        label: `Wireless I/O OUT${n + 1}`,
+        // Abort is a soft reset, which the bridge never sees: without this the
+        // valve stays released, and once air is back the drawbar opens (and
+        // can drop the tool). Sent straight to the bridge, so it works while
+        // the controller is in alarm.
+        onAbort: () => {
+          const dongle = typeof pluginContext !== 'undefined' ? pluginContext.dongle : null;
+          if (dongle && typeof dongle.send === 'function') dongle.send(BRIDGE_DEVICE, `out ${n} 0`);
+        },
+      };
+    },
+  },
+];
+
+const NO_OUTPUT = { on: '', off: '', setup: '', device: null, isRelease: () => false };
+
+function outputFor(value) {
+  const provider = OUTPUT_PROVIDERS.find((p) => p.match(value));
+  return provider ? provider.create(value) : NO_OUTPUT;
+}
+
 function auxOnOff(auxOutput) {
-  if (auxOutput === 'M7' || auxOutput === 'M8') return { on: auxOutput, off: 'M9' };
-  if (typeof auxOutput === 'number' && auxOutput >= 0) {
-    return { on: `M64 P${auxOutput}`, off: `M65 P${auxOutput}` };
+  const { on, off } = outputFor(auxOutput);
+  return { on, off };
+}
+
+// An output that lives on an accessory needs that accessory. Refuse the tool
+// change up front (the host stops the job with this message) rather than run
+// a sequence whose release and clamp would go nowhere.
+function requireOutputDevice(commands, settings) {
+  const device = outputFor(settings.clampAuxOutput).device
+    || inputFor(settings.drawbarInput).device
+    || inputFor(settings.toolSensorInput).device;
+  if (!device) return;
+  const toolChange = commands.some((c) => c.isOriginal && M6_PATTERN.test(c.command || ''));
+  if (!toolChange) return;
+  const dongle = typeof pluginContext !== 'undefined' ? pluginContext.dongle : null;
+  if (!dongle || typeof dongle.getDevices !== 'function') return;
+  const found = Array.from(dongle.getDevices() || []).find((d) => d && d.name === device.name);
+  if (!found || !found.connected) {
+    throw new Error(`The ${device.label} is not connected, so the tool change cannot run. Check its power and the Wireless USB, then try again.`);
   }
-  return { on: '', off: '' };
 }
 
 // === Keeping a Z0 that was set before any Tool Length Reference ===
@@ -1337,7 +1454,72 @@ const TOOL_SENSE_WAIT_SEC = 0.5;
 // `pin < 0` alone is not enough: an unsanitized settings object leaves these
 // fields undefined, and `undefined < 0` is false, which would put a literal
 // `M66 Pundefined` into a live tool change. Demand an actual integer >= 0.
-const auxInputConfigured = (pin) => Number.isInteger(pin) && pin >= 0;
+const auxInputConfigured = (pin) => inputFor(pin).configured;
+
+// The checks this fork adds (the rack end-stops, the tool-found check and the
+// spindle-empty gate) are built on the controller's own M66 read, so they only
+// work with a wired input. A wireless input is read a different way (see
+// INPUT_PROVIDERS), and handing it to M66 would put `M66 Pbridge:1` into a
+// live tool change. Those checks are simply left out for a wireless pin.
+const wiredInputConfigured = (pin) => Number.isInteger(pin) && pin >= 0;
+
+// === Input providers ===
+//
+// Same idea as the output providers: a sensor input is either a controller
+// aux input or an Wireless I/O input, and sensorGuard only ever asks
+// inputFor(pin).guard(...) for the lines that check it. A wired input is
+// read by the controller (M66 + an o-word if on #5399); a bridge input is
+// read by ncSender (DONGLE_WAIT with a failure block the host runs only when
+// the input never arrived). Both run the same failure lines: lift, message,
+// M0, return. Air pressure stays wired-only for now.
+const INPUT_PROVIDERS = [
+  // Controller aux input. `asserted` waits for LOW (L4), the convention
+  // documented above; a timeout leaves #5399 == -1.
+  {
+    match: (v) => Number.isInteger(v) && v >= 0,
+    create: (pin) => ({
+      configured: true,
+      device: null,
+      guard: ({ oNum, waitSec, asserted, lift, message, back }) => `
+    M66 P${pin} ${asserted ? 'L4' : 'L3'} Q${waitSec}
+    o${oNum} if [#5399 EQ -1]
+      ${lift}
+      ${message}
+      M0
+      ${back}
+    o${oNum} endif
+  `.trim(),
+    }),
+  },
+  // Wireless I/O input: "bridge:<n>" is board INPUT<n+1>, reported as
+  // in<n>=1 when active (opto lit), which is what `asserted` means here.
+  {
+    match: (v) => /^bridge:[0-3]$/.test(String(v ?? '')),
+    create: (v) => {
+      const n = Number(String(v).slice('bridge:'.length));
+      return {
+        configured: true,
+        device: { name: BRIDGE_DEVICE, label: 'Wireless I/O' },
+        guard: ({ waitSec, asserted, lift, message, back }) => `
+    (DONGLE_WAIT:${BRIDGE_DEVICE}:in${n}=${asserted ? 1 : 0}:0:${waitSec}:else)
+    (DONGLE_ELSE)
+      ${lift}
+      ${message}
+      M0
+      ${back}
+    (DONGLE_END)
+  `.trim(),
+      };
+    },
+  },
+];
+
+const NO_INPUT = { configured: false, device: null, guard: () => '' };
+
+function inputFor(value) {
+  const provider = INPUT_PROVIDERS.find((p) => p.match(value));
+  return provider ? provider.create(value) : NO_INPUT;
+}
 
 // `retreat` is optional: { safeZ, returnZ }. When given, a fault lifts the
 // spindle clear of the rack before the operator is asked to do anything, and
@@ -1358,18 +1540,34 @@ const auxInputConfigured = (pin) => Number.isInteger(pin) && pin >= 0;
 // it. Straight up means anything that comes free lands in or beside its own
 // slot. The return is fed at drawbar speed rather than rapided because it can
 // be descending onto a holder.
+//
+// `retreat.abort` (optional) is what Abort does instead of a bare soft reset:
+// ncSender resumes the M0, runs only these lines, then resets (see the host's
+// GateAbortBlock). Continue skips them. The lines start from the lift, so
+// they leave the rack from safe Z the way a finished change would.
 function sensorGuard(pin, oNum, waitSec, asserted, msgId, retreat) {
   const lift = retreat ? `G53 G0 Z${retreat.safeZ}` : '';
-  const back = retreat ? `G53 G1 Z${retreat.returnZ} F${DRAWBAR_FEEDRATE_MMPM}` : '';
-  return `
-    M66 P${pin} ${asserted ? 'L4' : 'L3'} Q${waitSec}
-    o${oNum} if [#5399 EQ -1]
-      ${lift}
-      (MSG, PLUGIN_PNEUMATICATC:${msgId})
-      M0
-      ${back}
-    o${oNum} endif
-  `.trim();
+  const returnLine = retreat && retreat.returnZ != null ? `G53 G1 Z${retreat.returnZ} F${DRAWBAR_FEEDRATE_MMPM}` : '';
+  const abort = retreat && retreat.abort ? retreat.abort.trim() : '';
+  const msgLine = `(MSG, PLUGIN_PNEUMATICATC:${msgId})`;
+  const message = abort ? `(GATE_ABORT_OFFERED)\n      ${msgLine}` : msgLine;
+  const back = abort
+    ? `(GATE_ABORT)\n      ${abort}\n      G4 P0\n      (GATE_END)${returnLine ? `\n      ${returnLine}` : ''}`
+    : returnLine;
+  return inputFor(pin).guard({ oNum, waitSec, asserted, lift, message, back });
+}
+
+// Abort from a rack slot: leave along the slot's normal exit route to where
+// the change started. After a failed release the drawbar is clamped first,
+// so whatever is in the spindle stays held on the way out. The last leg goes
+// through the core's keepout check like every other return.
+function rackAbortExit(settings, slotPos, abortTo, reclamp) {
+  if (!abortTo) return undefined;
+  const route = settings.rackHolding === 'Cup'
+    ? cupExit(slotPos.engaged, abortTo, settings)
+    : rackExit(slotPos.engaged, abortTo, settings);
+  const clamp = reclamp ? `${auxLineFor(settings, 'clamp')}\n      G4 P0.5\n      ` : '';
+  return `${clamp}${handFinalLegToCoreCheck(route)}`;
 }
 
 // expect: 'open' after an unclamp, 'closed' after a clamp.
@@ -1430,7 +1628,7 @@ function toolGuard(settings, oNum, expect, retreat) {
 // starts from `origin` as it assumes. Not emitted when no tool sensor pin is
 // configured, or for a change that does nothing physical (T0 -> T0).
 function unexpectedToolGuard(settings, oNum, origin) {
-  if (!auxInputConfigured(settings.toolSensorInput)) return '';
+  if (!wiredInputConfigured(settings.toolSensorInput)) return '';
   const park = probeRoute(origin, settings.manualTool, settings);
   const home = probeRoute(settings.manualTool, origin, settings, true);
   const countdown = Math.min(30, Math.max(1, Math.round(toFiniteNumber(settings.dialogBehavior?.countdownSec, 5))));
@@ -1471,7 +1669,7 @@ function unexpectedToolGuard(settings, oNum, origin) {
 // its o-word numbers; every call site needs its own, spaced to not collide in
 // one macro. Returns '' for an unwired input.
 function recheckSensorGuard(input, faultMsg, unverifiedMsg, oNum) {
-  if (!auxInputConfigured(input)) return '';
+  if (!wiredInputConfigured(input)) return '';
   const read = `M66 P${input} L3 Q0.01\n    G4 P0.1`;
   const retry = (n) => `
     o${n} if [#5399 EQ -1]
@@ -1565,7 +1763,7 @@ function slideFeedrate(settings) {
   return settings.slideSpeed > 0 ? settings.slideSpeed : 500;
 }
 
-function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }) {
+function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }, abortTo = undefined) {
   if (currentTool === 0) return '';
 
   if (currentTool > settings.slots) {
@@ -1610,7 +1808,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
-      ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM })}${closeAfterLiftOff}
+      ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM, abort: rackAbortExit(settings, slotPos, abortTo, true) })}${closeAfterLiftOff}
       G53 G0 Z${settings.zSafe}
       ${toolGuard(settings, 201, 'empty')}
       M61 Q0
@@ -1625,14 +1823,14 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     G4 P0.5
     ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
-    ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM })}${closeAfterLiftOff}
+    ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM, abort: rackAbortExit(settings, slotPos, abortTo, true) })}${closeAfterLiftOff}
     G53 G0 Z${settings.zSafe}
     ${toolGuard(settings, 201, 'empty')}
     M61 Q0
   `.trim();
 }
 
-function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlreadyReleased = false, origin = { x: 0, y: 0 }, chainedFromRack = false) {
+function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlreadyReleased = false, origin = { x: 0, y: 0 }, chainedFromRack = false, abortTo = undefined) {
   if (toolNumber === 0) return '';
 
   if (toolNumber > settings.slots) {
@@ -1712,19 +1910,22 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G4 P0.1
       ${auxLineFor(settings, 'unclamp')}
       G4 P${DEDUST_VENT_SEC}
-      ${drawbarGuard(settings, 210, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DEDUST_LIFT_MM })}
+      ${drawbarGuard(settings, 210, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DEDUST_LIFT_MM, abort: rackAbortExit(settings, slotPos, abortTo, true) })}
       G53 G1 Z${approachZ} F${DEDUST_FEEDRATE_MMPM}` : `${releaseFirst}
       G53 G0 Z${approachZ}`;
   const clampSettle = settings.taperBlow ? DEDUST_CLAMP_SETTLE_SEC : 0.5;
 
   if (settings.rackHolding === 'Cup') {
+    // A cup load leaves straight up (the next move is the rise to safe Z),
+    // so Continue after a failed check carries on from the lift instead of
+    // feeding all the way back down into the rack first.
     return `
       ${approachToEngaged}${descend}
       G4 P0.5
       ${auxLineFor(settings, 'clamp')}${drawbarSeat}
       G4 P${clampSettle}
-      ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
-      ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
+      ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
+      ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
       G53 G0 Z${settings.zSafe}
       M61 Q${idOf(toolNumber)}
       ${tlsRoutine}
@@ -1737,8 +1938,8 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     G4 P0.5
     ${auxLineFor(settings, 'clamp')}${drawbarSeat}
     G4 P${clampSettle}
-    ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
-    ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, returnZ: settings.slot1.z })}
+    ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, returnZ: settings.slot1.z, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
+    ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, returnZ: settings.slot1.z, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
     G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
     G53 G0 Z${settings.zSafe}
     M61 Q${idOf(toolNumber)}
@@ -2098,7 +2299,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
     ? ''
     : sourceIsProbe
       ? buildProbeUnload(settings, swapFrom)
-      : buildUnloadTool(settings, currentTool, sourceSlot, swapFrom);
+      : buildUnloadTool(settings, currentTool, sourceSlot, swapFrom, returnTo);
 
   // Chained rack swap: an unload just placed the machine at the source
   // slot's engaged position at Z-safe. Slot N's engaged sits in the
@@ -2130,7 +2331,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
       : probeRoute(fromXY, holder.approach, settings);
     loadSection = buildProbeLoad(settings, entrance, tlsRoutine, drawbarAlreadyReleased);
   } else {
-    loadSection = buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased, loadFrom, chainedFromRack);
+    loadSection = buildLoadTool(settings, toolNumber, targetSlot, tlsRoutine, drawbarAlreadyReleased, loadFrom, chainedFromRack, returnTo);
   }
 
   // Tx → T0 leaves the drawbar released after the unload (there is no
@@ -2224,7 +2425,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   if (branchOnRef) {
     const libLoad = buildLoadTool(settings, toolNumber, targetSlot,
       `(Load stored TLO from tool library)\n    G43.1 Z${storedTlo}`,
-      drawbarAlreadyReleased, loadFrom, chainedFromRack);
+      drawbarAlreadyReleased, loadFrom, chainedFromRack, returnTo);
     const libExit = handFinalLegToCoreCheck(isCup
       ? cupExit(targetSlot.engaged, returnTo, settings)
       : rackExitToOrigin(targetSlot.engaged, /* isEmpty */ false, returnTo, settings));
@@ -2271,6 +2472,7 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
 
   const gcode = `
     (Start of PneumaticATC Plugin Sequence)
+    ${outputFor(settings.clampAuxOutput).setup}
     ${modalSafe(preCmd, 'pre')}
     #<return_units> = [20 + #<_metric>]
     G21
@@ -2540,16 +2742,15 @@ let _coreEdition = 'unknown';
 // spins the spindle down before firing M64, so this gate is a no-op on
 // the happy path; it catches accidents.
 function gateSpindleUnclamp(commands, context, settings) {
-  var clampAux = settings.clampAuxOutput;
-  if (!Number.isFinite(clampAux)) return;
+  var output = outputFor(settings.clampAuxOutput);
+  if (!output.blockedComment) return;
   if (!context || !context.machineState || !context.machineState.spindleActive) return;
 
-  var unclampPattern = new RegExp('(^|[^A-Z])M0*64(\\s+P0*' + clampAux + ')(\\s|$|;|\\()', 'i');
   for (var i = 0; i < commands.length; i++) {
     var cmd = commands[i];
     if (!cmd.isOriginal) continue;
     var stripped = cmd.command.trim().replace(/^N\d+\s+/i, '');
-    if (!unclampPattern.test(stripped)) continue;
+    if (!output.isRelease(stripped)) continue;
     // Replace with a rejection comment sent to grblHAL (no-op) but keep
     // the terminal display anchored to what the operator typed, with the
     // reason appended so it reads as one line: `M64 P2 (BLOCKED: spindle
@@ -2557,7 +2758,13 @@ function gateSpindleUnclamp(commands, context, settings) {
     // display text; the actual bytes on the wire are pure comment.
     var originalDisplay = (cmd.displayCommand || cmd.command).trim().replace(/^N\d+\s+/i, '');
     var reason = 'BLOCKED: spindle active - unclamp refused';
-    var comment = '(' + originalDisplay + ' ' + reason + ')';
+    var comment = output.blockedComment(originalDisplay, reason);
+    // Not just a console line: the operator has to see and dismiss it.
+    if (typeof pluginContext !== 'undefined' && typeof pluginContext.showNotice === 'function') {
+      pluginContext.showNotice('Drawbar Release Blocked',
+        'The spindle is turning, so the drawbar was not released. Releasing the collet at speed can throw the tool and damage the spindle. Stop the spindle, wait until it has stopped, then try again.',
+        { Command: originalDisplay, Output: output.label || '' });
+    }
     commands[i] = {
       command: comment,
       displayCommand: originalDisplay + '  (' + reason + ')',
@@ -2567,11 +2774,21 @@ function gateSpindleUnclamp(commands, context, settings) {
   }
 }
 
+// A tool change that ended aborted (Abort / soft reset, alarm, error,
+// disconnect) may have stopped with the clamp released. Clamped is the safe
+// state, the same one air loss or the bridge's link-loss fail-safe leaves.
+function onToolChangeEnd(event, settings) {
+  if (!event || event.outcome !== 'aborted' || !settings) return;
+  const output = outputFor(settings.clampAuxOutput);
+  if (typeof output.onAbort === 'function') output.onAbort();
+}
+
 function onBeforeCommand(commands, context, settings) {
   _coreEdition = (context && typeof context.edition === 'string') ? context.edition : 'unknown';
   if (context && context.safeZHeight !== undefined) {
     settings.zSafe = context.safeZHeight;
   }
+  requireOutputDevice(commands, settings);
   gateSpindleUnclamp(commands, context, settings);
   handleTLSCommand(commands, context, settings);
   handleMeasureTloCommand(commands, context, settings);
@@ -2581,7 +2798,7 @@ function onBeforeCommand(commands, context, settings) {
 }
 
 export {
-  onBeforeCommand, buildInitialConfig, probeVerifyRoutine, probeVerifyGcode,
+  onBeforeCommand, onToolChangeEnd, buildInitialConfig, probeVerifyRoutine, probeVerifyGcode,
   rackEntrance, rackExit, cupEntrance, cupExit, tlsEntrance, tlsExit,
   computeKeepoutZone, slotEntryPoint, slotApproachPoint,
   buildLoadTool, buildUnloadTool, buildSlotNav, calculateSlotPosition,

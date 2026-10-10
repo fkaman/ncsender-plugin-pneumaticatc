@@ -1229,7 +1229,7 @@
           <select id="pa-adv-profile" class="pa-select">
             <option value="generic" selected>Generic Pneumatic ATC</option>
             <option value="sienci">Sienci ATC</option>
-            <option value="ncsender-wireless" disabled>ncSender Wireless ATC (maybe)</option>
+            <option value="ncsender-wireless">ncSender Wireless ATC</option>
           </select>
         </div>
 
@@ -2059,6 +2059,14 @@
   var auxInputCount = null;
   var auxOutputCount = null;
   var PIN_SELECT_IDS = ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolsense', 'pa-adv-input-toolrack-available', 'pa-adv-input-toolrack-unavailable'];
+  // Sensors the Wireless I/O can read (pressure stays wired-only).
+  var BRIDGE_INPUT_IDS = ['pa-adv-input-drawbar', 'pa-adv-input-toolsense'];
+  // Set once /api/dongle/devices answers (see populateAuxOutputs).
+  var bridgePaired = false;
+  function bridgeInputLabel(value) {
+    var m = /^bridge:([0-3])$/.exec(String(value));
+    return m ? 'Wireless I/O IN' + (Number(m[1]) + 1) : null;
+  }
 
   function pinOptionExists(sel, value) {
     return qsa('option', sel).some(function(o) { return o.value === String(value); });
@@ -2078,6 +2086,15 @@
       opt.value = String(i);
       opt.textContent = 'Aux In P' + i;
       sel.appendChild(opt);
+    }
+    // Wireless I/O IN1..IN4 once a bridge is paired, or when one is already chosen.
+    if (BRIDGE_INPUT_IDS.indexOf(id) >= 0 && (bridgePaired || bridgeInputLabel(current))) {
+      for (var b = 0; b < 4; b += 1) {
+        var bopt = document.createElement('option');
+        bopt.value = 'bridge:' + b;
+        bopt.textContent = bridgeInputLabel(bopt.value);
+        sel.appendChild(bopt);
+      }
     }
     // A saved (or profile-supplied) pin this board doesn't have stays
     // visible and selected instead of being silently swapped for another.
@@ -2105,7 +2122,7 @@
     if (v !== '' && !pinOptionExists(sel, v)) {
       var opt = document.createElement('option');
       opt.value = v;
-      opt.textContent = 'Aux In P' + v;
+      opt.textContent = bridgeInputLabel(v) || ('Aux In P' + v);
       sel.appendChild(opt);
     }
     sel.value = v;
@@ -2210,6 +2227,21 @@
         'pa-adv-input-drawbar': 'Drawbar',
         'pa-adv-input-toolsense': 'Tool sensor'
       }
+    },
+    // ncSender Wireless ATC: the clamp valve is on the Wireless I/O,
+    // switched over the radio, so no wire runs from the controller to the
+    // spindle head. OUT1 drives it: off = clamped, and the bridge's link-loss
+    // fail-safe drops it to off (the tool stays gripped) if the radio goes
+    // quiet. The bridge also reads the drawbar (INPUT1) and tool sensor
+    // (INPUT2); there is no pressure input. Rack geometry is the builder's,
+    // like Generic.
+    'ncsender-wireless': {
+      clampOut: 'bridge:0', pres: '', drawbar: 'bridge:0', toolSense: 'bridge:1', locked: true,
+      // Off by default, but the builder's to choose: whether the blow port is
+      // plumbed off the drawbar valve depends on the spindle, and turning it
+      // off saves compressor air.
+      taperBlow: false, taperBlowEditable: true,
+      names: { 'pa-clamp-aux': 'Clamp valve', 'pa-adv-input-drawbar': 'Drawbar', 'pa-adv-input-toolsense': 'Tool sensor' }
     }
   };
 
@@ -2236,19 +2268,24 @@
       // real tool sensor by whoever wired one.
       setAdvPin('pa-adv-input-toolsense', p.toolSense);
       if (p.clampOut !== null) setClampAux(p.clampOut);
-      if (typeof p.taperBlow === 'boolean') $('pa-adv-taper-blow').checked = p.taperBlow;
+      // An editable taper blow is only a default for someone picking the
+      // profile, never re-imposed over their saved choice.
+      if (typeof p.taperBlow === 'boolean' && (fromUser || !p.taperBlowEditable))
+        $('pa-adv-taper-blow').checked = p.taperBlow;
     }
 
     var locked = !!p.locked;
 
     // Taper blow follows the profile lock like the pins do: a known kit's
-    // plumbing decides it, so it isn't editable there.
+    // plumbing decides it, so it isn't editable there (unless the profile
+    // leaves it to the builder).
     (function() {
       var tb = $('pa-adv-taper-blow');
       if (!tb) return;
-      tb.disabled = locked;
+      var tbLocked = locked && !p.taperBlowEditable;
+      tb.disabled = tbLocked;
       var wrap = tb.closest('.pa-toggle');
-      if (wrap) wrap.classList.toggle('pa-locked', locked);
+      if (wrap) wrap.classList.toggle('pa-locked', tbLocked);
     })();
     ['pa-adv-input-pres', 'pa-adv-input-drawbar', 'pa-adv-input-toolsense', 'pa-clamp-aux']
       .forEach(function(id) {
@@ -2356,7 +2393,8 @@
     if (!qsa('option', sel).some(function(o) { return o.value === v; })) {
       var opt = document.createElement('option');
       opt.value = v;
-      opt.textContent = /^M[78]$/.test(v) ? v : ('Aux Out P' + v);
+      var bridgeMatch = /^bridge:([0-3])$/.exec(v);
+      opt.textContent = /^M[78]$/.test(v) ? v : bridgeMatch ? ('Wireless I/O OUT' + (Number(bridgeMatch[1]) + 1)) : ('Aux Out P' + v);
       sel.appendChild(opt);
     }
     sel.value = v;
@@ -2406,6 +2444,8 @@
   function portTextFor(id, value) {
     if (value === '' || value === null || value === undefined) return 'N/A';
     if (/^M[0-9]+$/i.test(value)) return String(value);
+    var bridge = /^bridge:([0-3])$/.exec(String(value));
+    if (bridge) return (id === 'pa-clamp-aux' ? 'Wireless I/O OUT' : 'Wireless I/O IN') + (Number(bridge[1]) + 1);
     var isOutput = (id === 'pa-clamp-aux');
     return (isOutput ? 'Aux Out P' : 'Aux In P') + value;
   }
@@ -2902,13 +2942,18 @@
   // ---------- Aux output populate ----------
   async function populateAuxOutputs() {
     try {
-      var [stateRes, settingsRes] = await Promise.all([
+      var [stateRes, settingsRes, devicesRes] = await Promise.all([
         fetch(BASE_URL + '/api/server-state'),
-        fetch(BASE_URL + '/api/settings')
+        fetch(BASE_URL + '/api/settings'),
+        fetch(BASE_URL + '/api/dongle/devices').catch(function() { return null; })
       ]);
       if (!stateRes.ok) return;
       var state = await stateRes.json();
       var settings = settingsRes.ok ? await settingsRes.json() : {};
+      var devices = devicesRes && devicesRes.ok ? await devicesRes.json() : [];
+      // Wireless I/O outputs and inputs are offered once a bridge is paired.
+      bridgePaired = Array.isArray(devices) && devices.some(function(d) { return d && d.name === 'xio'; });
+      if (bridgePaired) rebuildAllPinOptions(auxInputCount != null ? auxInputCount : AUX_INPUT_FALLBACK);
       var outputPins = (state.machineState && state.machineState.outputPins) || state.outputPins || 0;
       var auxConfig = settings.auxOutputs || [];
       var nameMap = {};
@@ -2941,6 +2986,20 @@
           opt.value = String(i);
           opt.textContent = nameMap[lookupKey.toUpperCase()] || ('Aux Out P' + i);
           select.appendChild(opt);
+        }
+        // Wireless I/O OUT1..OUT4 ("bridge:0".."bridge:3"), switched over the radio.
+        // Also listed when one is already selected, so a saved choice never
+        // renders blank while the bridge is unpaired.
+        var selectedBridge = /^bridge:[0-3]$/.test(String(selectedValue));
+        // includeDisabled is only set for the moving tool rack's output, which
+        // is wired-only (M64/M65), so it is never offered a wireless output.
+        if ((bridgePaired || selectedBridge) && !includeDisabled) {
+          for (var b = 0; b < 4; b += 1) {
+            var bopt = document.createElement('option');
+            bopt.value = 'bridge:' + b;
+            bopt.textContent = nameMap[('(DONGLE:xio:out ' + b + ' 1)').toUpperCase()] || ('Wireless I/O OUT' + (b + 1));
+            select.appendChild(bopt);
+          }
         }
         if (selectedValue !== undefined && selectedValue !== null) {
           select.value = String(selectedValue);
@@ -3245,6 +3304,7 @@
     if (!sel) return -1;
     var v = sel.value;
     if (v === 'M7' || v === 'M8') return v;
+    if (/^bridge:[0-3]$/.test(v)) return v;
     var n = parseInt(v, 10);
     return Number.isFinite(n) ? n : -1;
   }
@@ -3282,11 +3342,13 @@
       })(),
       drawbarInput: (function() {
         var sel = $('pa-adv-input-drawbar');
+        if (sel && bridgeInputLabel(sel.value)) return sel.value;
         var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),
       toolSensorInput: (function() {
         var sel = $('pa-adv-input-toolsense');
+        if (sel && bridgeInputLabel(sel.value)) return sel.value;
         var n = Number.parseInt(sel ? sel.value : '', 10);
         return Number.isFinite(n) && n >= 0 ? n : -1;
       })(),

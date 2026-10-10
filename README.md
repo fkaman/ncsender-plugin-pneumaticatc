@@ -26,6 +26,7 @@ For a rack mounted on an actuator that extends it into position for a load/unloa
 - Two optional end-stop inputs confirm each end of travel: **Rack Available** after extending, **Rack Unavailable** after retracting. They are separate sensors, not one read both ways, so a rack stuck mid-travel is caught. Both read **OK when HIGH** (invert the port with `$370` if yours reads the other way). A miss pauses the job with a Re-check / Abort dialog; after two re-checks the dialog says plainly that continuing is unverified.
 - `$SLOT1` … `$SLOT8` extend the rack but never retract it, since you jogged there on purpose. `$TLS` and Measure All Tools extend before the probe and retract after.
 - Nothing changes for machines that don't use it: with no rack configured, the generated programs are identical to a stock install.
+- Wired only. The rack output and its sensors are switched and read with the controller's own `M64`/`M65` and `M66`, so the Wireless ATC profile's wireless inputs and outputs are not offered for them. The same goes for the tool-found and spindle-empty checks below: with a wireless tool sensor they are left out, and upstream's own wireless checks run as usual.
 
 ### Tool Found In The Spindle
 After a restart the controller boots as T0 even if a tool was left in the collet. When a **Tool Sensor** pin is set (Advanced), every tool change that starts from T0 first reads it, before the rack extends or anything moves. If it reports a tool (LOW = present), the change stops with a **Tool Found In Spindle** dialog:
