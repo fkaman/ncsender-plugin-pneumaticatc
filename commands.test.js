@@ -2324,77 +2324,6 @@ describe('sensor guards — drawbar and tool-in-spindle', () => {
   });
 });
 
-// === Fault retreat ======================================================
-//
-// A fault lifts clear of the rack so the operator can work, and drops back
-// before the sequence carries on. Both moves must live inside the if-block:
-// on the happy path neither may be emitted, and after Continue the spindle
-// has to be back where the remaining g-code assumes it is.
-describe('sensor guards — retreat to Z-safe on a fault', () => {
-  const cfg = (extra) => buildInitialConfig({
-    slots: 4, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: 0,
-    clampAuxOutput: 1, rackHolding: 'Fork', drawbarInput: 3, toolSensorInput: 5, ...extra
-  });
-  const lines = (g) => g.split('\n').map((l) => l.trim()).filter(Boolean);
-  // the lines between `oN if` and `oN endif`
-  const block = (ls, n) => {
-    const a = ls.findIndex((l) => l === `o${n} if [#5399 EQ -1]`);
-    const b = ls.findIndex((l) => l === `o${n} endif`);
-    assert.ok(a >= 0 && b > a, `block o${n} not found`);
-    return ls.slice(a + 1, b);
-  };
-
-  test('load: lift precedes the dialog, descent follows the M0, both inside the block', () => {
-    const s = cfg();
-    const ls = lines(buildLoadTool(s, 2, calculateSlotPosition(s, 2), '', false, { x: 0, y: 0 }, false));
-    for (const n of [211, 212]) {
-      const b = block(ls, n);
-      assert.equal(b[0], 'G53 G0 Z0', `o${n}: must lift to Z-safe first`);
-      assert.match(b[1], /^\(MSG, PLUGIN_PNEUMATICATC:/, `o${n}: dialog after the lift`);
-      assert.equal(b[2], 'M0', `o${n}: pause after the dialog`);
-      assert.equal(b[3], 'G53 G1 Z-100 F300', `o${n}: must return to the slot Z it checked at`);
-      assert.equal(b.length, 4, `o${n}: nothing else in the block`);
-    }
-  });
-
-  test('the fork slide-out still comes after the return, not after the lift', () => {
-    const s = cfg();
-    const ls = lines(buildLoadTool(s, 2, calculateSlotPosition(s, 2), '', false, { x: 0, y: 0 }, false));
-    const endif = ls.lastIndexOf('o212 endif');
-    const slide = ls.findIndex((l) => /^G53 G1 X-75 Y-40 F/.test(l));
-    assert.ok(slide > endif,
-      'resuming must descend back to slot Z before sliding out, or the tool is left in the rack');
-  });
-
-  test('a check already taken at Z-safe does not lift or descend', () => {
-    const s = cfg();
-    const ls = lines(buildLoadTool(s, 2, calculateSlotPosition(s, 2), '', false, { x: 0, y: 0 }, false));
-    const b = block(ls, 210);   // the release before descending onto the shank
-    assert.deepEqual(b, ['(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAILED_TO_OPEN)', 'M0'],
-      'no retreat is needed where the spindle is already clear');
-  });
-
-  test('unload: lifts from the drawbar-offset height and returns to it', () => {
-    const s = cfg();
-    const ls = lines(buildUnloadTool(s, 1, calculateSlotPosition(s, 1), { x: 0, y: 0 }));
-    const b = block(ls, 200);
-    assert.equal(b[0], 'G53 G0 Z0');
-    assert.equal(b[3], 'G53 G1 Z-99 F300', 'returns to slot.z + drawbar offset, where the check was taken');
-    const empty = block(ls, 201);   // taken after the lift, so already clear
-    assert.deepEqual(empty, ['(MSG, PLUGIN_PNEUMATICATC:TOOL_STILL_GRIPPED)', 'M0']);
-  });
-
-  test('the retreat never reaches a machine with no sensors wired', () => {
-    const s = buildInitialConfig({
-      slots: 4, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: 0,
-      clampAuxOutput: 1, rackHolding: 'Fork'
-    });
-    const g = buildLoadTool(s, 2, calculateSlotPosition(s, 2), '', false, { x: 0, y: 0 }, false)
-      + buildUnloadTool(s, 1, calculateSlotPosition(s, 1), { x: 0, y: 0 });
-    assert.doesNotMatch(g, /o2\d\d/);
-    assert.doesNotMatch(g, /M0/);
-  });
-});
 
 // === Event g-code modal containment ====================================
 //
@@ -2975,41 +2904,6 @@ describe('Wireless I/O sensor inputs', () => {
   });
 });
 
-// Continue after a failed load check: the failure block lifts to safe Z. On a
-// Cup rack the load then leaves straight up, so it must not feed back down
-// into the rack first. On a Fork rack the next move slides sideways out of
-// the fork, so it still returns to the slot height.
-describe('Continue after a failed load check', () => {
-  const failureBlock = (rackHolding) => {
-    const settings = buildInitialConfig({
-      slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5, rackHolding,
-      clampAuxOutput: 'bridge:0', drawbarInput: 'bridge:0', toolSensorInput: 'bridge:1',
-    });
-    globalThis.pluginContext = { dongle: { getDevices: () => [{ name: 'xio', connected: true }] } };
-    const commands = [{ command: 'M6 T1', isOriginal: true }];
-    onBeforeCommand(commands, { machineState: { tool: 0, mpos: { x: 10, y: 20 } }, tools: [] }, settings);
-    const lines = commands.map((c) => c.command.trim()).join('\n').split('\n').map((l) => l.trim()).filter(Boolean);
-    const wait = lines.indexOf('(DONGLE_WAIT:xio:in1=1:0:0.5:else)');
-    assert.ok(wait > 0, 'tool-present check');
-    return lines.slice(wait + 2, lines.indexOf('(DONGLE_END)', wait));
-  };
-
-  // Lines run on Continue: everything outside the abort block.
-  const continueLines = (block) => {
-    const start = block.indexOf('(GATE_ABORT)'), end = block.indexOf('(GATE_END)');
-    return start < 0 ? block : [...block.slice(0, start), ...block.slice(end + 1)];
-  };
-
-  test('Cup: lifts, asks, and carries on from the lift', () => {
-    assert.deepEqual(continueLines(failureBlock('Cup')),
-      ['G53 G0 Z-5', '(GATE_ABORT_OFFERED)', '(MSG, PLUGIN_PNEUMATICATC:TOOL_FAILED_TO_SEAT)', 'M0']);
-  });
-
-  test('Fork: still feeds back down to the slot before sliding out', () => {
-    const block = continueLines(failureBlock('Fork'));
-    assert.equal(block[block.length - 1], 'G53 G1 Z-100 F300');
-  });
-});
 
 // Abort at a drawbar or tool-sensor prompt: ncSender resumes the M0, runs
 // only the (GATE_ABORT)…(GATE_END) lines, then soft-resets. They leave the
@@ -3038,9 +2932,10 @@ describe('Abort at a drawbar or tool-sensor prompt returns to origin', () => {
     test(`${rackHolding}: every drawbar / tool-sensor prompt offers an abort that ends at the origin`, () => {
       const lines = program({ ...bridge, rackHolding });
       const blocks = abortBlocks(lines);
-      // unload: drawbar open; load: drawbar closed + tool present
-      assert.equal(blocks.length, 3);
-      assert.equal(lines.filter((l) => l === '(GATE_ABORT_OFFERED)').length, 3);
+      // unload: drawbar open; load: drawbar closed + tool present; each
+      // check prompts up to three times (two retries, then abort only)
+      assert.equal(blocks.length, 9);
+      assert.equal(lines.filter((l) => l === '(GATE_ABORT_OFFERED)').length, 9);
       for (const b of blocks) {
         const moves = b.filter((l) => /^G53 G0 X/.test(l));
         assert.equal(moves[moves.length - 1], 'G53 G0 X300 Y200', 'ends at the origin');
@@ -3052,10 +2947,11 @@ describe('Abort at a drawbar or tool-sensor prompt returns to origin', () => {
   }
 
   test('a failed release re-clamps before leaving; a failed load does not need to', () => {
-    const [unload, closed, present] = abortBlocks(program({ ...bridge, rackHolding: 'Cup' }));
+    const blocks = abortBlocks(program({ ...bridge, rackHolding: 'Cup' }));
+    const [unload, closed, present] = [blocks[0], blocks[3], blocks[6]];
     assert.equal(unload.find((l) => /DONGLE:xio:out/.test(l)), '(DONGLE:xio:out 0 0)');
     assert.ok(unload.indexOf('(DONGLE:xio:out 0 0)') < unload.findIndex((l) => /^G53 G0 X/.test(l)));
-    assert.ok(!closed.some((l) => /DONGLE:xio:out/.test(l)));
+    assert.ok(!closed.some((l) => /DONGLE:xio:out/.test(l)), 'the abort exit adds no output of its own');
     assert.ok(!present.some((l) => /DONGLE:xio:out/.test(l)));
   });
 
@@ -3069,7 +2965,7 @@ describe('Abort at a drawbar or tool-sensor prompt returns to origin', () => {
 
   test('wired sensors get the same abort, inside their o-word if', () => {
     const lines = program({ clampAuxOutput: 1, drawbarInput: 2, toolSensorInput: 3, rackHolding: 'Cup' });
-    assert.equal(abortBlocks(lines).length, 3);
+    assert.equal(abortBlocks(lines).length, 9);
     const gate = lines.indexOf('(GATE_ABORT)');
     assert.ok(lines.slice(0, gate).reverse().find((l) => /^o\d+ (if|endif)/i.test(l))?.includes(' if'), 'block sits inside the if');
   });
@@ -3370,5 +3266,83 @@ describe('manual station: moves to and from it route around the rack', () => {
     const near = buildInitialConfig({ ...base, manualTool: { x: 100, y: 100 } });
     const lines = buildUnloadTool(near, 4, calculateSlotPosition(near, 4), origin).split('\n').map((l) => l.trim());
     assert.equal(lines[0], 'G53 G0 X100 Y100');
+  });
+});
+
+// === Sensor checks: Retry, then Abort only =================================
+//
+// A failed drawbar or tool-sensor check never offers Continue. The spindle
+// stays where the check failed; a release that wasn't seen is clamped again
+// at once; Retry repeats the step and reads again, twice; the last prompt
+// (`_FINAL`) has Abort only (empty continueLabel in the manifest).
+describe('sensor checks — retry, then abort only', () => {
+  const cfg = (extra) => buildInitialConfig({
+    slots: 4, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: 0, rackHolding: 'Fork', ...extra,
+  });
+  const bridge = { clampAuxOutput: 'bridge:0', drawbarInput: 'bridge:0', toolSensorInput: 'bridge:1' };
+  const lines = (g) => g.split('\n').map((l) => l.trim()).filter(Boolean);
+  // Each (DONGLE_ELSE)…(DONGLE_END) block that follows `wait`, in order.
+  const elseBlocks = (ls, wait) => {
+    const out = [];
+    for (let i = ls.indexOf(wait); i >= 0; i = ls.indexOf(wait, i + 1)) {
+      assert.equal(ls[i + 1], '(DONGLE_ELSE)');
+      out.push(ls.slice(i + 2, ls.indexOf('(DONGLE_END)', i)));
+    }
+    return out;
+  };
+  const outside = (b) => {   // what Retry runs: everything but the abort block
+    const a = b.indexOf('(GATE_ABORT)'), e = b.indexOf('(GATE_END)');
+    return a < 0 ? b : [...b.slice(0, a), ...b.slice(e + 1)];
+  };
+
+  test('drawbar open: clamps at once, Retry releases again, twice, then abort only', () => {
+    const s = cfg(bridge);
+    const ls = lines(buildUnloadTool(s, 1, calculateSlotPosition(s, 1), { x: 0, y: 0 }));
+    const blocks = elseBlocks(ls, '(DONGLE_WAIT:xio:in0=1:0:1:else)').map(outside);
+    assert.equal(blocks.length, 3);
+    for (const [i, b] of blocks.entries()) {
+      const last = i === 2;
+      assert.deepEqual(b.slice(0, 3), ['G4 P0', '(DONGLE:xio:out 0 0)', 'G4 P0.5'], 'clamped before asking');
+      assert.ok(b.includes(`(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAILED_TO_OPEN${last ? '_FINAL' : ''})`));
+      const tail = b.slice(b.indexOf('M0') + 1);
+      assert.deepEqual(tail, last ? [] : ['G4 P0', '(DONGLE:xio:out 0 1)', 'G4 P0.8'], 'Retry releases again');
+      assert.ok(!b.some((l) => /^G53 /.test(l)), 'the spindle does not move');
+    }
+  });
+
+  test('drawbar closed: Retry clamps again; tool checks: Retry only re-reads', () => {
+    const s = cfg(bridge);
+    const ls = lines(buildLoadTool(s, 2, calculateSlotPosition(s, 2), '', false, { x: 0, y: 0 }, false));
+    const closed = elseBlocks(ls, '(DONGLE_WAIT:xio:in0=0:0:1:else)').map(outside);
+    assert.equal(closed.length, 3);
+    assert.equal(closed[0][0], '(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAILED_TO_CLOSE)', 'nothing to undo first');
+    assert.deepEqual(closed[0].slice(closed[0].indexOf('M0') + 1), ['G4 P0', '(DONGLE:xio:out 0 0)', 'G4 P0.5']);
+    const present = elseBlocks(ls, '(DONGLE_WAIT:xio:in1=1:0:0.5:else)').map(outside);
+    assert.deepEqual(present[0], ['(MSG, PLUGIN_PNEUMATICATC:TOOL_FAILED_TO_SEAT)', 'M0', 'G4 P0.5']);
+    assert.deepEqual(present[2], ['(MSG, PLUGIN_PNEUMATICATC:TOOL_FAILED_TO_SEAT_FINAL)', 'M0']);
+  });
+
+  test('wired: each retry re-reads inside its own block', () => {
+    const s = cfg({ clampAuxOutput: 1, drawbarInput: 3, toolSensorInput: 5 });
+    const ls = lines(buildUnloadTool(s, 1, calculateSlotPosition(s, 1), { x: 0, y: 0 }));
+    const read = 'M66 P3 L4 Q1';
+    const first = ls.indexOf(read);
+    assert.equal(ls[first + 1], 'o2000 if [#5399 EQ -1]');
+    for (const o of [2000, 2001]) {
+      const end = ls.indexOf(`o${o} endif`);
+      assert.equal(ls[end - 1], read, `o${o}: re-reads before its endif`);
+    }
+    const fin = ls.slice(ls.indexOf('o2002 if [#5399 EQ -1]'), ls.indexOf('o2002 endif'));
+    assert.ok(fin.includes('(MSG, PLUGIN_PNEUMATICATC:DRAWBAR_FAILED_TO_OPEN_FINAL)'));
+    assert.ok(!fin.includes(read), 'nothing to retry after the last prompt');
+  });
+
+  test('the manifest offers Retry, and the last prompt Abort only', async () => {
+    const { readFileSync } = await import('node:fs');
+    const m = JSON.parse(readFileSync(new URL('./manifest.json', import.meta.url))).messages;
+    for (const id of ['DRAWBAR_FAILED_TO_OPEN', 'DRAWBAR_FAILED_TO_CLOSE', 'TOOL_FAILED_TO_SEAT', 'TOOL_STILL_GRIPPED']) {
+      assert.equal(m[id].continueLabel, 'Retry', id);
+      assert.equal(m[`${id}_FINAL`].continueLabel, '', `${id}_FINAL: no Continue`);
+    }
   });
 });
