@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.49-rack.1",
+  "version": "0.1.57-rack.1",
   "minAppVersion": "2.0.182",
   "commands": "commands.js",
   "configUi": "config.html",
@@ -169,6 +169,51 @@
         },
         {
           "label": "Clamp",
+          "gcode": [
+            "~"
+          ]
+        }
+      ]
+    },
+    "MANUAL_QUICK_UNLOAD_TOOL": {
+      "title": "Manual Unload",
+      "message": "Hold tool {toolNumber}, then click <em>Release &amp; Clamp</em>: the drawbar opens for a moment and closes again, so the tool drops into your hand. Then click <em>Continue</em>.",
+      "continueLabel": "Continue",
+      "buttons": [
+        {
+          "label": "Release & Clamp",
+          "gcode": [
+            "~"
+          ]
+        }
+      ]
+    },
+    "MANUAL_QUICK_LOAD_TOOL": {
+      "title": "Manual Load",
+      "message": "Hold tool {toolNumber} up in the spindle, then click <em>Release &amp; Clamp</em>: the drawbar opens for a moment and closes on it. Then click <em>Continue</em>.",
+      "continueLabel": "Continue",
+      "buttons": [
+        {
+          "label": "Release & Clamp",
+          "gcode": [
+            "~"
+          ]
+        }
+      ]
+    },
+    "MANUAL_QUICK_SWAP_TOOL": {
+      "title": "Manual Swap",
+      "message": "Hold the current tool and click <em>Release &amp; Clamp: Old Tool</em>: the drawbar opens for a moment so it drops into your hand. Then hold tool {toolNumber} up in the spindle and click <em>Release &amp; Clamp: New Tool</em>. Then click <em>Continue</em>.",
+      "continueLabel": "Continue",
+      "buttons": [
+        {
+          "label": "Release & Clamp: Old Tool",
+          "gcode": [
+            "~"
+          ]
+        },
+        {
+          "label": "Release & Clamp: New Tool",
           "gcode": [
             "~"
           ]

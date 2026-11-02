@@ -23,10 +23,15 @@
 //   entry point per slot:             (-55, slotN.y)
 //   approach point per slot:          (-75, slotN.y)
 
-import { test, describe } from 'node:test';
+import {
+  test,
+  describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   onBeforeCommand,
+  onToolChangeStart,
+  watchToolSensor,
+  onToolChangeEnd,
   buildInitialConfig,
   computeKeepoutZone,
   slotEntryPoint,
@@ -42,6 +47,7 @@ import {
   parseMeasureTloCommand,
   buildUnloadTool,
   buildSlotNav,
+  buildProbeNav,
   calculateSlotPosition,
   gateSpindleUnclamp,
   createToolLengthSetRoutine,
@@ -50,7 +56,6 @@ import {
   pickEntryEdge,
   probeVerifyRoutine,
   probeVerifyGcode,
-  onToolChangeEnd,
 } from './commands.js';
 
 // Strip comment lines and blank lines so the assertions read against
@@ -1427,7 +1432,7 @@ describe('buildLoadTool — T0 → manual tool auto-releases drawbar (no Release
   };
   const MANUAL_TOOL_NUM = 4;  // > slots → treated as manual tool
 
-  test('T0 → T4 (manual): auto-fires M64 unclamp BEFORE the MANUAL_CLAMP_TOOL dialog', () => {
+  test('T0 → T4 (manual): the drawbar opens only on the Release click (MANUAL_LOAD_TOOL)', () => {
     const slotPos = calculateSlotPosition(MANUAL_RACK, MANUAL_TOOL_NUM);
     const gcode = buildLoadTool(
       MANUAL_RACK, MANUAL_TOOL_NUM, slotPos,
@@ -1438,18 +1443,17 @@ describe('buildLoadTool — T0 → manual tool auto-releases drawbar (no Release
     );
     // Use raw gcode for ordering — motionLines strips (MSG,...) comments,
     // which is where the dialog anchor lives.
+    const dialogPos  = gcode.indexOf('MANUAL_LOAD_TOOL');
     const unclampPos = gcode.indexOf('M64 P2');
-    const dialogPos  = gcode.indexOf('MANUAL_CLAMP_TOOL');
     const clampPos   = gcode.lastIndexOf('M65 P2');
-    assert.notEqual(unclampPos, -1, 'must auto-fire M64 (unclamp)');
-    assert.notEqual(dialogPos, -1, 'must show MANUAL_CLAMP_TOOL dialog');
-    assert.ok(unclampPos < dialogPos,
-      'auto-unclamp must fire BEFORE the dialog so the collet is open when the operator inserts the tool');
-    assert.ok(clampPos > dialogPos,
-      'final clamp (M65) must fire AFTER the dialog / user Clamp click');
-    // Explicitly reject the old two-click dialog.
-    assert.ok(!gcode.includes('MANUAL_LOAD_TOOL'),
-      'MANUAL_LOAD_TOOL (Release + Clamp) dialog must NOT appear — replaced by auto-release + MANUAL_CLAMP_TOOL');
+    assert.notEqual(dialogPos, -1, 'must show the Release + Clamp dialog');
+    assert.ok(unclampPos > dialogPos,
+      'no release before the dialog: an open drawbar waiting for the operator vents the taper blow');
+    // Release (M0 → unclamp) then Clamp (M0 → clamp) then Continue (M0).
+    const afterDialog = gcode.slice(dialogPos).split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('('));
+    assert.deepEqual(afterDialog.slice(1, 6), ['M0', 'M64 P2', 'M0', 'M65 P2', 'M0']);
+    assert.ok(clampPos > unclampPos);
+    assert.ok(!gcode.includes('MANUAL_CLAMP_TOOL'));
   });
 
   test('Tm (rack) → T4 (manual) with drawbarAlreadyReleased=true: NO extra auto-release', () => {
@@ -1748,6 +1752,38 @@ describe('taperBlow — Sienci-style drawbar handling around the traverse', () =
     assert.ok(safe > lift + 2, 'the clamp happens before the rapid to Z-safe');
   });
 
+  test('on: a manual unload closes the drawbar once the tool is out, and the rack load opens it above the holder', () => {
+    // T5 is past the 3 slots: a hand tool. Release, Continue, then clamp.
+    const prog = buildToolChangeProgram(on, 5, 2, { x: 0, y: 0, z: 0 }, 0, { x: 0, y: 0 }).join('\n')
+      .split('\n').map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('('));
+    const auxes = prog.filter((l) => /^M6[45] P1$/.test(l));
+    // release (manual), clamp (after Continue), release above slot 2, clamp onto it
+    assert.equal(auxes.length, 4, prog.join('\n'));
+    assert.equal(auxes[0], auxes[2]);
+    assert.equal(auxes[1], auxes[3]);
+    assert.notEqual(auxes[0], auxes[1]);
+    const reclamp = prog.indexOf(auxes[1]);
+    assert.equal(prog[reclamp - 1], 'M0', 'the re-clamp follows the Continue click');
+    const travel = prog.findIndex((l, i) => i > reclamp && /^G53 G0 X/.test(l));
+    assert.ok(travel > reclamp, 'clamped before travelling to the rack');
+  });
+
+  test('on: a manual load never opens the drawbar before the operator presses Release', () => {
+    const prog = buildToolChangeProgram(on, 1, 5, { x: 0, y: 0, z: 0 }, 0, { x: 0, y: 0 }).join('\n');
+    assert.match(prog, /MANUAL_LOAD_TOOL_5\b/);
+    const lines = prog.split('\n').map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('('));
+    const dialog = prog.split('\n').map((l) => l.trim()).filter((l) => l !== '').findIndex((l) => l.includes('MANUAL_LOAD_TOOL_5'));
+    const all = prog.split('\n').map((l) => l.trim()).filter((l) => l !== '');
+    // From the dialog on: M0 (Release) → release, M0 (Clamp) → clamp, M0 (Continue).
+    const after = all.slice(dialog + 1).filter((l) => !l.startsWith('('));
+    assert.equal(after[0], 'M0');
+    assert.match(after[1], /^M6[45] P1$/);
+    assert.equal(after[2], 'M0');
+    assert.match(after[3], /^M6[45] P1$/);
+    assert.equal(after[4], 'M0');
+    assert.ok(lines.length > 0);
+  });
+
   test('off: the unload leaves the drawbar open and goes straight to Z-safe', () => {
     const g = buildUnloadTool(off, 1, calculateSlotPosition(off, 1), { x: 0, y: 0 });
     assert.equal((g.match(/^\s*M6[45] P1$/gm) || []).length, 1, 'only the release, no re-clamp');
@@ -1856,8 +1892,8 @@ describe('$MEASURE_TLO — measure-all batch step', () => {
     clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, tlsMode: 'library',
   });
   const tools = [
-    { toolNumber: 1, offsets: { x: 0, y: 0, z: -55.014, tlsZ: 0 } },  // has a stored TLO
-    { toolNumber: 2, offsets: { x: 0, y: 0, z: 0, tlsZ: 0 } },
+    { toolNumber: 1, toolId: 1, offsets: { x: 0, y: 0, z: -55.014, tlsZ: 0 } },  // has a stored TLO
+    { toolNumber: 2, toolId: 2, offsets: { x: 0, y: 0, z: 0, tlsZ: 0 } },
   ];
   const run = (command, tool, mpos = { x: 10, y: 20 }) => {
     const commands = [{ command, isOriginal: true }];
@@ -2065,7 +2101,7 @@ describe('probe auto-loader — tool change programs', () => {
     const cfg = base();
     cfg.probe.enabled = false;
     const prog = buildToolChangeProgram(cfg, 0, 99, { x: 0, y: 0, z: 0 }, 0, origin);
-    assert.ok(prog.join('\n').includes('MANUAL_CLAMP_TOOL_99'));
+    assert.ok(prog.join('\n').includes('MANUAL_LOAD_TOOL_99'));
   });
 });
 
@@ -2431,8 +2467,8 @@ describe('keeps a Z0 set before any tool length reference', () => {
     clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, tlsMode: 'library',
   });
   const tools = [
-    { toolNumber: 1, offsets: { x: 0, y: 0, z: -55.014, tlsZ: 0 } },
-    { toolNumber: 2, offsets: { x: 0, y: 0, z: -48.2, tlsZ: 0 } },
+    { toolNumber: 1, toolId: 1, offsets: { x: 0, y: 0, z: -55.014, tlsZ: 0 } },
+    { toolNumber: 2, toolId: 2, offsets: { x: 0, y: 0, z: -48.2, tlsZ: 0 } },
   ];
   const pending = { toolLengthSet: false, zeroSetWithoutTlr: true, zeroTool: 1 };
   const run = (command, ms) => {
@@ -2534,10 +2570,10 @@ describe('Z0 carry-over trusts the library when the reference touch matches it',
     clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, tlsMode: 'library',
   };
   const tools = [
-    { toolNumber: 1, offsets: { x: 0, y: 0, z: -46.63, tlsZ: 0 } },
-    { toolNumber: 2, offsets: { x: 0, y: 0, z: -33.78, tlsZ: 0 } },
-    { toolNumber: 3, offsets: { x: 0, y: 0, z: 0, tlsZ: 0 } },
-    { toolNumber: 9, offsets: { x: 0, y: 0, z: -40.1, tlsZ: 0 } },
+    { toolNumber: 1, toolId: 1, offsets: { x: 0, y: 0, z: -46.63, tlsZ: 0 } },
+    { toolNumber: 2, toolId: 2, offsets: { x: 0, y: 0, z: -33.78, tlsZ: 0 } },
+    { toolNumber: 3, toolId: 3, offsets: { x: 0, y: 0, z: 0, tlsZ: 0 } },
+    { toolNumber: 9, toolId: 9, offsets: { x: 0, y: 0, z: -40.1, tlsZ: 0 } },
   ];
   const run = (command, { tool = 1, settings = {}, toolList = tools, ms = {} } = {}) => {
     const commands = [{ command, isOriginal: true }];
@@ -2623,8 +2659,8 @@ describe('Post Tool Change runs before the return to origin', () => {
     postToolChangeGcode: '(POST TC)\nG53 G0 X500 Y500',
   };
   const tools = [
-    { toolNumber: 1, offsets: { x: 0, y: 0, z: -46.63, tlsZ: 0 } },
-    { toolNumber: 2, offsets: { x: 0, y: 0, z: -33.78, tlsZ: 0 } },
+    { toolNumber: 1, toolId: 1, offsets: { x: 0, y: 0, z: -46.63, tlsZ: 0 } },
+    { toolNumber: 2, toolId: 2, offsets: { x: 0, y: 0, z: -33.78, tlsZ: 0 } },
   ];
   const run = (command, { settings = {}, ms = {} } = {}) => {
     const commands = [{ command, isOriginal: true }];
@@ -2683,8 +2719,8 @@ describe('manual tools always measure', () => {
     clampAuxOutput: 1, toolsetter: { x: 300, y: -200 }, manualTool: { x: 200, y: -100 }, tlsMode: 'library',
   });
   const tools = [
-    { toolNumber: 2, offsets: { z: -52.1 } },   // rack tool, TLO on file
-    { toolNumber: 5, offsets: { z: -47.5 } },   // manual tool, TLO on file
+    { toolNumber: 2, toolId: 2, offsets: { z: -52.1 } },   // rack tool, TLO on file
+    { toolNumber: 5, toolId: 5, offsets: { z: -47.5 } },   // manual tool, TLO on file
   ];
   const run = (command, tool = 1) => {
     const commands = [{ command, isOriginal: true }];
@@ -2970,9 +3006,11 @@ describe('retractable tool rack', () => {
   describe('with the v0.1.48 sequence', () => {
     const post = '(POST TC)\nG53 G0 X500 Y500';
     const withPost = buildInitialConfig({ ...BASE, ...PINS, toolRackEnabled: true, postToolChangeGcode: post, tlsMode: 'library' });
+    // A T number finds its tool by Tool ID only (never by slot), so the library
+    // entries carry a toolId.
     const tools = [
-      { toolNumber: 1, offsets: { x: 0, y: 0, z: -46.63, tlsZ: 0 } },
-      { toolNumber: 2, offsets: { x: 0, y: 0, z: -33.78, tlsZ: 0 } },
+      { toolId: 1, toolNumber: 1, offsets: { x: 0, y: 0, z: -46.63, tlsZ: 0 } },
+      { toolId: 2, toolNumber: 2, offsets: { x: 0, y: 0, z: -33.78, tlsZ: 0 } },
     ];
     const run = (settings, command, ms = {}) => {
       const commands = [{ command, isOriginal: true }];
@@ -3334,7 +3372,7 @@ describe('Tool Numbering: what M6 T<n> loads', () => {
 
   test('Slot numbering: the Manual button\'s T<size + 1> is a hand load', () => {
     const out = run('M6 T4', slotList);
-    assert.match(out, /MANUAL_CLAMP_TOOL_4\b/);
+    assert.match(out, /MANUAL_(LOAD|CLAMP)_TOOL_4\b/);
   });
 
   test('Tool ID numbering: a tool in a slot loads from the rack by its ID', () => {
@@ -3345,7 +3383,7 @@ describe('Tool Numbering: what M6 T<n> loads', () => {
 
   test('Tool ID numbering: a tool in no slot is a hand load', () => {
     const out = run('M6 T50', [{ toolId: 300, toolNumber: 2 }, { toolId: 50, toolNumber: null }]);
-    assert.match(out, /MANUAL_CLAMP_TOOL_50\b/);
+    assert.match(out, /MANUAL_(LOAD|CLAMP)_TOOL_50\b/);
   });
 });
 
@@ -3393,6 +3431,28 @@ describe('Wireless I/O clamp output', () => {
     assert.ok(failsafe < lines.indexOf('(DONGLE:xio:out 0 1)'), 'armed before the first release');
     const role = lines.indexOf('(DONGLE:xio:role 0 drawbar)');
     assert.ok(role > start && role < lines.indexOf('(DONGLE:xio:out 0 1)'), 'drawbar role assigned before the first release');
+  });
+
+  test('keeps a water-pump output, but never the clamp output', () => {
+    assert.equal(settings.waterPumpOutput, '');
+    assert.equal(buildInitialConfig({ clampAuxOutput: 'bridge:0', waterPumpOutput: 'bridge:2' }).waterPumpOutput, 'bridge:2');
+    assert.equal(buildInitialConfig({ clampAuxOutput: 'bridge:0', waterPumpOutput: 'bridge:0' }).waterPumpOutput, '');
+    assert.equal(buildInitialConfig({ waterPumpOutput: 'bridge:7' }).waterPumpOutput, '');
+    assert.equal(settings.waterPumpIdleSec, 600);
+    assert.equal(buildInitialConfig({ waterPumpIdleSec: 30 }).waterPumpIdleSec, 30);
+    assert.equal(buildInitialConfig({ waterPumpIdleSec: 45 }).waterPumpIdleSec, 600);
+  });
+
+  test('assigns the pump role at the start of the change when a pump output is set', () => {
+    setBridge(true);
+    assert.ok(!runM6().some((l) => /role \d pump/.test(l)), 'no pump role without a pump output');
+    const commands = [{ command: 'M6 T1', isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 2, mpos: { x: 10, y: 20 } }, tools: [] },
+      { ...settings, waterPumpOutput: 'bridge:2', waterPumpIdleSec: 300 });
+    const lines = commands.map((c) => c.command.trim()).join('\n').split('\n').map((l) => l.trim());
+    const pump = lines.indexOf('(DONGLE:xio:role 2 pump)');
+    assert.ok(pump > lines.indexOf('(Start of PneumaticATC Plugin Sequence)') && pump < lines.indexOf('(DONGLE:xio:out 0 1)'));
+    assert.equal(lines[pump - 1], '(DONGLE:xio:pumpidle 300)', 'idle time set before the role');
   });
 
   test('refuses the change when the bridge is offline or not paired', () => {
@@ -3664,5 +3724,260 @@ describe('wired-only extras never see a wireless input or output', () => {
   test('a wired setup is unaffected: the tool-found check and the gate still appear', () => {
     const p = program({ ...BASE, clampAuxOutput: 2, toolSensorInput: 1 }, 0, 1);
     assert.ok(p.includes('UNEXPECTED_TOOL_DETECTED') && p.includes('SPINDLE_NOT_EMPTY'));
+  });
+});
+
+// $PROBE: move over the probe holder at Z-safe, nothing picked up.
+describe('$PROBE — move over the probe holder', () => {
+  const base = { slots: 3, orientation: 'Y', slot1: { x: -115, y: 40, z: -120 }, slotDistance: 80,
+    slideDirection: 'Negative', slideDistance: 40, keepoutPadding: 60, zSafe: -5, clampAuxOutput: 0,
+    toolsetter: { x: 300, y: 300 } };
+  const fork = buildInitialConfig({ ...base,
+    probe: { enabled: true, toolNumber: 99, x: 200, y: -100, z: -90, holding: 'Fork', slideAxis: 'X', slideDirection: 'Negative', slideDistance: 30 } });
+  const cup = buildInitialConfig({ ...base, probe: { enabled: true, toolNumber: 99, x: 200, y: -100, z: -90, holding: 'Cup' } });
+  const run = (settings, cmd = '$PROBE') => {
+    const commands = [{ command: cmd, isOriginal: true }];
+    onBeforeCommand(commands, { machineState: { tool: 0, mpos: { x: 10, y: 20 } }, tools: [] }, { ...settings });
+    return commands.map((c) => c.command.trim());
+  };
+
+  test('fork: Z-safe first, enters from the slide-out point, ends over the holder, never descends', () => {
+    const lines = motionLines(buildProbeNav(fork, { x: 10, y: 20 }));
+    assert.equal(lines[0], 'G53 G21 G90 G0 Z-5');
+    assert.equal(lines.at(-1), 'G53 G0 X200 Y-100');
+    assert.ok(lines.includes('G53 G0 X230 Y-100') || lines.some((l) => /X230 Y-100$/.test(l)), 'passes the slide-out point');
+    assert.ok(!lines.slice(1).some((l) => /Z-?\d/.test(l) && !/Z-5\b/.test(l)), 'no Z move below Z-safe');
+  });
+
+  test('cup: goes straight over the holder at Z-safe', () => {
+    const lines = motionLines(buildProbeNav(cup, { x: 10, y: 20 }));
+    assert.equal(lines[0], 'G53 G21 G90 G0 Z-5');
+    assert.equal(lines.at(-1), 'G53 G0 X200 Y-100');
+  });
+
+  test('expands through onBeforeCommand, case-insensitive, and picks nothing up', () => {
+    const lines = run(fork, '$probe');
+    assert.ok(!lines.includes('$probe') && !lines.includes('$PROBE'), 'replaced by motion');
+    assert.ok(!lines.some((l) => /^M6|M61/.test(l)), 'no tool change');
+  });
+
+  test('probe holder disabled: left alone', () => {
+    const off = buildInitialConfig({ ...base, probe: { enabled: false } });
+    assert.deepEqual(run(off), ['$PROBE']);
+  });
+});
+
+describe('Tool sensor watch (Wireless I/O)', () => {
+  // A fake host: the bridge reports in1, the controller reports `tool`.
+  const host = (over = {}) => {
+    const h = {
+      in1: 1, tool: 3, status: 'idle', connected: true, sent: [], dialogs: [], closed: [],
+      tools: [{ id: 'a', toolId: 3, name: 'Flat 1/4' }, { id: 'b', toolId: 1, name: 'V-bit' }, { id: 'c', toolId: null, name: 'no id' }],
+      ...over,
+    };
+    globalThis.pluginContext = {
+      dongle: { getDevices: () => [{ name: 'xio', connected: h.connected, lastMessage: `status in0=0 in1=${h.in1} in2=0 in3=0` }] },
+      getServerState: () => ({ senderStatus: h.status, tool: h.tool, connected: true }),
+      sendCommand: (c) => h.sent.push(c),
+      getTools: () => h.tools,
+      showDialogAsync: (title, html, opts, cb) => { h.dialogs.push({ title, html, cb }); return 'dlg' + h.dialogs.length; },
+      closeDialog: (id) => h.closed.push(id),
+    };
+    return h;
+  };
+  // Load the plugin's settings (buildInitialConfig is what the host calls).
+  const arm = (sensor = 'bridge:1') => buildInitialConfig({ slots: 3, clampAuxOutput: 'bridge:0', toolSensorInput: sensor });
+  let t = 1_000_000;
+  // Hold a reading long enough to settle.
+  const settle = () => { watchToolSensor(t += 10); watchToolSensor(t += 1000); };
+  const fresh = () => { onToolChangeEnd({ outcome: 'completed' }, null); };
+
+  test('spindle empty while the controller has a tool: M61 Q0, once', () => {
+    const h = host(); arm(); fresh();
+    settle();                       // tool present: nothing
+    assert.deepEqual(h.sent, []);
+    h.in1 = 0;
+    settle();
+    assert.deepEqual(h.sent, ['M61 Q0']);
+    watchToolSensor(t += 250);      // controller hasn't reported T0 yet: no repeat right away
+    assert.deepEqual(h.sent, ['M61 Q0']);
+    h.tool = 0;
+    watchToolSensor(t += 5000);
+    assert.deepEqual(h.sent, ['M61 Q0']);
+  });
+
+  test('a reading has to hold before it counts', () => {
+    const h = host({ in1: 0 }); arm(); fresh();
+    watchToolSensor(t += 10);
+    watchToolSensor(t += 300);
+    assert.deepEqual(h.sent, []);
+  });
+
+  test('not while running, in a tool change, or with a wired sensor', () => {
+    let h = host({ in1: 0, status: 'running' }); arm(); fresh();
+    settle(); assert.deepEqual(h.sent, []);
+    h = host({ in1: 0 }); arm(); fresh();
+    onToolChangeStart({}, null);
+    settle(); assert.deepEqual(h.sent, []);
+    fresh();
+    h = host({ in1: 0 }); arm(5); fresh();
+    settle(); assert.deepEqual(h.sent, []);
+  });
+
+  test('empty after a pause: sent once the machine is idle again', () => {
+    const h = host({ in1: 0, status: 'hold' }); arm(); fresh();
+    settle(); assert.deepEqual(h.sent, []);
+    h.status = 'idle';
+    watchToolSensor(t += 250);
+    assert.deepEqual(h.sent, ['M61 Q0']);
+  });
+
+  test('tool fitted into an empty spindle with T0: asks which, then M61 Q<id>', () => {
+    const h = host({ in1: 0, tool: 0 }); arm(); fresh();
+    settle();
+    h.in1 = 1;
+    settle();
+    assert.equal(h.dialogs.length, 1);
+    const html = h.dialogs[0].html;
+    assert.ok(html.indexOf('data-id="1"') < html.indexOf('data-id="3"'), 'tools in Tool ID order');
+    assert.ok(html.includes('V-bit') && html.includes('Flat 1/4'), 'each tool shows its name');
+    assert.ok(!/<button/.test(html), 'no <button>: the dialog would paint it blue');
+    assert.ok(!html.includes('no id'), 'a tool without a Tool ID is not offered');
+    h.dialogs[0].cb({ action: 'tool', toolId: 3 });
+    assert.deepEqual(h.sent, ['M61 Q3']);
+  });
+
+  test('the tool that just came out is preselected', () => {
+    const h = host({ in1: 1, tool: 3 }); arm(); fresh();
+    settle(); h.in1 = 0; settle();          // T3 taken out: M61 Q0
+    assert.deepEqual(h.sent, ['M61 Q0']);
+    h.tool = 0; h.in1 = 1; settle();
+    assert.match(h.dialogs[0].html, /class="ts-tb[^"]* active" data-id="3"/);
+    assert.match(h.dialogs[0].html, /Set Tool 3/);
+  });
+
+  test('Skip, or a tool that is there from the start: nothing sent', () => {
+    let h = host({ in1: 0, tool: 0 }); arm(); fresh();
+    settle(); h.in1 = 1; settle();
+    h.dialogs[0].cb({ action: 'skip' });
+    assert.deepEqual(h.sent, []);
+    h = host({ in1: 1, tool: 0 }); arm(); fresh();
+    settle();
+    assert.equal(h.dialogs.length, 0, 'no edge, no question');
+  });
+
+  test('tool taken out again while asking: the dialog closes and its answer is ignored', () => {
+    const h = host({ in1: 0, tool: 0 }); arm(); fresh();
+    settle(); h.in1 = 1; settle();
+    h.in1 = 0; settle();
+    assert.deepEqual(h.closed, ['dlg1']);
+    h.dialogs[0].cb({ action: 'tool', toolId: 3 });
+    assert.deepEqual(h.sent, []);
+  });
+});
+
+// Quick release for manual changes: each click opens the drawbar for
+// quickReleaseSec and closes it again, so nothing waits open on the air.
+describe('quickRelease — manual changes open and close on one click', () => {
+  const base = { slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: -5, clampAuxOutput: 1 };
+  const cfg = buildInitialConfig({ ...base, quickRelease: true, quickReleaseSec: 1.5 });
+  const lines = (prog) => prog.join('\n').split('\n').map((l) => l.trim()).filter((l) => l !== '');
+  const afterMsg = (all, key) => all.slice(all.findIndex((l) => l.includes(key)) + 1).filter((l) => !l.startsWith('('));
+
+  test('settings: off by default, 1 s, only the listed times', () => {
+    const d = buildInitialConfig(base);
+    assert.equal(d.quickRelease, false);
+    assert.equal(d.quickReleaseSec, 1);
+    assert.equal(buildInitialConfig({ ...base, quickReleaseSec: 7 }).quickReleaseSec, 1);
+  });
+
+  test('T0 → manual: one click opens, waits, closes; never open before it', () => {
+    const all = lines(buildToolChangeProgram(cfg, 0, 5, { x: 0, y: 0, z: 0 }, 0, { x: 0, y: 0 }));
+    const dialog = all.findIndex((l) => l.includes('MANUAL_QUICK_LOAD_TOOL_5'));
+    assert.ok(dialog > 0);
+    assert.ok(!all.slice(0, dialog).some((l) => /^M6[45] P1$/.test(l)), 'nothing switched before the dialog');
+    const after = afterMsg(all, 'MANUAL_QUICK_LOAD_TOOL_5');
+    assert.equal(after[0], 'M0');
+    assert.match(after[1], /^M6[45] P1$/);
+    assert.equal(after[2], 'G4 P1.5');
+    assert.match(after[3], /^M6[45] P1$/);
+    assert.notEqual(after[1], after[3]);
+    assert.equal(after[4], 'M0');
+    assert.equal(after[5], 'M61 Q5');
+  });
+
+  test('manual → rack: the unload pulses, so the rack load opens the drawbar itself', () => {
+    const all = lines(buildToolChangeProgram(cfg, 5, 2, { x: 0, y: 0, z: 0 }, 0, { x: 0, y: 0 }));
+    const after = afterMsg(all, 'MANUAL_QUICK_UNLOAD_TOOL_5');
+    assert.deepEqual([after[0], after[2], after[4], after[5]], ['M0', 'G4 P1.5', 'M0', 'M61 Q0']);
+    // release + close on the click, then release + clamp at slot 2
+    assert.equal(all.filter((l) => /^M6[45] P1$/.test(l)).length, 4);
+  });
+
+  test('manual → manual: Release catches the old bit, Release & Clamp takes the new one', () => {
+    const all = lines(buildToolChangeProgram(cfg, 5, 6, { x: 0, y: 0, z: 0 }, 0, { x: 0, y: 0 }));
+    const after = afterMsg(all, 'MANUAL_QUICK_SWAP_TOOL_6');
+    assert.deepEqual(after.filter((l) => l === 'M0').length, 3);
+    assert.equal(after.filter((l) => l === 'G4 P1.5').length, 2);
+  });
+});
+
+describe('manual station: moves to and from it route around the rack', () => {
+  // Rack in a column at X -115 (keepout X -175..-55, Y -20..260), the job on
+  // one side and the manual station on the other: a straight line between
+  // them runs over the rack with the operator's bit hanging below the spindle.
+  const base = {
+    slots: 3, orientation: 'Y', direction: 'Positive', slot1: { x: -115, y: 40, z: -100 },
+    slotDistance: 80, slideDirection: 'Negative', slideDistance: 40, keepoutPadding: 60,
+    zSafe: -5, clampAuxOutput: 1, manualTool: { x: -300, y: 100 }, toolsetter: { x: 50, y: 0, z: -90 },
+  };
+  const fork = buildInitialConfig(base);
+  const cup = buildInitialConfig({ ...base, rackHolding: 'Cup' });
+  const origin = { x: 0, y: 100 };
+
+  // Every XY move outside the rack itself (slot entries/exits start or end
+  // inside the keepout) must stay out of the keepout.
+  const movesCrossingRack = (settings, from, to) => {
+    const zone = computeKeepoutZone(settings);
+    const inside = (p) => p.x > zone.minX && p.x < zone.maxX && p.y > zone.minY && p.y < zone.maxY;
+    const lines = buildToolChangeProgram(settings, from, to, { x: 0, y: 0, z: 0 }, 0, origin)
+      .join('\n').split('\n').map((l) => l.trim());
+    let at = { ...origin };
+    const bad = [];
+    for (const line of lines) {
+      const m = line.match(/^G53 G[01](?: X(-?[\d.]+))?(?: Y(-?[\d.]+))?/);
+      if (!m || (m[1] === undefined && m[2] === undefined)) continue;
+      const next = { x: m[1] !== undefined ? +m[1] : at.x, y: m[2] !== undefined ? +m[2] : at.y };
+      if (!inside(at) && !inside(next)) {
+        for (let i = 1; i < 100; i++) {
+          const t = i / 100;
+          if (inside({ x: at.x + (next.x - at.x) * t, y: at.y + (next.y - at.y) * t })) { bad.push(`${line} from (${at.x}, ${at.y})`); break; }
+        }
+      }
+      at = next;
+    }
+    return { bad, lines };
+  };
+
+  for (const [name, settings] of [['fork', fork], ['cup', cup]]) {
+    for (const [from, to, label] of [
+      [0, 4, 'T0 → manual'],
+      [1, 4, 'rack → manual'],
+      [4, 1, 'manual → rack'],
+      [4, 0, 'manual → T0'],
+      [4, 5, 'manual → manual'],
+    ]) {
+      test(`${name}: ${label} never crosses the rack`, () => {
+        const { bad, lines } = movesCrossingRack(settings, from, to);
+        assert.deepEqual(bad, [], lines.join('\n'));
+        assert.ok(lines.includes('G53 G0 X-300 Y100'), 'still goes to the manual station');
+      });
+    }
+  }
+
+  test('a clear path to the manual station stays one direct move', () => {
+    const near = buildInitialConfig({ ...base, manualTool: { x: 100, y: 100 } });
+    const lines = buildUnloadTool(near, 4, calculateSlotPosition(near, 4), origin).split('\n').map((l) => l.trim());
+    assert.equal(lines[0], 'G53 G0 X100 Y100');
   });
 });

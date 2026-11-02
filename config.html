@@ -1785,19 +1785,49 @@
         </div>
 
         <div class="pa-card" id="pa-adv-taper-blow-card">
-          <h3 class="pa-card-title">Taper Blow / Cone Clean</h3>
+          <h3 class="pa-card-title">Close Drawbar Between Slots</h3>
           <p class="pa-card-help">
-            Turn this on if the spindle's taper-blow port is plumbed off the drawbar valve, so air blasts through the collet whenever the drawbar is open (this is how the Sienci kit is plumbed). The sequence then closes the drawbar as soon as it lifts off an unloaded holder, so the blow isn't hissing across the whole traverse to the next slot, opens it again directly above the next holder, waits 0.8 s for the air to vent and blow the taper, and feeds the last 20 mm down slowly with the blow running to clear chips off the holder. Leave it off if nothing is connected to the blow port: the drawbar then stays open between slots, which costs nothing when no air is venting.
+            Closes the drawbar after lifting off a holder and opens it again just above the next one, so no air is used while the spindle moves between slots. When the spindle's taper blow shares the drawbar's air, it runs as the drawbar opens: the sequence waits 0.8 s, then feeds the last 20 mm down slowly so the air clears chips off the taper and the holder. Off: the drawbar stays open from one slot to the next.
           </p>
           <div class="pa-field-inline">
             <label for="pa-adv-taper-blow">
-              Taper blow / cone clean
-              <span class="pa-help-tip" title="On: close the drawbar after lifting off an unloaded holder, re-open it above the next holder, vent for 0.8 s, then feed the last 20 mm down at 1500 mm/min with the blow running. Fixed on for the Sienci ATC profile.">?</span>
+              Close drawbar between slots
+              <span class="pa-help-tip" title="On: close the drawbar after lifting off a holder, open it above the next holder, wait 0.8 s, then feed the last 20 mm down at 1500 mm/min with the air running.">?</span>
             </label>
             <label class="pa-toggle">
               <input type="checkbox" id="pa-adv-taper-blow">
               <span class="pa-toggle-slider"></span>
             </label>
+          </div>
+        </div>
+
+        <div class="pa-card" id="pa-adv-quick-release-card">
+          <h3 class="pa-card-title">Quick Release for Manual Changes</h3>
+          <p class="pa-card-help">
+            For tools you change by hand. Each Release click opens the drawbar for a moment and closes it again: to unload, hold the tool and it drops into your hand; to load, hold the new tool up in the spindle and it clamps. The drawbar uses air only for that moment, never while it waits for you. Off: Release opens the drawbar until you click Clamp.
+          </p>
+          <div class="pa-field-inline">
+            <label for="pa-adv-quick-release">
+              Quick release
+              <span class="pa-help-tip" title="On: Release opens the drawbar for the time below, then closes it on its own.">?</span>
+            </label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-adv-quick-release">
+              <span class="pa-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="pa-form-row" id="pa-adv-quick-release-sec-row" style="display: none">
+            <label class="pa-form-label" for="pa-adv-quick-release-sec">
+              Open For
+              <span class="pa-help-tip" title="How long the drawbar stays open on each click. Long enough to catch or push in a tool.">?</span>
+            </label>
+            <select id="pa-adv-quick-release-sec" class="pa-select">
+              <option value="0.5">0.5 seconds</option>
+              <option value="1">1 second</option>
+              <option value="1.5">1.5 seconds</option>
+              <option value="2">2 seconds</option>
+              <option value="3">3 seconds</option>
+            </select>
           </div>
         </div>
 
@@ -1820,7 +1850,7 @@
           <div class="pa-form-row">
             <label class="pa-form-label" for="pa-adv-input-toolsense">
               Tool Sensor
-              <span class="pa-help-tip" title="Senses a tool held in the spindle (pull stud / spindle proximity). Checked after a pickup, where a tool must be present, and after a drop-off, where the spindle must be empty. Must be its own input — if you point this at the drawbar switch the readings will be wrong.">?</span>
+              <span class="pa-help-tip" title="Senses a tool held in the spindle (pull stud / spindle proximity). Checked after a pickup, where a tool must be present, and after a drop-off, where the spindle must be empty. On a Wireless I/O input it is also watched while the machine is idle: take the tool out by hand and the tool is set to none (M61 Q0); fit one into an empty spindle and ncSender asks which tool it is. Must be its own input — if you point this at the drawbar switch the readings will be wrong.">?</span>
             </label>
             <select id="pa-adv-input-toolsense" class="pa-select pa-adv-pin">
               <option value="">N/A</option>
@@ -1873,6 +1903,45 @@
                 <option value="">N/A</option>
               </select>
             </div>
+          </div>
+        </div>
+
+        <div class="pa-card" id="pa-adv-water-pump-card">
+          <h3 class="pa-card-title">Spindle Water Pump</h3>
+          <p class="pa-card-help">
+            For a water-cooled spindle whose pump is wired to a Wireless I/O output. The Wireless I/O switches the pump on when the spindle starts and off once the spindle has been stopped for the idle time below, so the pump isn't left running while the machine sits idle. It does this on its own, from the spindle speed ncSender sends it, even outside a tool change. Use a different output from the clamp valve.
+          </p>
+          <div class="pa-field-inline">
+            <label for="pa-adv-water-pump">
+              Water pump on a Wireless I/O output
+              <span class="pa-help-tip" title="On: the chosen Wireless I/O output turns on when the spindle starts and off once the spindle has been stopped for the idle time. Switching the output on by hand while the spindle is stopped also runs it for the idle time. Off: the output has no automatic behaviour.">?</span>
+            </label>
+            <label class="pa-toggle">
+              <input type="checkbox" id="pa-adv-water-pump">
+              <span class="pa-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="pa-form-row" id="pa-adv-water-pump-row" style="display: none">
+            <label class="pa-form-label" for="pa-adv-water-pump-output">Pump Output</label>
+            <select id="pa-adv-water-pump-output" class="pa-select">
+              <option value="bridge:0">Wireless I/O OUT1</option>
+              <option value="bridge:1">Wireless I/O OUT2</option>
+              <option value="bridge:2">Wireless I/O OUT3</option>
+              <option value="bridge:3">Wireless I/O OUT4</option>
+            </select>
+          </div>
+          <div class="pa-form-row" id="pa-adv-water-pump-idle-row" style="display: none">
+            <label class="pa-form-label" for="pa-adv-water-pump-idle">
+              Off After Idle
+              <span class="pa-help-tip" title="How long the spindle has to be stopped before the pump switches off. 30 seconds is for testing the wiring.">?</span>
+            </label>
+            <select id="pa-adv-water-pump-idle" class="pa-select">
+              <option value="30">30 seconds</option>
+              <option value="300">5 minutes</option>
+              <option value="600">10 minutes</option>
+              <option value="900">15 minutes</option>
+              <option value="1200">20 minutes</option>
+            </select>
           </div>
         </div>
       </div>
@@ -3147,6 +3216,17 @@
       updateToolRackEnabled();
     })();
     $('pa-adv-taper-blow').checked = !!initialConfig.taperBlow;
+    $('pa-adv-quick-release').checked = !!initialConfig.quickRelease;
+    $('pa-adv-quick-release-sec').value = String(initialConfig.quickReleaseSec || 1);
+    showQuickReleaseRow();
+    (function() {
+      var pump = String(initialConfig.waterPumpOutput || '');
+      var on = /^bridge:[0-3]$/.test(pump);
+      $('pa-adv-water-pump').checked = on;
+      if (on) $('pa-adv-water-pump-output').value = pump;
+      $('pa-adv-water-pump-idle').value = String(initialConfig.waterPumpIdleSec || 600);
+      showWaterPumpRow();
+    })();
 
     // Profile last, so it can lock/overwrite the pin fields it owns. Silent:
     // restoring saved state isn't a user edit.
@@ -3300,6 +3380,44 @@
   }
 
   // ---------- Save ----------
+  function showWaterPumpRow() {
+    var row = $('pa-adv-water-pump-row');
+    if (row) row.style.display = $('pa-adv-water-pump').checked ? '' : 'none';
+    var idleRow = $('pa-adv-water-pump-idle-row');
+    if (idleRow) idleRow.style.display = $('pa-adv-water-pump').checked ? '' : 'none';
+  }
+  $('pa-adv-water-pump').addEventListener('change', showWaterPumpRow);
+  function showQuickReleaseRow() {
+    var row = $('pa-adv-quick-release-sec-row');
+    if (row) row.style.display = $('pa-adv-quick-release').checked ? '' : 'none';
+  }
+  $('pa-adv-quick-release').addEventListener('change', showQuickReleaseRow);
+
+  // The Wireless I/O keeps each output's role (drawbar, pump or none) itself.
+  // Send all four on save so a change takes effect now, not at the next tool
+  // change, and an output that lost its role is cleared. Best effort: an
+  // unpaired bridge just gets them from the next tool change's setup.
+  async function pushBridgeRoles(payload) {
+    if (!bridgePaired) return;
+    var lines = [];
+    if (payload.waterPumpOutput) lines.push('pumpidle ' + payload.waterPumpIdleSec);
+    for (var n = 0; n < 4; n += 1) {
+      var v = 'bridge:' + n;
+      lines.push('role ' + n + ' ' + (String(payload.clampAuxOutput) === v ? 'drawbar' : payload.waterPumpOutput === v ? 'pump' : 'none'));
+    }
+    for (var i = 0; i < lines.length; i += 1) {
+      try {
+        await fetch(BASE_URL + '/api/dongle/devices/xio/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload: lines[i] })
+        });
+      } catch (e) {
+        console.warn('[PneumaticATC] "' + lines[i] + '" not sent', e);
+      }
+    }
+  }
+
   function parseAuxValue(sel) {
     if (!sel) return -1;
     var v = sel.value;
@@ -3369,6 +3487,13 @@
       })(),
       // Taper blow / cone clean plumbed off the drawbar valve.
       taperBlow: $('pa-adv-taper-blow').checked,
+      // Quick release for manual changes: open, wait, close on each click.
+      quickRelease: $('pa-adv-quick-release').checked,
+      quickReleaseSec: parseFloat($('pa-adv-quick-release-sec').value) || 1,
+      // Wireless I/O output running the spindle's water pump ('' = none). The
+      // Wireless I/O itself switches it from the spindle speed (role <n> pump).
+      waterPumpOutput: $('pa-adv-water-pump').checked ? $('pa-adv-water-pump-output').value : '',
+      waterPumpIdleSec: parseInt($('pa-adv-water-pump-idle').value, 10) || 600,
       rackHolding: $('pa-rack-holding').value || 'Fork',
 
       orientation: segOrientation ? segOrientation.get() : 'Y',
@@ -3588,12 +3713,15 @@
       throw new Error('The moving tool rack is switched on but no aux output is selected. Pick the output that drives it (Advanced tab), or switch the rack off.');
     }
     var payload = gatherFormData();
+    if (payload.waterPumpOutput && payload.waterPumpOutput === String(payload.clampAuxOutput))
+      throw new Error('the water pump and the clamp valve are on the same Wireless I/O output. Pick another pump output.');
     var res = await fetch(BASE_URL + '/api/plugins/com.ncsender.pneumaticatc/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error('save failed: ' + res.status);
+    await pushBridgeRoles(payload);
 
     // Tool-count sync is universal — both community and Pro editions
     // expose /api/settings and the `tool` key. If this fails the plugin
@@ -3623,14 +3751,30 @@
     // an older core without /api/app-info responds 404 and we treat
     // that as "not pro" (safe fallback). Wrapped in try/catch so a
     // network hiccup can't derail the save.
+    //
+    // Newer cores keep a list of named zones: the rack is our own "ATC Zone"
+    // in it, so the user's other zones are left alone and the switch the
+    // user set on it is kept (no `enabled` sent). Older cores have one zone
+    // only (404 on the endpoint): that gets the rack, as before.
     var keepout = await computeKeepoutFromSettings(payload);
     if (keepout && await isProCore()) {
       try {
-        await fetch(BASE_URL + '/api/settings', {
-          method: 'PATCH',
+        var res = await fetch(BASE_URL + '/api/keepout/managed/com.ncsender.pneumaticatc', {
+          method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ advanced: { keepoutZone: keepout } })
+          body: JSON.stringify({
+            name: 'ATC Zone',
+            minX: keepout.min.x, minY: keepout.min.y,
+            maxX: keepout.max.x, maxY: keepout.max.y
+          })
         });
+        if (res.status === 404) {
+          await fetch(BASE_URL + '/api/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ advanced: { keepoutZone: keepout } })
+          });
+        }
       } catch (err) {
         console.warn('[PneumaticATC] keepout zone sync failed:', err);
       }
