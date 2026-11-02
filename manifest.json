@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.57-rack.1",
+  "version": "0.1.58-rack.1",
   "minAppVersion": "2.0.182",
   "commands": "commands.js",
   "configUi": "config.html",
@@ -12,8 +12,8 @@
   "priority": 50,
   "icon": "logo.png",
   "platforms": {
-    "v2": "2.0.88",
-    "pro-v2": "2.0.149"
+    "v2": "2.0.221",
+    "pro-v2": "2.0.304"
   },
   "events": [
     "onBeforeCommand",
@@ -43,23 +43,43 @@
     },
     "DRAWBAR_FAILED_TO_OPEN": {
       "title": "Drawbar Did Not Open",
-      "message": "The drawbar was commanded open but the drawbar sensor never reported it moving, so the tool change has stopped before relying on a release that did not happen.<br><br>The usual cause is no air: check that the compressor is running and up to pressure, the regulator is set, and no line is kinked or disconnected. Also check the solenoid and the sensor itself.<br><br>Fix the fault and click <em>\"Continue\"</em> to carry on from here, or <em>\"Abort\"</em> to stop the tool change. The sensor is not read again, so only continue once you can see the drawbar is open.<br><br>The spindle is clear of the rack so you can get to it. Continuing puts it back where it was and carries on from there.",
-      "continueLabel": "Continue"
+      "message": "The drawbar was released but the drawbar sensor never reported it open, so the tool change has stopped here. The drawbar has been clamped again, so nothing is left loose.<br><br>Check the air supply, the solenoid, and the drawbar sensor and its wiring.<br><br>Click <em>\"Retry\"</em> to release the drawbar again and re-check the sensor, or <em>\"Abort\"</em> to stop the tool change.",
+      "continueLabel": "Retry"
+    },
+    "DRAWBAR_FAILED_TO_OPEN_FINAL": {
+      "title": "Drawbar Still Not Open",
+      "message": "The drawbar sensor still does not report the drawbar open after two retries. The drawbar is clamped and the tool change can't go on.<br><br>Click <em>\"Abort\"</em> to stop the tool change, then check the air supply, the solenoid, and the drawbar sensor and its wiring.<br><br>To run without this check, turn the sensor off in the Pneumatic ATC settings. The tool change is then no longer checked here.",
+      "continueLabel": ""
     },
     "DRAWBAR_FAILED_TO_CLOSE": {
       "title": "Drawbar Did Not Close",
-      "message": "The drawbar was commanded closed but the drawbar sensor still reports it open, so the tool is not gripped. The sequence has stopped here rather than move and drop it.<br><br>Check air pressure, the solenoid, and that nothing is fouling the drawbar or the pull stud.<br><br>Support the tool before clicking anything. Click <em>\"Continue\"</em> to carry on from here, or <em>\"Abort\"</em> to stop the tool change.<br><br>The spindle is clear of the rack so you can get to it. Continuing puts it back where it was and carries on from there.",
-      "continueLabel": "Continue"
+      "message": "The drawbar was clamped but the drawbar sensor still reports it open, so the tool may not be gripped. The tool change has stopped here rather than move.<br><br>Support the tool. Check the air supply, the solenoid, and that nothing is fouling the drawbar or the pull stud.<br><br>Click <em>\"Retry\"</em> to clamp again and re-check the sensor, or <em>\"Abort\"</em> to stop the tool change.",
+      "continueLabel": "Retry"
+    },
+    "DRAWBAR_FAILED_TO_CLOSE_FINAL": {
+      "title": "Drawbar Still Not Closed",
+      "message": "The drawbar sensor still reports the drawbar open after two retries, so the tool may not be gripped.<br><br>Support the tool, then click <em>\"Abort\"</em> to stop the tool change.<br><br>To run without this check, turn the sensor off in the Pneumatic ATC settings. The tool change is then no longer checked here.",
+      "continueLabel": ""
     },
     "TOOL_FAILED_TO_SEAT": {
       "title": "No Tool In Spindle",
-      "message": "The drawbar closed, but the tool sensor does not detect a tool in the spindle. The holder may be mis-seated, the slot may have been empty, or the tool did not come up with the drawbar.<br><br>Inspect the slot and the spindle taper, and seat the tool by hand if needed.<br><br>Click <em>\"Continue\"</em> to carry on from here, or <em>\"Abort\"</em> to stop the tool change. The sensor is not read again, so only continue once the tool is actually in place.<br><br>The spindle is clear of the rack so you can get to it. Continuing puts it back where it was and carries on from there.",
-      "continueLabel": "Continue"
+      "message": "The drawbar closed, but the tool sensor does not detect a tool in the spindle. The holder may be mis-seated, the slot may have been empty, or the tool did not come up with the drawbar.<br><br>Click <em>\"Retry\"</em> to re-check the tool sensor, or <em>\"Abort\"</em> to stop the tool change.",
+      "continueLabel": "Retry"
+    },
+    "TOOL_FAILED_TO_SEAT_FINAL": {
+      "title": "Tool Still Not Detected",
+      "message": "The tool sensor still does not detect a tool in the spindle after two retries.<br><br>Click <em>\"Abort\"</em> to stop the tool change, then inspect the slot and the spindle taper.<br><br>To run without this check, turn the sensor off in the Pneumatic ATC settings. The tool change is then no longer checked here.",
+      "continueLabel": ""
     },
     "TOOL_STILL_GRIPPED": {
       "title": "Tool Did Not Release",
-      "message": "The spindle lifted away from the slot but the tool sensor still detects a tool, so the tool did not stay behind in the rack.<br><br>Check that the holder dropped cleanly into the slot and is not hung up on the cup or fork, and that the drawbar is fully open.<br><br>Click <em>\"Continue\"</em> to carry on from here, or <em>\"Abort\"</em> to stop the tool change.",
-      "continueLabel": "Continue"
+      "message": "The spindle lifted away from the slot but the tool sensor still detects a tool, so the tool did not stay behind in the rack.<br><br>Check that the holder dropped cleanly into the slot and is not hung up on the cup or fork, and that the drawbar is fully open.<br><br>Click <em>\"Retry\"</em> to re-check the tool sensor, or <em>\"Abort\"</em> to stop the tool change.",
+      "continueLabel": "Retry"
+    },
+    "TOOL_STILL_GRIPPED_FINAL": {
+      "title": "Tool Still in Spindle",
+      "message": "The tool sensor still detects a tool in the spindle after two retries.<br><br>Click <em>\"Abort\"</em> to stop the tool change, then remove the tool by hand.<br><br>To run without this check, turn the sensor off in the Pneumatic ATC settings. The tool change is then no longer checked here.",
+      "continueLabel": ""
     },
     "TOOLRACK_FAULT": {
       "title": "Tool Rack Not Available",

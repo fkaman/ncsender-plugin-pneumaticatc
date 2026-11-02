@@ -1473,10 +1473,12 @@ function pressureGuard(settings, oNum) {
 // switch reads the other way round invert the port in firmware ($370),
 // exactly as they already do for pressure.
 //
-// No unrolled retry here, unlike pressure. A compressor takes real time to
-// recover, so re-reading it is worth something; a drawbar either actuated
-// or it did not, and a tool is either in the spindle or it is not. Reading
-// again changes nothing, so these fault once and stop.
+// A failed check never offers Continue: carrying on past a drawbar or tool
+// state nobody confirmed is how a tool gets dropped. It puts the drawbar back
+// in a safe state where it can (a release that wasn't seen is clamped again),
+// then offers Retry, which repeats the step and reads the sensor again, twice.
+// After that only Abort is left. Someone who wants to run without the check
+// turns the sensor off in the settings and takes that risk knowingly.
 //
 // Pneumatics need longer than a pressure switch to finish moving.
 const DRAWBAR_WAIT_SEC = 1;
@@ -1499,11 +1501,11 @@ const wiredInputConfigured = (pin) => Number.isInteger(pin) && pin >= 0;
 //
 // Same idea as the output providers: a sensor input is either a controller
 // aux input or an Wireless I/O input, and sensorGuard only ever asks
-// inputFor(pin).guard(...) for the lines that check it. A wired input is
+// inputFor(pin).chain(...) for the lines that check it. A wired input is
 // read by the controller (M66 + an o-word if on #5399); a bridge input is
 // read by ncSender (DONGLE_WAIT with a failure block the host runs only when
-// the input never arrived). Both run the same failure lines: lift, message,
-// M0, return. Air pressure stays wired-only for now.
+// the input never arrived). Both run the same failure blocks (see
+// sensorGuard). Air pressure stays wired-only for now.
 const INPUT_PROVIDERS = [
   // Controller aux input. `asserted` waits for LOW (L4), the convention
   // documented above; a timeout leaves #5399 == -1.
@@ -1512,15 +1514,16 @@ const INPUT_PROVIDERS = [
     create: (pin) => ({
       configured: true,
       device: null,
-      guard: ({ oNum, waitSec, asserted, lift, message, back }) => `
-    M66 P${pin} ${asserted ? 'L4' : 'L3'} Q${waitSec}
-    o${oNum} if [#5399 EQ -1]
-      ${lift}
-      ${message}
-      M0
-      ${back}
-    o${oNum} endif
-  `.trim(),
+      // M66 leaves #5399 == -1 on a timeout. Each retry reads again inside
+      // its own block, so the next block tests the fresh reading.
+      chain: ({ oNum, waitSec, asserted, blocks }) => {
+        const read = `M66 P${pin} ${asserted ? 'L4' : 'L3'} Q${waitSec}`;
+        return [read, ...blocks.map((body, i) => {
+          const o = oNum * 10 + i;
+          const reread = i < blocks.length - 1 ? `\n      ${read}` : '';
+          return `o${o} if [#5399 EQ -1]\n      ${body}${reread}\n    o${o} endif`;
+        })].join('\n    ');
+      },
     }),
   },
   // Wireless I/O input: "bridge:<n>" is board INPUT<n+1>, reported as
@@ -1532,61 +1535,51 @@ const INPUT_PROVIDERS = [
       return {
         configured: true,
         device: { name: BRIDGE_DEVICE, label: 'Wireless I/O' },
-        guard: ({ waitSec, asserted, lift, message, back }) => `
-    (DONGLE_WAIT:${BRIDGE_DEVICE}:in${n}=${asserted ? 1 : 0}:0:${waitSec}:else)
-    (DONGLE_ELSE)
-      ${lift}
-      ${message}
-      M0
-      ${back}
-    (DONGLE_END)
-  `.trim(),
+        // ncSender reads the input; the block after each wait runs only when
+        // it never arrived. A retry re-reads with the next wait, which
+        // passes at once when the earlier one already did.
+        chain: ({ waitSec, asserted, blocks }) => {
+          const read = `(DONGLE_WAIT:${BRIDGE_DEVICE}:in${n}=${asserted ? 1 : 0}:0:${waitSec}:else)`;
+          return blocks.map((body) =>
+            `${read}\n    (DONGLE_ELSE)\n      ${body}\n    (DONGLE_END)`).join('\n    ');
+        },
       };
     },
   },
 ];
 
-const NO_INPUT = { configured: false, device: null, guard: () => '' };
+const NO_INPUT = { configured: false, device: null, chain: () => '' };
 
 function inputFor(value) {
   const provider = INPUT_PROVIDERS.find((p) => p.match(value));
   return provider ? provider.create(value) : NO_INPUT;
 }
 
-// `retreat` is optional: { safeZ, returnZ }. When given, a fault lifts the
-// spindle clear of the rack before the operator is asked to do anything, and
-// drops back down once they continue. Both moves live INSIDE the if-block, so
-// a check that passes emits neither and the happy path is byte-for-byte what
-// it was.
+const SENSOR_RETRIES = 2;
+
+// A check that fails stops the change where it is: no lift, so nothing moves
+// with a tool nobody knows is held. Each failure first runs `recover` (put the
+// drawbar back in a safe state), then asks. Retry runs `retry` (repeat the
+// step) and the sensor is read again; that happens SENSOR_RETRIES times, then
+// the last prompt (`<msgId>_FINAL`) has Abort only.
 //
-// The descent is not optional decoration. Continue resumes at the line after
-// M0, and the rest of the sequence assumes the spindle is still where the
-// check found it — on a fork load the very next move is the slide-out, which
-// 100 mm too high would leave the tool in the rack. So whatever the lift
-// raises, the return puts back.
-//
-// The lift is deliberately Z-only, straight up over the slot the tool is in.
-// A lateral retreat is the tempting version and the dangerous one: the faults
-// where the operator most wants their hands free are exactly the ones where
-// we do not know the tool is held, and traversing with a loose tool throws
-// it. Straight up means anything that comes free lands in or beside its own
-// slot. The return is fed at drawbar speed rather than rapided because it can
-// be descending onto a holder.
-//
-// `retreat.abort` (optional) is what Abort does instead of a bare soft reset:
+// `abort` (optional) is what Abort does instead of a bare soft reset:
 // ncSender resumes the M0, runs only these lines, then resets (see the host's
-// GateAbortBlock). Continue skips them. The lines start from the lift, so
-// they leave the rack from safe Z the way a finished change would.
-function sensorGuard(pin, oNum, waitSec, asserted, msgId, retreat) {
-  const lift = retreat ? `G53 G0 Z${retreat.safeZ}` : '';
-  const returnLine = retreat && retreat.returnZ != null ? `G53 G1 Z${retreat.returnZ} F${DRAWBAR_FEEDRATE_MMPM}` : '';
-  const abort = retreat && retreat.abort ? retreat.abort.trim() : '';
-  const msgLine = `(MSG, PLUGIN_PNEUMATICATC:${msgId})`;
-  const message = abort ? `(GATE_ABORT_OFFERED)\n      ${msgLine}` : msgLine;
-  const back = abort
-    ? `(GATE_ABORT)\n      ${abort}\n      G4 P0\n      (GATE_END)${returnLine ? `\n      ${returnLine}` : ''}`
-    : returnLine;
-  return inputFor(pin).guard({ oNum, waitSec, asserted, lift, message, back });
+// GateAbortBlock). Retry skips them.
+function sensorGuard(pin, oNum, waitSec, asserted, msgId, { recover = '', retry = '', abort = '' } = {}) {
+  const abortLines = abort ? abort.trim() : '';
+  const prompt = (code, last) => [
+    recover,
+    abortLines ? '(GATE_ABORT_OFFERED)' : '',
+    `(MSG, PLUGIN_PNEUMATICATC:${code})`,
+    'M0',
+    abortLines ? `(GATE_ABORT)\n      ${abortLines}\n      G4 P0\n      (GATE_END)` : '',
+    last ? '' : retry,
+  ].map((l) => l.trim()).filter(Boolean).join('\n      ');
+  const blocks = [];
+  for (let i = 0; i < SENSOR_RETRIES; i++) blocks.push(prompt(msgId, false));
+  blocks.push(prompt(`${msgId}_FINAL`, true));
+  return inputFor(pin).chain({ oNum, waitSec, asserted, blocks });
 }
 
 // Abort from a rack slot: leave along the slot's normal exit route to where
@@ -1602,26 +1595,31 @@ function rackAbortExit(settings, slotPos, abortTo, reclamp) {
   return `${clamp}${handFinalLegToCoreCheck(route)}`;
 }
 
-// expect: 'open' after an unclamp, 'closed' after a clamp.
-function drawbarGuard(settings, oNum, expect, retreat) {
+// expect: 'open' after an unclamp, 'closed' after a clamp. A release that
+// wasn't seen is clamped again at once, so nothing is left loose while the
+// operator decides; Retry releases again. A clamp that wasn't seen is
+// commanded again.
+function drawbarGuard(settings, oNum, expect, { abort } = {}) {
   if (!auxInputConfigured(settings.drawbarInput)) return '';
   const open = expect === 'open';
+  const clamp = `${auxLineFor(settings, 'clamp')}\n      G4 P0.5`;
+  const unclamp = `${auxLineFor(settings, 'unclamp')}\n      G4 P0.8`;
   return sensorGuard(
     settings.drawbarInput, oNum, DRAWBAR_WAIT_SEC, open,
     open ? 'DRAWBAR_FAILED_TO_OPEN' : 'DRAWBAR_FAILED_TO_CLOSE',
-    retreat
+    { recover: open ? clamp : '', retry: open ? unclamp : clamp, abort }
   );
 }
 
 // expect: 'present' when a tool should now be gripped, 'empty' when the
-// spindle should be clear.
-function toolGuard(settings, oNum, expect, retreat) {
+// spindle should be clear. Retry reads the sensor again.
+function toolGuard(settings, oNum, expect, { abort } = {}) {
   if (!auxInputConfigured(settings.toolSensorInput)) return '';
   const present = expect === 'present';
   return sensorGuard(
     settings.toolSensorInput, oNum, TOOL_SENSE_WAIT_SEC, present,
     present ? 'TOOL_FAILED_TO_SEAT' : 'TOOL_STILL_GRIPPED',
-    retreat
+    { retry: 'G4 P0.5', abort }
   );
 }
 
@@ -1866,7 +1864,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
-      ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM, abort: rackAbortExit(settings, slotPos, abortTo, true) })}${closeAfterLiftOff}
+      ${drawbarGuard(settings, 200, 'open', { abort: rackAbortExit(settings, slotPos, abortTo, true) })}${closeAfterLiftOff}
       G53 G0 Z${settings.zSafe}
       ${toolGuard(settings, 201, 'empty')}
       M61 Q0
@@ -1881,7 +1879,7 @@ function buildUnloadTool(settings, currentTool, slotPos, origin = { x: 0, y: 0 }
     G4 P0.5
     ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
-    ${drawbarGuard(settings, 200, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DRAWBAR_OFFSET_MM, abort: rackAbortExit(settings, slotPos, abortTo, true) })}${closeAfterLiftOff}
+    ${drawbarGuard(settings, 200, 'open', { abort: rackAbortExit(settings, slotPos, abortTo, true) })}${closeAfterLiftOff}
     G53 G0 Z${settings.zSafe}
     ${toolGuard(settings, 201, 'empty')}
     M61 Q0
@@ -1996,22 +1994,19 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
       G4 P0.1
       ${auxLineFor(settings, 'unclamp')}
       G4 P${DEDUST_VENT_SEC}
-      ${drawbarGuard(settings, 210, 'open', { safeZ: settings.zSafe, returnZ: settings.slot1.z + DEDUST_LIFT_MM, abort: rackAbortExit(settings, slotPos, abortTo, true) })}
+      ${drawbarGuard(settings, 210, 'open', { abort: rackAbortExit(settings, slotPos, abortTo, true) })}
       G53 G1 Z${approachZ} F${DEDUST_FEEDRATE_MMPM}` : `${releaseFirst}
       G53 G0 Z${approachZ}`;
   const clampSettle = settings.taperBlow ? DEDUST_CLAMP_SETTLE_SEC : 0.5;
 
   if (settings.rackHolding === 'Cup') {
-    // A cup load leaves straight up (the next move is the rise to safe Z),
-    // so Continue after a failed check carries on from the lift instead of
-    // feeding all the way back down into the rack first.
     return `
       ${approachToEngaged}${descend}
       G4 P0.5
       ${auxLineFor(settings, 'clamp')}${drawbarSeat}
       G4 P${clampSettle}
-      ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
-      ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
+      ${drawbarGuard(settings, 211, 'closed', { abort: rackAbortExit(settings, slotPos, abortTo, false) })}
+      ${toolGuard(settings, 212, 'present', { abort: rackAbortExit(settings, slotPos, abortTo, false) })}
       G53 G0 Z${settings.zSafe}
       M61 Q${idOf(toolNumber)}
       ${tlsRoutine}
@@ -2024,8 +2019,8 @@ function buildLoadTool(settings, toolNumber, slotPos, tlsRoutine, drawbarAlready
     G4 P0.5
     ${auxLineFor(settings, 'clamp')}${drawbarSeat}
     G4 P${clampSettle}
-    ${drawbarGuard(settings, 211, 'closed', { safeZ: settings.zSafe, returnZ: settings.slot1.z, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
-    ${toolGuard(settings, 212, 'present', { safeZ: settings.zSafe, returnZ: settings.slot1.z, abort: rackAbortExit(settings, slotPos, abortTo, false) })}
+    ${drawbarGuard(settings, 211, 'closed', { abort: rackAbortExit(settings, slotPos, abortTo, false) })}
+    ${toolGuard(settings, 212, 'present', { abort: rackAbortExit(settings, slotPos, abortTo, false) })}
     G53 G1 X${slotPos.approach.x} Y${slotPos.approach.y} F${feed}
     G53 G0 Z${settings.zSafe}
     M61 Q${idOf(toolNumber)}
@@ -2137,7 +2132,7 @@ function buildProbeUnload(settings, from) {
       G4 P0.5
       ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
       G4 P0.5
-      ${drawbarGuard(settings, 220, 'open', { safeZ: settings.zSafe, returnZ: h.z + DRAWBAR_OFFSET_MM })}${closeAfterLiftOff}
+      ${drawbarGuard(settings, 220, 'open')}${closeAfterLiftOff}
       G53 G0 Z${settings.zSafe}
       ${toolGuard(settings, 221, 'empty')}
       M61 Q0
@@ -2153,7 +2148,7 @@ function buildProbeUnload(settings, from) {
     G4 P0.5
     ${auxLineFor(settings, 'unclamp')}${drawbarBackoff}
     G4 P0.5
-    ${drawbarGuard(settings, 220, 'open', { safeZ: settings.zSafe, returnZ: h.z + DRAWBAR_OFFSET_MM })}${closeAfterLiftOff}
+    ${drawbarGuard(settings, 220, 'open')}${closeAfterLiftOff}
     G53 G0 Z${settings.zSafe}
     ${toolGuard(settings, 221, 'empty')}
     M61 Q0
@@ -2181,7 +2176,7 @@ function buildProbeLoad(settings, entrance, tlsRoutine, drawbarAlreadyReleased) 
       G4 P0.1
       ${auxLineFor(settings, 'unclamp')}
       G4 P${DEDUST_VENT_SEC}
-      ${drawbarGuard(settings, 230, 'open', { safeZ: settings.zSafe, returnZ: h.z + DEDUST_LIFT_MM })}
+      ${drawbarGuard(settings, 230, 'open')}
       G53 G1 Z${approachZ} F${DEDUST_FEEDRATE_MMPM}` : `${releaseFirst}
       G53 G0 Z${approachZ}`;
   const clampSettle = settings.taperBlow ? DEDUST_CLAMP_SETTLE_SEC : 0.5;
@@ -2202,8 +2197,8 @@ function buildProbeLoad(settings, entrance, tlsRoutine, drawbarAlreadyReleased) 
       G4 P0.5
       ${auxLineFor(settings, 'clamp')}${drawbarSeat}
       G4 P${clampSettle}
-      ${drawbarGuard(settings, 231, 'closed', { safeZ: settings.zSafe, returnZ: h.z })}
-      ${toolGuard(settings, 232, 'present', { safeZ: settings.zSafe, returnZ: h.z })}
+      ${drawbarGuard(settings, 231, 'closed')}
+      ${toolGuard(settings, 232, 'present')}
       M61 Q${idOf(toolNumber)}
       ${verify}
       G53 G0 Z${settings.zSafe}
@@ -2219,8 +2214,8 @@ function buildProbeLoad(settings, entrance, tlsRoutine, drawbarAlreadyReleased) 
     G4 P0.5
     ${auxLineFor(settings, 'clamp')}${drawbarSeat}
     G4 P${clampSettle}
-    ${drawbarGuard(settings, 231, 'closed', { safeZ: settings.zSafe, returnZ: h.z })}
-    ${toolGuard(settings, 232, 'present', { safeZ: settings.zSafe, returnZ: h.z })}
+    ${drawbarGuard(settings, 231, 'closed')}
+    ${toolGuard(settings, 232, 'present')}
     G53 G1 X${h.approach.x} Y${h.approach.y} F${feed}
     M61 Q${idOf(toolNumber)}
     ${verify}
@@ -3097,6 +3092,16 @@ function askFittedTool() {
   _watch.ask = ask;
 }
 
+// What the watch acted on, with the Wireless I/O's last status, so a
+// surprise M61 or a "which tool" prompt can be traced to the reading behind it.
+function logSensorAction(what) {
+  if (typeof pluginContext.log !== 'function') return;
+  const dongle = pluginContext.dongle;
+  const device = dongle && typeof dongle.getDevices === 'function'
+    ? Array.from(dongle.getDevices() || []).find((d) => d && d.name === BRIDGE_DEVICE) : null;
+  pluginContext.log(`Tool Sensor watch: ${what}; last status: ${device ? device.lastMessage : 'none'}`);
+}
+
 function watchToolSensor(now = Date.now()) {
   const n = _watchSettings ? bridgeInputIndex(_watchSettings.toolSensorInput) : -1;
   const value = n >= 0 ? readBridgeInput(n) : null;
@@ -3125,10 +3130,14 @@ function watchToolSensor(now = Date.now()) {
     if (now - _watch.m61At < M61_RETRY_MS) return;
     _watch.m61At = now;
     _watch.lastOut = st.tool;
+    logSensorAction(`spindle empty for ${now - _watch.rawSince} ms, was T${st.tool}: M61 Q0`);
     pluginContext.sendCommand('M61 Q0', `M61 Q0 (Tool Sensor: spindle empty, was T${st.tool})`);
     return;
   }
-  if (value === 1 && previous === 0 && st.tool === 0) askFittedTool();
+  if (value === 1 && previous === 0 && st.tool === 0) {
+    logSensorAction('tool fitted into an empty spindle: asking which tool');
+    askFittedTool();
+  }
 }
 
 if (typeof pluginContext !== 'undefined' && pluginContext && typeof pluginContext.setInterval === 'function') {

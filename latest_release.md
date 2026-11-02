@@ -1,8 +1,8 @@
 ## What's Changed
 
-Pre-release based on siganberg's v0.1.57, with a retractable tool rack added. Not part of the upstream release. Works with ncSender 2.0.182 or newer; v0.1.58 and later need a newer app and are not included.
+Pre-release based on siganberg's v0.1.58, with a retractable tool rack added. Not part of the upstream release. Needs ncSender 2.0.221 or newer (Pro 2.0.304 or newer), like v0.1.58.
 
-### In this pre-release, compared with v0.1.57
+### In this pre-release, compared with v0.1.58
 - Retractable tool rack. A Moving tool rack switch in the Advanced tab extends the rack before a change reaches a rack slot and retracts it afterwards. Two optional end-stop sensors confirm that the rack is out and that it is back. A miss stops the change with a Re-check dialog.
 - The spindle must be empty before anything is loaded. With a Tool Sensor pin set, every change that loads a tool reads the sensor again right before the spindle moves to pick it up. A tool still in the spindle stops the change with a Spindle Not Empty dialog. Re-check reads the sensor again and only carries on once it reads empty.
 - Tool left in the spindle. A change that starts from an empty spindle reads the tool sensor first and stops with a dialog if a tool is still seated, for example after a restart. Continue to open the drawbar after the countdown and take it out by hand, or Abort, send M61 Q followed by the Tool ID, and run the change again so it is put back in its own slot.
