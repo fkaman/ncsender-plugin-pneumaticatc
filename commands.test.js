@@ -3220,24 +3220,38 @@ describe('spindle must be empty before a load', () => {
   const READ = 'M66 P1 L3 Q0.01';
 
   test('without a tool sensor pin nothing can be read, so no gate is emitted', () => {
-    const p = program(WITHOUT, 2, 1);
-    assert.ok(!p.includes('SPINDLE_NOT_EMPTY') && !p.includes('o260'));
+    for (const [from, to] of [[0, 1], [4, 1]]) {
+      const p = program(WITHOUT, from, to);
+      assert.ok(!p.includes('SPINDLE_NOT_EMPTY') && !p.includes('o260'), `T${from} -> T${to}`);
+    }
   });
 
-  test('every change that loads something is gated, whatever it unloaded first', () => {
-    for (const [from, to] of [[0, 1], [2, 1], [1, 2], [4, 1], [1, 4], [0, 4], [1, 99], [99, 1], [0, 99]]) {
+  // What upstream does not check: the operator took the tool out by hand.
+  test('gated where nothing else has read the sensor: from T0, and after a manual unload', () => {
+    for (const [from, to] of [[0, 1], [0, 4], [0, 99], [4, 1], [4, 2], [4, 99]]) {
       assert.ok(program(WITH, from, to).includes('(MSG, PLUGIN_PNEUMATICATC:SPINDLE_NOT_EMPTY)'), `T${from} -> T${to}`);
+    }
+  });
+
+  // After a rack or probe unload upstream's own check has just read the same
+  // sensor with the same stop condition, so the gate would only repeat it.
+  test('not repeated after a rack or probe unload, where upstream already checks', () => {
+    for (const [from, to] of [[2, 1], [1, 2], [1, 4], [1, 99], [99, 1], [99, 2]]) {
+      const p = program(WITH, from, to);
+      assert.ok(!p.includes('SPINDLE_NOT_EMPTY'), `T${from} -> T${to}: no second read`);
+      assert.ok(p.includes('TOOL_STILL_GRIPPED_FINAL'), `T${from} -> T${to}: upstream's own check is there instead`);
     }
   });
 
   test('changes that load nothing, or deliberately keep a tool in, are not gated', () => {
     assert.ok(!program(WITH, 1, 0).includes('SPINDLE_NOT_EMPTY'), 'unload only: nothing is loaded');
     assert.ok(!program(WITH, 99, 0).includes('SPINDLE_NOT_EMPTY'));
+    assert.ok(!program(WITH, 4, 0).includes('SPINDLE_NOT_EMPTY'));
     assert.ok(!program(WITH, 4, 5).includes('SPINDLE_NOT_EMPTY'), 'manual to manual: the old tool is meant to be there');
   });
 
-  test('it sits after the unload and before any load motion', () => {
-    const l = lines(program(WITH, 2, 1));
+  test('it sits after the manual unload and before any load motion', () => {
+    const l = lines(program(WITH, 4, 1));
     const unloaded = l.indexOf('M61 Q0');
     const gate = l.indexOf(READ);
     assert.ok(unloaded !== -1 && gate !== -1);
@@ -3257,8 +3271,8 @@ describe('spindle must be empty before a load', () => {
     assert.ok(release > gate, 'before the drawbar is released to load');
   });
 
-  test('it is fail-closed: a read that sees a tool stops, Continue re-reads, and only the last dialog allows carrying on', () => {
-    const l = lines(program(WITH, 2, 1));
+  test('it is fail-closed: a read that sees a tool stops, Re-check reads again, and the last prompt is Abort only', () => {
+    const l = lines(program(WITH, 4, 1));
     const start = l.indexOf(READ);
     const block = l.slice(start, l.indexOf('o262 endif') + 1);
     assert.ok(block.length > 6);
@@ -3266,13 +3280,63 @@ describe('spindle must be empty before a load', () => {
     assert.deepEqual(block.filter((x) => /^o26\d (if|endif)/.test(x)),
       ['o260 if [#5399 EQ -1]', 'o260 endif', 'o261 if [#5399 EQ -1]', 'o261 endif', 'o262 if [#5399 EQ -1]', 'o262 endif']);
     assert.equal(block.filter((x) => x.includes('(MSG, PLUGIN_PNEUMATICATC:SPINDLE_NOT_EMPTY)')).length, 2);
-    assert.equal(block.filter((x) => x.includes('SPINDLE_NOT_EMPTY_UNVERIFIED')).length, 1);
+    assert.equal(block.filter((x) => x.includes('SPINDLE_NOT_EMPTY_FINAL')).length, 1);
+    assert.ok(!block.some((x) => x.includes('UNVERIFIED')), 'no "continue anyway" prompt any more');
     assert.ok(block.every((x) => !x.startsWith('M64 P2') && !x.startsWith('M65 P2')), 'the gate never touches the drawbar itself');
   });
 
   test('empty reads HIGH: a tool in the spindle (LOW) is what times out the read', () => {
-    assert.ok(program(WITH, 2, 1).includes('M66 P1 L3 Q0.01'), 'L3 waits for HIGH');
-    assert.ok(!program(WITH, 2, 1).includes('M66 P1 L4 Q0.01'));
+    assert.ok(program(WITH, 4, 1).includes('M66 P1 L3 Q0.01'), 'L3 waits for HIGH');
+    assert.ok(!program(WITH, 4, 1).includes('M66 P1 L4 Q0.01'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// This fork's own dialogs follow upstream's rule for a failed check: Re-check,
+// and the last prompt has Abort only (no Continue). They are also short plain
+// text without buttons, so they fit and show on the wireless pendant (96 chars).
+// ---------------------------------------------------------------------------
+describe('this fork\'s dialogs: Abort-only at the end, short and plain for the pendant', () => {
+  const loadMessages = async () => {
+    const { readFileSync } = await import('node:fs');
+    return JSON.parse(readFileSync(new URL('./manifest.json', import.meta.url))).messages;
+  };
+  const MINE = ['TOOLRACK_FAULT', 'TOOLRACK_FAULT_FINAL', 'TOOLRACK_RETRACT_FAULT', 'TOOLRACK_RETRACT_FAULT_FINAL',
+    'SPINDLE_NOT_EMPTY', 'SPINDLE_NOT_EMPTY_FINAL', 'UNEXPECTED_TOOL_DETECTED', 'UNEXPECTED_TOOL_REMOVE'];
+
+  test('each is present, up to 96 characters, plain text, and has no custom buttons', async () => {
+    const messages = await loadMessages();
+    for (const id of MINE) {
+      const m = messages[id];
+      assert.ok(m, `${id} exists`);
+      assert.ok(m.message.length <= 96, `${id}: ${m.message.length} characters`);
+      assert.doesNotMatch(m.message, /[<>&]/, `${id}: plain text`);
+      assert.ok(!('buttons' in m), `${id}: no buttons`);
+    }
+  });
+
+  test('the first prompts Re-check and the last has no Continue', async () => {
+    const messages = await loadMessages();
+    for (const id of ['TOOLRACK_FAULT', 'TOOLRACK_RETRACT_FAULT', 'SPINDLE_NOT_EMPTY']) {
+      assert.equal(messages[id].continueLabel, 'Re-check', id);
+      assert.equal(messages[`${id}_FINAL`].continueLabel, '', `${id}_FINAL: Abort only`);
+    }
+  });
+
+  test('every prompt the program can raise has a message, and nothing refers to a removed one', async () => {
+    const messages = await loadMessages();
+    const cfg = buildInitialConfig({
+      slots: 3, slot1: { x: -115, y: 40, z: -100 }, slotDistance: 80, zSafe: 0, rackHolding: 'Cup',
+      clampAuxOutput: 2, toolsetter: { x: 300, y: -200 }, manualTool: { x: 321, y: -966 }, tlsMode: 'always',
+      toolSensorInput: 1, toolRackAuxOutput: 3, toolRackAvailableSensorInput: 6, toolRackUnavailableSensorInput: 7,
+    });
+    const used = new Set();
+    for (const [from, to] of [[0, 1], [4, 1], [1, 2]]) {
+      const p = buildToolChangeProgram(cfg, from, to, { x: 0, y: 0 }, 0, { x: 60, y: 120 }).join('\n');
+      for (const m of p.matchAll(/PLUGIN_PNEUMATICATC:([A-Z_]+?)(?:_\d+)?\)/g)) used.add(m[1]);
+    }
+    for (const id of used) assert.ok(messages[id], `${id} has a message in the manifest`);
+    assert.ok(![...used].some((id) => id.endsWith('_UNVERIFIED') && !id.startsWith('PRESSURE')), 'no "continue anyway" prompt left');
   });
 });
 

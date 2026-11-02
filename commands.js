@@ -1688,17 +1688,18 @@ function unexpectedToolGuard(settings, oNum, origin) {
 // is off unless it is switched on (toolRackEnabled) and the output is
 // configured.
 
-// Unlike the drawbar and tool checks above, which fault once and let Continue
-// carry on, this guard keeps the unrolled read / Re-check / Re-check /
-// "continue unverified" shape of pressureGuard (see there for why it can't be
-// a `while`): Continue re-reads the sensor, so the operator cannot get past it
-// without the input actually reading HIGH, and only the third dialog says
-// plainly that carrying on is unverified. Used where moving on with the wrong
-// state is dangerous and can be put right by hand: a rack that has not reached
-// its end of travel, a tool that is still in the spindle. `oNum..oNum+2` are
-// its o-word numbers; every call site needs its own, spaced to not collide in
-// one macro. Returns '' for an unwired input.
-function recheckSensorGuard(input, faultMsg, unverifiedMsg, oNum) {
+// The same shape as upstream's sensor checks (see sensorGuard): a failed read
+// stops the change where it is and asks for a Re-check, which reads the sensor
+// again, twice; after that the last prompt (`<msgId>_FINAL`) has Abort only.
+// Carrying on past a state nobody confirmed is how a tool gets dropped or a
+// rack gets hit, so there is no Continue. Someone who wants to run without a
+// check takes its sensor pin out of the settings and accepts that knowingly.
+// Unlike upstream's chain it reads with Q0.01 and re-reads inside each block,
+// so the next block tests a fresh reading. `oNum..oNum+2` are its o-word
+// numbers; every call site needs its own, spaced to not collide in one macro
+// (and clear of upstream's, which are oNum*10 + 0..2). Returns '' for an
+// unwired input.
+function recheckSensorGuard(input, faultMsg, finalMsg, oNum) {
   if (!wiredInputConfigured(input)) return '';
   const read = `M66 P${input} L3 Q0.01\n    G4 P0.1`;
   const retry = (n) => `
@@ -1712,31 +1713,36 @@ function recheckSensorGuard(input, faultMsg, unverifiedMsg, oNum) {
     ${retry(oNum).trim()}
     ${retry(oNum + 1).trim()}
     o${oNum + 2} if [#5399 EQ -1]
-      (MSG, PLUGIN_PNEUMATICATC:${unverifiedMsg})
+      (MSG, PLUGIN_PNEUMATICATC:${finalMsg})
       M0
     o${oNum + 2} endif
   `.trim();
 }
 
-// The spindle must be empty before it travels to pick anything up. The checks
-// around the unload (toolGuard 'empty') fault once and Continue carries on, so
-// a tool that stayed in the spindle, or one the operator was told to remove,
-// could still be driven to the rack. This gate sits right before the first load
-// motion, reads the same tool sensor and will not let the change go on until it
-// reads empty (HIGH, the opposite of "tool present", which reads LOW). Without a
-// tool sensor pin nothing can be read, so nothing is emitted.
+// The spindle must be empty before it travels to pick anything up, and this
+// gate sits right before the first load motion, reads the tool sensor and will
+// not let the change go on until it reads empty (HIGH, the opposite of "tool
+// present", which reads LOW). Without a tool sensor pin nothing can be read, so
+// nothing is emitted.
+//
+// Only where nothing else has just made the same check. After a rack or probe
+// unload upstream's own toolGuard 'empty' reads the same sensor with the same
+// stop condition, so a second read there would only repeat it. What upstream
+// does not cover is a change that STARTS with a tool in the spindle that was
+// taken out by hand: from T0 after the tool-found dialogs, and after a manual
+// unload where the operator was told to remove the bit.
 function spindleEmptyGate(settings, oNum) {
-  return recheckSensorGuard(settings.toolSensorInput, 'SPINDLE_NOT_EMPTY', 'SPINDLE_NOT_EMPTY_UNVERIFIED', oNum);
+  return recheckSensorGuard(settings.toolSensorInput, 'SPINDLE_NOT_EMPTY', 'SPINDLE_NOT_EMPTY_FINAL', oNum);
 }
 
 // Two separate guards with their own dialogs: "rack didn't confirm
 // available" and "rack didn't confirm retracted" mean different things to the
 // operator. Both OK = HIGH (L3 waits for HIGH).
 function toolRackAvailableGuard(settings, oNum) {
-  return recheckSensorGuard(settings.toolRackAvailableSensorInput, 'TOOLRACK_FAULT', 'TOOLRACK_FAULT_UNVERIFIED', oNum);
+  return recheckSensorGuard(settings.toolRackAvailableSensorInput, 'TOOLRACK_FAULT', 'TOOLRACK_FAULT_FINAL', oNum);
 }
 function toolRackUnavailableGuard(settings, oNum) {
-  return recheckSensorGuard(settings.toolRackUnavailableSensorInput, 'TOOLRACK_RETRACT_FAULT', 'TOOLRACK_RETRACT_FAULT_UNVERIFIED', oNum);
+  return recheckSensorGuard(settings.toolRackUnavailableSensorInput, 'TOOLRACK_RETRACT_FAULT', 'TOOLRACK_RETRACT_FAULT_FINAL', oNum);
 }
 
 function rackOutputConfigured(settings) {
@@ -2501,10 +2507,15 @@ function buildToolChangeProgram(settings, currentTool, toolNumber, toolOffsets =
   const unexpectedTool = (currentTool === 0 && toolNumber !== 0)
     ? unexpectedToolGuard(settings, 250, origin)
     : '';
-  // Whatever happened above, nothing travels to pick up a tool while one is
-  // still in the spindle: re-read the sensor right before the load. A
-  // manual-to-manual swap is the exception: the old tool is meant to be there.
-  const emptyGate = (toolNumber !== 0 && !isManualToManual)
+  // Nothing travels to pick up a tool while one is still in the spindle:
+  // re-read the sensor right before the load. A manual-to-manual swap is the
+  // exception (the old tool is meant to be there), and so is a change that has
+  // just unloaded a rack or probe tool, where upstream's own check after the
+  // unload has read the same sensor already (see spindleEmptyGate). What is
+  // left is a change that starts from T0 or has just had a tool taken out by
+  // hand.
+  const upstreamCheckedEmpty = (currentTool > 0 && currentTool <= settings.slots) || sourceIsProbe;
+  const emptyGate = (toolNumber !== 0 && !isManualToManual && !upstreamCheckedEmpty)
     ? spindleEmptyGate(settings, 260)
     : '';
 

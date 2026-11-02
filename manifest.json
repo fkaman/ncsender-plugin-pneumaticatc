@@ -1,7 +1,7 @@
 {
   "id": "com.ncsender.pneumaticatc",
   "name": "Pneumatic ATC",
-  "version": "0.1.58-rack.1",
+  "version": "0.1.58-rack.2",
   "minAppVersion": "2.0.182",
   "commands": "commands.js",
   "configUi": "config.html",
@@ -86,20 +86,20 @@
       "message": "Rack not confirmed out by its sensor. Check it moves freely, then Re-check, or Abort.",
       "continueLabel": "Re-check"
     },
-    "TOOLRACK_FAULT_UNVERIFIED": {
+    "TOOLRACK_FAULT_FINAL": {
       "title": "Tool Rack Still Not Available",
-      "message": "Rack still not confirmed out. Continuing is unverified and may crash. Abort is safe.",
-      "continueLabel": "Continue anyway"
+      "message": "Rack still not confirmed out. Abort and check it. To skip this, clear its sensor pin.",
+      "continueLabel": ""
     },
     "TOOLRACK_RETRACT_FAULT": {
       "title": "Tool Rack Not Retracted",
       "message": "Rack not confirmed retracted. Check it moves freely, then Re-check, or Abort.",
       "continueLabel": "Re-check"
     },
-    "TOOLRACK_RETRACT_FAULT_UNVERIFIED": {
+    "TOOLRACK_RETRACT_FAULT_FINAL": {
       "title": "Tool Rack Still Not Retracted",
-      "message": "Rack still not confirmed retracted. Continuing is unverified and may crash. Abort is safe.",
-      "continueLabel": "Continue anyway"
+      "message": "Rack still not confirmed retracted. Abort and check it. To skip this, clear its sensor pin.",
+      "continueLabel": ""
     },
     "UNEXPECTED_TOOL_DETECTED": {
       "title": "Tool Found In Spindle",
@@ -116,10 +116,10 @@
       "message": "Tool sensor still sees a tool. Release the drawbar and remove it, then Re-check. Abort to stop.",
       "continueLabel": "Re-check"
     },
-    "SPINDLE_NOT_EMPTY_UNVERIFIED": {
+    "SPINDLE_NOT_EMPTY_FINAL": {
       "title": "Spindle Still Not Empty",
-      "message": "Still sees a tool. Carrying on may crash into the rack. Abort is the safe choice.",
-      "continueLabel": "Continue anyway"
+      "message": "Spindle still not empty. Abort and remove the tool. To skip this, clear the tool sensor pin.",
+      "continueLabel": ""
     },
     "FAILED_UNLOAD_TOOL": {
       "title": "Unload Failed",
